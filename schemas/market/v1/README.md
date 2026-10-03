@@ -22,7 +22,7 @@ See the [Protobuf schema evolution guide](https://protobuf.dev/programming-guide
 and [best practices](https://protobuf.dev/best-practices/dos-donts/).
 
 ## Protobuf code generation
-To generate Golang code for Protobuf, you can follow [this documentation](https://grpc.io/docs/languages/go/quickstart/) to install necessary complier plugins.
+To generate Go code for Protobuf, install `protoc` v33.4 and `protoc-gen-go` v1.36.12. The [Go quickstart](https://grpc.io/docs/languages/go/quickstart/) explains how to install the compiler plugin.
 
 Afterwards, you can run this command to regenerate the code:
 
@@ -33,3 +33,5 @@ protoc \
   --go_opt=module=financial-streaming-platform \
   schemas/market/v1/events.proto
 ```
+
+CI runs this command and checks that the committed files in `gen/` match its output.

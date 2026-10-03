@@ -1,0 +1,34 @@
+name: Check generated Protobuf code
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check-generated-protobuf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install code generators
+        run: |
+          curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v33.4/protoc-33.4-linux-x86_64.zip -o "$RUNNER_TEMP/protoc.zip"
+          unzip -q "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
+          GOBIN="$RUNNER_TEMP/protoc/bin" go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
+
+      - name: Check generated Go code
+        run: |
+          protoc -I schemas --go_out=. --go_opt=module=financial-streaming-platform schemas/market/v1/events.proto
+          if [[ -n "$(git status --porcelain -- gen/)" ]]; then
+            echo "Generated Go code is out of date. Regenerate it and commit the result."
+            git status --short -- gen/
+            git diff -- gen/
+            exit 1
+          fi
