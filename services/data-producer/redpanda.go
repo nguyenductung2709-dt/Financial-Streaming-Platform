@@ -4,14 +4,21 @@ import (
 	"context"
 	marketv1 "financial-streaming-platform/gen/market/v1"
 	"fmt"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/proto"
 )
 
+const publishTimeout = 30 * time.Second
+
 func newRedpandaClient(brokers []string) (*kgo.Client, error) {
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(brokers...),
+		kgo.RecordDeliveryTimeout(publishTimeout),
+		// Permit deadlines and Ctrl+C to cancel even records already in flight.
+		// An unacknowledged record may nevertheless have been stored by the broker.
+		kgo.AllowIdempotentProduceCancellation(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Redpanda client: %w", err)
@@ -36,8 +43,10 @@ func publishPriceEvent(ctx context.Context, client priceEventProducer, topic str
 		Key:   []byte(event.GetSymbol()),
 		Value: data,
 	}
-	// Publish the record into the topic
-	if err := client.ProduceSync(ctx, record).FirstErr(); err != nil {
+	// Bound each send while preserving an earlier caller deadline or cancellation.
+	publishCtx, cancel := context.WithTimeout(ctx, publishTimeout)
+	defer cancel()
+	if err := client.ProduceSync(publishCtx, record).FirstErr(); err != nil {
 		return fmt.Errorf("publishing event to topic %q: %w", topic, err)
 	}
 	return nil
