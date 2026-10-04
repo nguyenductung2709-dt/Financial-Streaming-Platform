@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	marketv1 "financial-streaming-platform/gen/market/v1"
 	"fmt"
 	"strconv"
@@ -9,6 +10,9 @@ import (
 
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// Reject rows only when neither date column supplies a date for the price update.
+var errMissingTradingDate = errors.New("Trading date and Date are empty")
 
 func rowToPriceEvent(row SourceRow) (*marketv1.PriceEvent, bool, error) {
 	columnHeaders := row.Columns
@@ -44,6 +48,16 @@ func rowToPriceEvent(row SourceRow) (*marketv1.PriceEvent, bool, error) {
 	// Read trading date and trading time and convert to Protobuf timestamp
 	tradingTime := strings.TrimSpace(rowValues[columnHeaders["Trading time"]])
 	tradingDate := strings.TrimSpace(rowValues[columnHeaders["Trading date"]])
+	// Index updates often omit Trading date. Use the row's system Date as a
+	// fallback for these price updates, keeping the existing Trading time.
+	if tradingDate == "" {
+		if index, ok := columnHeaders["Date"]; ok && index >= 0 && index < len(rowValues) {
+			tradingDate = strings.TrimSpace(rowValues[index])
+		}
+	}
+	if tradingDate == "" {
+		return nil, false, fmt.Errorf("parse trading date %q and time %q: %w", tradingDate, tradingTime, errMissingTradingDate)
+	}
 	tradingTimeEvent, err := parseTradeTime(tradingDate, tradingTime)
 	if err != nil {
 		return nil, false, fmt.Errorf("parse trading date %q and time %q: %w", tradingDate, tradingTime, err)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	marketv1 "financial-streaming-platform/gen/market/v1"
 	"strings"
 	"testing"
@@ -293,7 +294,7 @@ func TestRealCSVRows(t *testing.T) {
 				"", "07:00:01.000", "", "", "", "", "", "",
 			}},
 			price: 57117900, security: marketv1.SecurityType_SECURITY_TYPE_INDEX,
-			wantError: "parse trading date",
+			wantUTC: "2021-11-12T05:00:01.014Z",
 		},
 		{
 			name: "E_line_728610",
@@ -322,7 +323,11 @@ func TestRealCSVRows(t *testing.T) {
 				}
 			}
 			if tt.wantUTC != "" {
-				timestamp, err := parseTradeTime(values[columns["Trading date"]], values[columns["Trading time"]])
+				date := values[columns["Trading date"]]
+				if date == "" {
+					date = values[columns["Date"]]
+				}
+				timestamp, err := parseTradeTime(date, values[columns["Trading time"]])
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -346,13 +351,53 @@ func TestRealCSVRows(t *testing.T) {
 				}
 				return
 			}
+			wantTime, err := time.Parse(time.RFC3339Nano, tt.wantUTC)
+			if err != nil {
+				t.Fatal(err)
+			}
 			want := &marketv1.PriceEvent{
-				Symbol: "RUI.FR", SecurityType: tt.security, LastPriceMicros: tt.price,
+				Symbol: values[columns["ID"]], SecurityType: tt.security, LastPriceMicros: tt.price,
 				SourceRow: tt.row.Line,
-				TradeTime: timestamppb.New(time.Date(2021, 11, 12, 7, 0, 0, 179_000_000, time.UTC)),
+				TradeTime: timestamppb.New(wantTime),
 			}
 			if !proto.Equal(got, want) {
 				t.Fatalf("got %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestRowToPriceEventClassifiesMissingTradingDate(t *testing.T) {
+	for _, date := range []string{"", " \t"} {
+		t.Run(date, func(t *testing.T) {
+			row := validEventSourceRow()
+			row.Values[row.Columns["Trading date"]] = date
+			event, skip, err := rowToPriceEvent(row)
+			if event != nil || skip || !errors.Is(err, errMissingTradingDate) {
+				t.Fatalf("got event %v, skip %v, error %v; want classified missing-date error", event, skip, err)
+			}
+		})
+	}
+}
+
+func TestRowToPriceEventDateFallback(t *testing.T) {
+	tests := []struct{ name, tradingDate, systemDate, wantUTC string }{
+		{"missing trading date", "", "12-11-2021", "2021-11-12T05:00:00.123Z"},
+		{"whitespace trading date", " \t", " 12-11-2021 ", "2021-11-12T05:00:00.123Z"},
+		{"prefer existing trading date", "11-11-2021", "12-11-2021", "2021-11-11T05:00:00.123Z"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			row := validEventSourceRow()
+			row.Values[row.Columns["Trading date"]] = tt.tradingDate
+			row.Columns["Date"] = len(row.Values)
+			row.Values = append(row.Values, tt.systemDate)
+			event, skip, err := rowToPriceEvent(row)
+			if err != nil || skip || event == nil {
+				t.Fatalf("event %v, skip %v, error %v", event, skip, err)
+			}
+			if got := event.TradeTime.AsTime().Format(time.RFC3339Nano); got != tt.wantUTC {
+				t.Fatalf("timestamp = %q; want %q", got, tt.wantUTC)
 			}
 		})
 	}
