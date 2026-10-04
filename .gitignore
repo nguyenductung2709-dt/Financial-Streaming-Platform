@@ -1,0 +1,7 @@
+dataset/
+# Go build and test outputs
+/bin/
+*.test
+coverage.out
+coverage.html
+*.prof
