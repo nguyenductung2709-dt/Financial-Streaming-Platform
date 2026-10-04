@@ -7,12 +7,11 @@ option go_package = "financial-streaming-platform/gen/market/v1;marketv1";
 import "google/protobuf/timestamp.proto";
 
 message PriceEvent {
-    string event_id = 1;
-    string symbol = 2;
-    SecurityType security_type = 3;
-    uint64 last_price_micros = 4; // Positive CSV price × 1,000,000; parse decimal text exactly
-    google.protobuf.Timestamp trade_time = 5;
-    uint64 source_row = 6;  // Will be used for replay/debugging and fault-tolerant tests
+    string symbol = 1;
+    SecurityType security_type = 2;
+    uint64 last_price_micros = 3; // Positive CSV price × 1,000,000; parse decimal text exactly
+    google.protobuf.Timestamp trade_time = 4;
+    uint64 source_row = 5;  // Will be used for replay/debugging and fault-tolerant tests
 }
 
 enum SecurityType {
