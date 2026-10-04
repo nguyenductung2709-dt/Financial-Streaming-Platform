@@ -1,0 +1,75 @@
+name: Data producer CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-producer-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          files=$(gofmt -l services/data-producer)
+          if [[ -n "$files" ]]; then
+            echo "Run gofmt on these files:"
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Verify dependencies
+        run: |
+          go mod verify
+          go mod tidy -diff
+
+      - name: Go vet
+        run: go vet ./services/data-producer
+
+      - name: Install Staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+
+      - name: Staticcheck
+        run: staticcheck ./services/data-producer
+
+  test-and-build:
+    name: Test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Unit tests with race detection and coverage
+        run: go test -race -count=1 -timeout=2m -coverprofile=coverage.out ./services/data-producer
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-producer-coverage
+          path: coverage.out
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Build producer
+        run: go build -o bin/data-producer ./services/data-producer
