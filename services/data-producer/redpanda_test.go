@@ -44,6 +44,12 @@ func TestNewRedpandaClient(t *testing.T) {
 		t.Fatal("expected a client")
 	}
 	t.Cleanup(client.Close)
+	if got := client.OptValue(kgo.RecordDeliveryTimeout); got != publishTimeout {
+		t.Fatalf("delivery timeout = %v; want %v", got, publishTimeout)
+	}
+	if got := client.OptValue(kgo.AllowIdempotentProduceCancellation); got != true {
+		t.Fatalf("in-flight cancellation = %v; want true", got)
+	}
 	if got := client.OptValue(kgo.SeedBrokers); !reflect.DeepEqual(got, brokers) {
 		t.Fatalf("seed brokers = %v; want %v", got, brokers)
 	}
@@ -77,8 +83,9 @@ func TestPublishPriceEvent(t *testing.T) {
 	if producer.calls != 1 || len(producer.records) != 1 {
 		t.Fatalf("got %d calls and %d records; want one of each", producer.calls, len(producer.records))
 	}
-	if producer.ctx != ctx {
-		t.Fatal("caller context was not forwarded")
+	wantDeadline, _ := ctx.Deadline()
+	if gotDeadline, ok := producer.ctx.Deadline(); !ok || !gotDeadline.Equal(wantDeadline) {
+		t.Fatal("earlier caller deadline was not preserved")
 	}
 	record := producer.records[0]
 	if record.Topic != "trade-events" {
@@ -124,5 +131,66 @@ func TestPublishPriceEventReturnsProduceError(t *testing.T) {
 				t.Fatalf("got %d produce calls; want 1", producer.calls)
 			}
 		})
+	}
+}
+
+func TestPublishPriceEventAddsDeadlineAndCleansUp(t *testing.T) {
+	producer := &fakePriceEventProducer{}
+	started := time.Now()
+	err := publishPriceEvent(context.Background(), producer, "trade-events", &marketv1.PriceEvent{Symbol: "RUI.FR"})
+	finished := time.Now()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline, ok := producer.ctx.Deadline()
+	if !ok || deadline.Before(started.Add(publishTimeout)) || deadline.After(finished.Add(publishTimeout)) {
+		t.Fatalf("deadline %v is not the configured publish timeout", deadline)
+	}
+	if !errors.Is(producer.ctx.Err(), context.Canceled) {
+		t.Fatal("publish context was not released after the send returned")
+	}
+}
+
+type waitingPriceEventProducer struct {
+	started chan struct{}
+}
+
+func (f *waitingPriceEventProducer) ProduceSync(ctx context.Context, records ...*kgo.Record) kgo.ProduceResults {
+	close(f.started)
+	<-ctx.Done()
+	return kgo.ProduceResults{{Record: records[0], Err: ctx.Err()}}
+}
+
+func TestPublishPriceEventCancelsBlockedSend(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	producer := &waitingPriceEventProducer{started: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		done <- publishPriceEvent(ctx, producer, "trade-events", &marketv1.PriceEvent{Symbol: "RUI.FR"})
+	}()
+	select {
+	case <-producer.started:
+	case <-time.After(time.Second):
+		t.Fatal("send never started")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v; want wrapped context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked send did not respond to cancellation")
+	}
+}
+
+func TestPublishPriceEventReturnsCallerDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	producer := &waitingPriceEventProducer{started: make(chan struct{})}
+	err := publishPriceEvent(ctx, producer, "trade-events", &marketv1.PriceEvent{Symbol: "RUI.FR"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v; want wrapped context.DeadlineExceeded", err)
 	}
 }
