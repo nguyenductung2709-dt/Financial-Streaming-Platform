@@ -53,7 +53,7 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 		return config{}, err
 	}
 	if flags.NArg() != 0 {
-		return config{}, fmt.Errorf("unexpected arguments: %q; use named flags such as -csvPath=...", flags.Args())
+		return config{}, fmt.Errorf("unexpected arguments: %q; use named flags such as -csvPath=<path>", flags.Args())
 	}
 	if cfg.rate < 0 || cfg.rate > int(time.Second) {
 		return config{}, fmt.Errorf("rate must be between 0 and 1000000000 events per second")
