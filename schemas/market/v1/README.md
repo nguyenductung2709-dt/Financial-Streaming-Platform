@@ -1,6 +1,6 @@
 # Guidelines for schemas
 
-[`market/v1/events.proto`](market/v1/events.proto) defines the Protobuf messages
+[`market/v1/events.proto`](events.proto) defines the Protobuf messages
 exchanged through Redpanda. The `.proto` file is the source of truth; regenerate
 language bindings from it rather than editing generated code by hand.
 
