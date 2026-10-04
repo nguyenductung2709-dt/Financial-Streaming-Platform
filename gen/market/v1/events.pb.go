@@ -73,12 +73,11 @@ func (SecurityType) EnumDescriptor() ([]byte, []int) {
 
 type PriceEvent struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	EventId         string                 `protobuf:"bytes,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
-	Symbol          string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	SecurityType    SecurityType           `protobuf:"varint,3,opt,name=security_type,json=securityType,proto3,enum=market.v1.SecurityType" json:"security_type,omitempty"`
-	LastPriceMicros uint64                 `protobuf:"varint,4,opt,name=last_price_micros,json=lastPriceMicros,proto3" json:"last_price_micros,omitempty"` // Positive CSV price × 1,000,000; parse decimal text exactly
-	TradeTime       *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=trade_time,json=tradeTime,proto3" json:"trade_time,omitempty"`
-	SourceRow       uint64                 `protobuf:"varint,6,opt,name=source_row,json=sourceRow,proto3" json:"source_row,omitempty"` // Will be used for replay/debugging and fault-tolerant tests
+	Symbol          string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	SecurityType    SecurityType           `protobuf:"varint,2,opt,name=security_type,json=securityType,proto3,enum=market.v1.SecurityType" json:"security_type,omitempty"`
+	LastPriceMicros uint64                 `protobuf:"varint,3,opt,name=last_price_micros,json=lastPriceMicros,proto3" json:"last_price_micros,omitempty"` // Positive CSV price × 1,000,000; parse decimal text exactly
+	TradeTime       *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=trade_time,json=tradeTime,proto3" json:"trade_time,omitempty"`
+	SourceRow       uint64                 `protobuf:"varint,5,opt,name=source_row,json=sourceRow,proto3" json:"source_row,omitempty"` // Will be used for replay/debugging and fault-tolerant tests
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -111,13 +110,6 @@ func (x *PriceEvent) ProtoReflect() protoreflect.Message {
 // Deprecated: Use PriceEvent.ProtoReflect.Descriptor instead.
 func (*PriceEvent) Descriptor() ([]byte, []int) {
 	return file_market_v1_events_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *PriceEvent) GetEventId() string {
-	if x != nil {
-		return x.EventId
-	}
-	return ""
 }
 
 func (x *PriceEvent) GetSymbol() string {
@@ -159,17 +151,16 @@ var File_market_v1_events_proto protoreflect.FileDescriptor
 
 const file_market_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x16market/v1/events.proto\x12\tmarket.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x83\x02\n" +
+	"\x16market/v1/events.proto\x12\tmarket.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe8\x01\n" +
 	"\n" +
-	"PriceEvent\x12\x19\n" +
-	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12\x16\n" +
-	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12<\n" +
-	"\rsecurity_type\x18\x03 \x01(\x0e2\x17.market.v1.SecurityTypeR\fsecurityType\x12*\n" +
-	"\x11last_price_micros\x18\x04 \x01(\x04R\x0flastPriceMicros\x129\n" +
+	"PriceEvent\x12\x16\n" +
+	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12<\n" +
+	"\rsecurity_type\x18\x02 \x01(\x0e2\x17.market.v1.SecurityTypeR\fsecurityType\x12*\n" +
+	"\x11last_price_micros\x18\x03 \x01(\x04R\x0flastPriceMicros\x129\n" +
 	"\n" +
-	"trade_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\ttradeTime\x12\x1d\n" +
+	"trade_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\ttradeTime\x12\x1d\n" +
 	"\n" +
-	"source_row\x18\x06 \x01(\x04R\tsourceRow*`\n" +
+	"source_row\x18\x05 \x01(\x04R\tsourceRow*`\n" +
 	"\fSecurityType\x12\x1d\n" +
 	"\x19SECURITY_TYPE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14SECURITY_TYPE_EQUITY\x10\x01\x12\x17\n" +
