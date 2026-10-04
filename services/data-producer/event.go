@@ -12,7 +12,7 @@ import (
 )
 
 // Reject rows only when neither date column supplies a date for the price update.
-var errMissingTradingDate = errors.New("Trading date and Date are empty")
+var errMissingTradingDate = errors.New("trading date and system date are empty")
 
 func rowToPriceEvent(row SourceRow) (*marketv1.PriceEvent, bool, error) {
 	columnHeaders := row.Columns
