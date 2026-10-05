@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	marketv1 "financial-streaming-platform/gen/market/v1"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -400,5 +401,65 @@ func TestRowToPriceEventDateFallback(t *testing.T) {
 				t.Fatalf("timestamp = %q; want %q", got, tt.wantUTC)
 			}
 		})
+	}
+}
+
+func TestParseColumnHeaders(t *testing.T) {
+	for _, index := range []int{0, 21, 1<<31 - 1} {
+		input := map[string]int{"Last": index}
+		got, err := parseColumnHeaders(input)
+		if err != nil || got["Last"] != int32(index) {
+			t.Fatalf("index %d: got %v, error %v", index, got, err)
+		}
+		got["Last"] = -1
+		if input["Last"] != index {
+			t.Fatal("conversion modified the source map")
+		}
+	}
+	for _, input := range []map[string]int{nil, {}} {
+		got, err := parseColumnHeaders(input)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("empty map: got %v, error %v", got, err)
+		}
+	}
+}
+
+func TestParseColumnHeadersRejectsInvalidIndex(t *testing.T) {
+	indexes := []int{-1}
+	// The overflowing value is representable only when Go int is 64 bits.
+	if strconv.IntSize == 64 {
+		overflow := int64(1 << 31)
+		indexes = append(indexes, int(overflow))
+	}
+	for _, index := range indexes {
+		got, err := parseColumnHeaders(map[string]int{"Last": index})
+		if got != nil || err == nil || !strings.Contains(err.Error(), "Last") {
+			t.Fatalf("index %d: got %v, error %v", index, got, err)
+		}
+	}
+}
+
+func TestRowToPriceEventDLQPreservesOriginalData(t *testing.T) {
+	row := SourceRow{Line: 71436, Values: []string{"IIIFL.FR", "I", "57.117900", "07:00:01.014", ""},
+		Columns: map[string]int{"ID": 0, "SecType": 1, "Last": 2, "Trading time": 3, "Trading date": 4}}
+	got, err := rowToPriceEventDLQ(row, "missing trading date")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &marketv1.RejectedRow{SourceRow: row.Line, Values: row.Values,
+		ColumnIndices: map[string]int32{"ID": 0, "SecType": 1, "Last": 2, "Trading time": 3, "Trading date": 4}, ErrorReason: "missing trading date"}
+	if !proto.Equal(got, want) {
+		t.Fatalf("got %v; want %v", got, want)
+	}
+	got.ColumnIndices["Last"] = 99
+	if row.Columns["Last"] != 2 {
+		t.Fatal("DLQ column map must be independent of the CSV header map")
+	}
+}
+
+func TestRowToPriceEventDLQReturnsHeaderError(t *testing.T) {
+	got, err := rowToPriceEventDLQ(SourceRow{Columns: map[string]int{"Last": -1}}, "invalid price")
+	if got != nil || err == nil || !strings.Contains(err.Error(), "invalid column headers") || !strings.Contains(err.Error(), "Last") {
+		t.Fatalf("got %v, error %v", got, err)
 	}
 }
