@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package market.v1;
+
+option go_package = "financial-streaming-platform/gen/market/v1;marketv1";
+
+message RejectedRow {
+    uint64 source_row = 1;
+    repeated string values = 2;
+    map<string, uint32> column_indices = 3;
+    string error_reason = 4;
+}
