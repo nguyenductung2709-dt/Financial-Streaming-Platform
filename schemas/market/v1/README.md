@@ -27,6 +27,10 @@ To generate Go code for Protobuf, install `protoc` v33.4 and `protoc-gen-go` v1.
 Afterwards, you can run this command to regenerate the code:
 
 ```
+export PATH="$PATH:$(go env GOPATH)/bin"
+```
+
+```
 protoc \
   -I schemas \
   --go_out=. \
