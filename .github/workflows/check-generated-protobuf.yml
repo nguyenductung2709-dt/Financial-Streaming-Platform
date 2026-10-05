@@ -25,7 +25,8 @@ jobs:
 
       - name: Check generated Go code
         run: |
-          protoc -I schemas --go_out=. --go_opt=module=financial-streaming-platform schemas/market/v1/events.proto
+          find schemas -type f -name '*.proto' -print0 |
+            xargs -0 protoc -I schemas --go_out=. --go_opt=module=financial-streaming-platform
           if [[ -n "$(git status --porcelain -- gen/)" ]]; then
             echo "Generated Go code is out of date. Regenerate it and commit the result."
             git status --short -- gen/
