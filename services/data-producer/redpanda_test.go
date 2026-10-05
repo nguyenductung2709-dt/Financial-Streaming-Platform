@@ -194,3 +194,96 @@ func TestPublishPriceEventReturnsCallerDeadline(t *testing.T) {
 		t.Fatalf("error = %v; want wrapped context.DeadlineExceeded", err)
 	}
 }
+
+func TestPublishPriceEventDLQ(t *testing.T) {
+	producer := &fakePriceEventProducer{}
+	event := &marketv1.RejectedRow{SourceRow: ^uint64(0), Values: []string{"IIIFL.FR", "invalid"},
+		ColumnIndices: map[string]int32{"ID": 0, "Last": 1}, ErrorReason: "invalid price"}
+	started := time.Now()
+	if err := publishPriceEventDLQ(context.Background(), producer, "trade-events-dlq", event); err != nil {
+		t.Fatal(err)
+	}
+	finished := time.Now()
+	if producer.calls != 1 || len(producer.records) != 1 {
+		t.Fatalf("calls=%d, records=%d", producer.calls, len(producer.records))
+	}
+	record := producer.records[0]
+	if record.Topic != "trade-events-dlq" || string(record.Key) != "18446744073709551615" {
+		t.Fatalf("unexpected topic or decimal row key: %+v", record)
+	}
+	var decoded marketv1.RejectedRow
+	if err := proto.Unmarshal(record.Value, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(&decoded, event) {
+		t.Fatalf("decoded %v; want %v", &decoded, event)
+	}
+	deadline, ok := producer.ctx.Deadline()
+	if !ok || deadline.Before(started.Add(publishTimeout)) || deadline.After(finished.Add(publishTimeout)) {
+		t.Fatalf("unexpected publish deadline: %v", deadline)
+	}
+	if !errors.Is(producer.ctx.Err(), context.Canceled) {
+		t.Fatal("publish context was not cleaned up")
+	}
+}
+
+func TestPublishPriceEventDLQReturnsSerializationError(t *testing.T) {
+	invalid := string([]byte{0xff})
+	for _, event := range []*marketv1.RejectedRow{
+		{Values: []string{invalid}}, {ColumnIndices: map[string]int32{invalid: 0}}, {ErrorReason: invalid},
+	} {
+		producer := &fakePriceEventProducer{}
+		err := publishPriceEventDLQ(context.Background(), producer, "trade-events-dlq", event)
+		if err == nil || producer.calls != 0 {
+			t.Fatalf("serialization error=%v, produce calls=%d", err, producer.calls)
+		}
+	}
+}
+
+func TestPublishPriceEventDLQReturnsProduceError(t *testing.T) {
+	for _, failure := range []error{errors.New("DLQ unavailable"), context.Canceled, context.DeadlineExceeded} {
+		producer := &fakePriceEventProducer{err: failure}
+		err := publishPriceEventDLQ(context.Background(), producer, "trade-events-dlq", &marketv1.RejectedRow{SourceRow: 14})
+		if !errors.Is(err, failure) || !strings.Contains(err.Error(), "trade-events-dlq") {
+			t.Fatalf("got %v; want wrapped %v with topic", err, failure)
+		}
+	}
+}
+
+func TestPublishPriceEventDLQPreservesCallerDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	producer := &fakePriceEventProducer{}
+	if err := publishPriceEventDLQ(ctx, producer, "trade-events-dlq", &marketv1.RejectedRow{}); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := ctx.Deadline()
+	got, ok := producer.ctx.Deadline()
+	if !ok || !got.Equal(want) {
+		t.Fatalf("deadline %v; want %v", got, want)
+	}
+}
+
+func TestPublishPriceEventDLQCancelsBlockedSend(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	producer := &waitingPriceEventProducer{started: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		done <- publishPriceEventDLQ(ctx, producer, "trade-events-dlq", &marketv1.RejectedRow{})
+	}()
+	select {
+	case <-producer.started:
+	case <-time.After(time.Second):
+		t.Fatal("send never started")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v; want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("DLQ send did not respond to cancellation")
+	}
+}

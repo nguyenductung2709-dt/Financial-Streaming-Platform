@@ -26,10 +26,10 @@ func TestParseConfig(t *testing.T) {
 	}{
 		{"defaults", nil, config{
 			csvPath: "dataset/debs2022-gc-trading-day-12-11-21.csv",
-			brokers: []string{"localhost:19092"}, topic: "trade-events",
+			brokers: []string{"localhost:19092"}, topic: "trade-events", dlqTopic: "trade-events-dlq",
 		}},
 		{"custom flags and trimmed addresses", []string{"-csvPath=/tmp/my data.csv", "-brokers= broker1:9092, broker2:9092 ", "-topic= prices "}, config{
-			csvPath: "/tmp/my data.csv", brokers: []string{"broker1:9092", "broker2:9092"}, topic: "prices",
+			csvPath: "/tmp/my data.csv", brokers: []string{"broker1:9092", "broker2:9092"}, topic: "prices", dlqTopic: "trade-events-dlq",
 		}},
 	}
 	for _, tt := range tests {
@@ -46,7 +46,7 @@ func TestParseConfig(t *testing.T) {
 }
 
 func TestParseConfigRejectsInvalidFlags(t *testing.T) {
-	for _, arg := range []string{"-csvPath=", "-csvPath= ", "-topic=", "-topic= ", "-brokers=", "-brokers= ", "-brokers=broker:9092,", "-brokers=,broker:9092", "-unknown=value", "-rate=-1", "-rate=1000000001", "-rate=abc", "-max-events=-1", "-max-events=abc"} {
+	for _, arg := range []string{"-csvPath=", "-csvPath= ", "-topic=", "-topic= ", "-brokers=", "-brokers= ", "-brokers=broker:9092,", "-brokers=,broker:9092", "-unknown=value", "-rate=-1", "-rate=1000000001", "-rate=abc", "-maxEvents=-1", "-maxEvents=abc"} {
 		t.Run(arg, func(t *testing.T) {
 			if _, err := parseConfig([]string{arg}, io.Discard); err == nil {
 				t.Fatal("expected configuration error")
@@ -61,7 +61,7 @@ func TestParseConfigHelp(t *testing.T) {
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("error = %v; want flag.ErrHelp", err)
 	}
-	for _, name := range []string{"-csvPath", "-brokers", "-topic", "-rate", "-max-events"} {
+	for _, name := range []string{"-csvPath", "-brokers", "-topic", "-dlqTopic", "-dlqEnabled", "-rate", "-maxEvents"} {
 		if !strings.Contains(output.String(), name) {
 			t.Fatalf("help omits %s", name)
 		}
@@ -229,44 +229,61 @@ func TestRunWithClientHeaderWithoutData(t *testing.T) {
 	}
 }
 
-func TestRunWithClientRejectsMissingTradingDateAndContinues(t *testing.T) {
-	// Relevant columns copied from real CSV line 71436; Trading date is empty.
-	path := writeCSVFile(t, csvContents(testCSVHeader,
-		"IIIFL.FR,I,57.117900,07:00:01.014,\n"+validRunRow))
-	client := &fakeRunClient{}
-	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events"}, client, &output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(client.records) != 1 || string(client.records[0].Key) != "RUI.FR" {
-		t.Fatalf("expected only the following valid row to be published; got %v", client.records)
-	}
-	if client.closeCalls != 1 {
-		t.Fatal("client was not closed")
-	}
-	if !strings.Contains(output.String(), "Rejected CSV line 14:") {
-		t.Fatalf("missing rejection warning: %s", &output)
-	}
-	if !strings.Contains(output.String(), "completed: published=1 skipped=0 rejected=1") {
-		t.Fatalf("unexpected summary: %s", &output)
+func TestRunWithClientDLQContinuesAfterRejectedRow(t *testing.T) {
+	for _, row := range []string{
+		"IIIFL.FR,I,57.117900,07:00:01.014,",
+		"IIIFL.FR,I,57.117900,07:00:01.014,31-11-2021",
+	} {
+		t.Run(row, func(t *testing.T) {
+			path := writeCSVFile(t, csvContents(testCSVHeader, row+"\n"+validRunRow))
+			client := &fakeRunClient{}
+			var output bytes.Buffer
+			cfg := config{csvPath: path, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true, maxEvents: 1}
+			if err := runWithClient(context.Background(), cfg, client, &output); err != nil {
+				t.Fatal(err)
+			}
+			if len(client.records) != 2 || client.records[0].Topic != cfg.dlqTopic || client.records[1].Topic != cfg.topic {
+				t.Fatalf("expected one DLQ record followed by one trade; got %v", client.records)
+			}
+			var rejected marketv1.RejectedRow
+			if err := proto.Unmarshal(client.records[0].Value, &rejected); err != nil {
+				t.Fatal(err)
+			}
+			if rejected.SourceRow != 14 || string(client.records[0].Key) != "14" || rejected.ErrorReason == "" {
+				t.Fatalf("unexpected rejection: %v", &rejected)
+			}
+			if !reflect.DeepEqual(rejected.Values, strings.Split(row, ",")) || rejected.ColumnIndices["Last"] != 2 {
+				t.Fatalf("original row or columns lost: %v", &rejected)
+			}
+			if !strings.Contains(output.String(), "limit reached: published=1 skipped=0 rejected=1") {
+				t.Fatalf("unexpected summary: %s", &output)
+			}
+		})
 	}
 }
 
-func TestRunWithClientLimitsMissingDateWarnings(t *testing.T) {
-	path := writeCSVFile(t, csvContents(testCSVHeader,
-		strings.Repeat("IIIFL.FR,I,57.117900,07:00:01.014,\n", 8)+validRunRow))
+func TestRunWithClientStopsOnMissingDateWithoutDLQ(t *testing.T) {
+	path := writeCSVFile(t, csvContents(testCSVHeader, "IIIFL.FR,I,57.117900,07:00:01.014,\n"+validRunRow))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
 	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events"}, client, &output)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, errMissingTradingDate) || len(client.records) != 0 || client.closeCalls != 1 {
+		t.Fatalf("error=%v, records=%d, closes=%d", err, len(client.records), client.closeCalls)
 	}
-	if strings.Count(output.String(), "Rejected CSV line") != 5 {
-		t.Fatalf("expected five warning examples: %s", &output)
+}
+
+func TestRunWithClientStopsOnDLQPublishFailure(t *testing.T) {
+	path := writeCSVFile(t, csvContents(testCSVHeader, "IIIFL.FR,I,57.117900,07:00:01.014,\n"+validRunRow))
+	failure := errors.New("DLQ unavailable")
+	client := &fakeRunClient{produceErr: failure}
+	var output bytes.Buffer
+	cfg := config{csvPath: path, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true}
+	err := runWithClient(context.Background(), cfg, client, &output)
+	if !errors.Is(err, failure) || len(client.records) != 1 || client.records[0].Topic != cfg.dlqTopic || client.closeCalls != 1 {
+		t.Fatalf("error=%v, records=%v, closes=%d", err, client.records, client.closeCalls)
 	}
-	if !strings.Contains(output.String(), "published=1 skipped=0 rejected=8") {
-		t.Fatalf("summary must count all rejected rows: %s", &output)
+	if !strings.Contains(output.String(), "stopped: published=0 skipped=0 rejected=0") {
+		t.Fatalf("failed DLQ send counted as acknowledged: %s", &output)
 	}
 }
 
@@ -376,7 +393,7 @@ func TestWaitForReplayAlreadyCanceled(t *testing.T) {
 }
 
 func TestParseConfigMaxEvents(t *testing.T) {
-	cfg, err := parseConfig([]string{"-max-events=100", "-rate=50"}, io.Discard)
+	cfg, err := parseConfig([]string{"-maxEvents=100", "-rate=50"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,12 +412,12 @@ func TestRunWithClientStopsAtMaxEvents(t *testing.T) {
 			"RUI.FR,E,invalid,09:00:00.179,12-11-2021\n"))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events", maxEvents: 1}, client, &output)
+	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true, maxEvents: 1}, client, &output)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(client.records) != 1 || client.closeCalls != 1 {
-		t.Fatal("expected one published event and client cleanup")
+	if len(client.records) != 2 || client.records[0].Topic != "trade-events-dlq" || client.records[1].Topic != "trade-events" || client.closeCalls != 1 {
+		t.Fatal("expected one DLQ record, one trade event, and client cleanup")
 	}
 	if !strings.Contains(output.String(), "limit reached: published=1 skipped=1 rejected=1") {
 		t.Fatalf("unexpected summary: %s", &output)
@@ -441,9 +458,9 @@ func TestRunWithClientRateAndMaxEvents(t *testing.T) {
 func TestParseConfigRejectsUnexpectedArguments(t *testing.T) {
 	tests := [][]string{
 		{"input.csv"},
-		{"input.csv", "-rate=10", "-max-events=100"},
-		{"-rate=10", "extra", "-max-events=100"},
-		{"--", "-max-events=100"},
+		{"input.csv", "-rate=10", "-maxEvents=100"},
+		{"-rate=10", "extra", "-maxEvents=100"},
+		{"--", "-maxEvents=100"},
 	}
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -452,5 +469,74 @@ func TestParseConfigRejectsUnexpectedArguments(t *testing.T) {
 				t.Fatalf("args %v: error = %v; want unexpected-arguments error", args, err)
 			}
 		})
+	}
+}
+
+func TestParseConfigDLQ(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantEnabled bool
+		wantTopic   string
+		wantError   string
+	}{
+		{name: "enabled with default topic", args: []string{"-dlqEnabled"}, wantEnabled: true, wantTopic: "trade-events-dlq"},
+		{name: "enabled with trimmed custom topic", args: []string{"-dlqEnabled=true", "-dlqTopic= rejected-events "}, wantEnabled: true, wantTopic: "rejected-events"},
+		{name: "disabled with empty topic", args: []string{"-dlqEnabled=false", "-dlqTopic= "}},
+		{name: "disabled with same topic", args: []string{"-dlqTopic=trade-events"}, wantTopic: "trade-events"},
+		{name: "enabled with empty topic", args: []string{"-dlqEnabled", "-dlqTopic="}, wantError: "DLQ topic must not be empty"},
+		{name: "enabled with whitespace topic", args: []string{"-dlqEnabled", "-dlqTopic= \t"}, wantError: "DLQ topic must not be empty"},
+		{name: "enabled with same topic", args: []string{"-dlqEnabled", "-topic= prices ", "-dlqTopic= prices "}, wantError: "DLQ topic must differ"},
+		{name: "invalid boolean", args: []string{"-dlqEnabled=maybe"}, wantError: "invalid boolean value"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := parseConfig(tt.args, io.Discard)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("error = %v; want %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.dlqEnabled != tt.wantEnabled || cfg.dlqTopic != tt.wantTopic {
+				t.Fatalf("DLQ enabled=%v, topic=%q; want %v, %q", cfg.dlqEnabled, cfg.dlqTopic, tt.wantEnabled, tt.wantTopic)
+			}
+		})
+	}
+}
+
+func TestRunWithClientDLQSkipsNonPriceRows(t *testing.T) {
+	path := writeCSVFile(t, csvContents(testCSVHeader,
+		"A0HN5C.ETR,E,,,\nFREN4.FR,I,0.000000,00:00:00.000,\n"+validRunRow))
+	client := &fakeRunClient{}
+	var output bytes.Buffer
+	cfg := config{csvPath: path, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true}
+	if err := runWithClient(context.Background(), cfg, client, &output); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.records) != 1 || client.records[0].Topic != cfg.topic {
+		t.Fatalf("skipped rows must not enter DLQ: %v", client.records)
+	}
+	if !strings.Contains(output.String(), "completed: published=1 skipped=2 rejected=0") {
+		t.Fatalf("unexpected summary: %s", &output)
+	}
+}
+
+func TestRunWithClientCancellationAfterDLQStopsReplay(t *testing.T) {
+	path := writeCSVFile(t, csvContents(testCSVHeader, "IIIFL.FR,I,57.117900,07:00:01.014,\n"+validRunRow))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &fakeRunClient{afterProduce: cancel}
+	var output bytes.Buffer
+	cfg := config{csvPath: path, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true}
+	err := runWithClient(ctx, cfg, client, &output)
+	if !errors.Is(err, context.Canceled) || len(client.records) != 1 || client.records[0].Topic != cfg.dlqTopic || client.closeCalls != 1 {
+		t.Fatalf("error=%v, records=%v, closes=%d", err, client.records, client.closeCalls)
+	}
+	if !strings.Contains(output.String(), "stopped: published=0 skipped=0 rejected=1") {
+		t.Fatalf("unexpected summary: %s", &output)
 	}
 }
