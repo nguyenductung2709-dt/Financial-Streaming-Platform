@@ -7,11 +7,12 @@
 package marketv1
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -25,7 +26,7 @@ type RejectedRow struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SourceRow     uint64                 `protobuf:"varint,1,opt,name=source_row,json=sourceRow,proto3" json:"source_row,omitempty"`
 	Values        []string               `protobuf:"bytes,2,rep,name=values,proto3" json:"values,omitempty"`
-	ColumnIndices map[string]uint32      `protobuf:"bytes,3,rep,name=column_indices,json=columnIndices,proto3" json:"column_indices,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	ColumnIndices map[string]int32       `protobuf:"bytes,3,rep,name=column_indices,json=columnIndices,proto3" json:"column_indices,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	ErrorReason   string                 `protobuf:"bytes,4,opt,name=error_reason,json=errorReason,proto3" json:"error_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -75,7 +76,7 @@ func (x *RejectedRow) GetValues() []string {
 	return nil
 }
 
-func (x *RejectedRow) GetColumnIndices() map[string]uint32 {
+func (x *RejectedRow) GetColumnIndices() map[string]int32 {
 	if x != nil {
 		return x.ColumnIndices
 	}
@@ -102,7 +103,7 @@ const file_market_v1_dlq_proto_rawDesc = "" +
 	"\ferror_reason\x18\x04 \x01(\tR\verrorReason\x1a@\n" +
 	"\x12ColumnIndicesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01B5Z3financial-streaming-platform/gen/market/v1;marketv1b\x06proto3"
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01B5Z3financial-streaming-platform/gen/market/v1;marketv1b\x06proto3"
 
 var (
 	file_market_v1_dlq_proto_rawDescOnce sync.Once
