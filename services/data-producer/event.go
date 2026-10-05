@@ -138,3 +138,29 @@ func parseSecurityType(secTypeText string) (marketv1.SecurityType, error) {
 		return marketv1.SecurityType_SECURITY_TYPE_UNSPECIFIED, fmt.Errorf("invalid SecType: %q", secTypeText)
 	}
 }
+
+func rowToPriceEventDLQ(row SourceRow, errorReason string) (*marketv1.RejectedRow, error) {
+	columnHeaders, err := parseColumnHeaders(row.Columns)
+	if err != nil {
+		return nil, fmt.Errorf("invalid column headers: %w", err)
+	}
+	rejectedRow := &marketv1.RejectedRow{
+		SourceRow:     row.Line,
+		Values:        row.Values,
+		ColumnIndices: columnHeaders,
+		ErrorReason:   errorReason,
+	}
+	return rejectedRow, nil
+}
+
+func parseColumnHeaders(columnHeaders map[string]int) (map[string]int32, error) {
+	const maxIndex = 1<<31 - 1
+	converted := make(map[string]int32, len(columnHeaders))
+	for name, index := range columnHeaders {
+		if index < 0 || index > maxIndex {
+			return nil, fmt.Errorf("column %q index %d must be between 0 and %d", name, index, maxIndex)
+		}
+		converted[name] = int32(index)
+	}
+	return converted, nil
+}

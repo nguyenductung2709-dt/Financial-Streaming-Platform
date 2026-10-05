@@ -4,6 +4,7 @@ import (
 	"context"
 	marketv1 "financial-streaming-platform/gen/market/v1"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -48,6 +49,25 @@ func publishPriceEvent(ctx context.Context, client priceEventProducer, topic str
 	defer cancel()
 	if err := client.ProduceSync(publishCtx, record).FirstErr(); err != nil {
 		return fmt.Errorf("publishing event to topic %q: %w", topic, err)
+	}
+	return nil
+}
+
+func publishPriceEventDLQ(ctx context.Context, client priceEventProducer, topic string, rejectedEvent *marketv1.RejectedRow) error {
+	data, err := proto.Marshal(rejectedEvent)
+	if err != nil {
+		return fmt.Errorf("invalid rejected event: %w", err)
+	}
+	// Format the record
+	record := &kgo.Record{
+		Topic: topic,
+		Key:   []byte(strconv.FormatUint(rejectedEvent.GetSourceRow(), 10)),
+		Value: data,
+	}
+	publishCtx, cancel := context.WithTimeout(ctx, publishTimeout)
+	defer cancel()
+	if err := client.ProduceSync(publishCtx, record).FirstErr(); err != nil {
+		return fmt.Errorf("publishing rejected event to topic %q: %w", topic, err)
 	}
 	return nil
 }

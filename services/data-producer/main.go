@@ -14,11 +14,13 @@ import (
 )
 
 type config struct {
-	csvPath   string
-	brokers   []string
-	topic     string
-	rate      int
-	maxEvents uint64
+	csvPath    string
+	brokers    []string
+	topic      string
+	dlqTopic   string
+	dlqEnabled bool
+	rate       int
+	maxEvents  uint64
 }
 
 func main() {
@@ -46,9 +48,11 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	flags.SetOutput(output)
 	flags.StringVar(&cfg.csvPath, "csvPath", "dataset/debs2022-gc-trading-day-12-11-21.csv", "Path of the CSV file")
 	flags.StringVar(&brokersText, "brokers", "localhost:19092", "Comma-separated broker addresses")
-	flags.StringVar(&cfg.topic, "topic", "trade-events", "Redpanda topic")
+	flags.StringVar(&cfg.topic, "topic", "trade-events", "Trade event Redpanda topic")
+	flags.StringVar(&cfg.dlqTopic, "dlqTopic", "trade-events-dlq", "Trade event dead letter queue Redpanda topic")
+	flags.BoolVar(&cfg.dlqEnabled, "dlqEnabled", false, "Enable the dead letter queue topic for invalid trade events")
 	flags.IntVar(&cfg.rate, "rate", 0, "Maximum events per second (0 = unlimited)")
-	flags.Uint64Var(&cfg.maxEvents, "max-events", 0, "Maximum acknowledged events to publish (0 = unlimited)")
+	flags.Uint64Var(&cfg.maxEvents, "maxEvents", 0, "Maximum acknowledged events to publish (0 = unlimited)")
 	if err := flags.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -64,6 +68,15 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	cfg.topic = strings.TrimSpace(cfg.topic)
 	if cfg.topic == "" {
 		return config{}, fmt.Errorf("topic must not be empty")
+	}
+	cfg.dlqTopic = strings.TrimSpace(cfg.dlqTopic)
+	if cfg.dlqEnabled {
+		if cfg.dlqTopic == "" {
+			return config{}, fmt.Errorf("DLQ topic must not be empty when DLQ is enabled")
+		}
+		if cfg.dlqTopic == cfg.topic {
+			return config{}, fmt.Errorf("DLQ topic must differ from the trade event topic")
+		}
 	}
 	cfg.brokers = strings.Split(brokersText, ",")
 	for i := range cfg.brokers {
@@ -129,16 +142,20 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 		}
 
 		event, skip, err := rowToPriceEvent(row)
-		if errors.Is(err, errMissingTradingDate) {
-			rejected++
-			// Limit warnings so large replays do not print a message for every rejected row.
-			if rejected <= 5 {
-				fmt.Fprintf(output, "Rejected CSV line %d: %v\n", row.Line, err)
-			}
-			return nil
-		}
 		if err != nil {
-			return err
+			if !cfg.dlqEnabled {
+				return err
+			}
+
+			rejectedEvent, dlqErr := rowToPriceEventDLQ(row, err.Error())
+			if dlqErr != nil {
+				return dlqErr
+			}
+			if dlqErr := publishPriceEventDLQ(ctx, client, cfg.dlqTopic, rejectedEvent); dlqErr != nil {
+				return dlqErr
+			}
+			rejected++
+			return nil
 		}
 		if skip {
 			skipped++
