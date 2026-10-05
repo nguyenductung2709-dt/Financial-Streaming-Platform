@@ -1,4 +1,4 @@
-.PHONY: build-data-producer run-data-producer
+.PHONY: build-data-producer run-data-producer generate-protobuf
 
 build-data-producer:
 	mkdir -p bin
@@ -7,3 +7,9 @@ build-data-producer:
 # Example: make run-data-producer ARGS="-dlqEnabled -maxEvents=100"
 run-data-producer: build-data-producer
 	./bin/data-producer $(ARGS)
+
+# Regenerate Go bindings for every schema, matching CI.
+generate-protobuf:
+	PATH="$$(go env GOPATH)/bin:$$PATH"; export PATH; \
+	find schemas -type f -name '*.proto' -print0 | \
+		xargs -0 protoc -I schemas --go_out=. --go_opt=module=financial-streaming-platform
