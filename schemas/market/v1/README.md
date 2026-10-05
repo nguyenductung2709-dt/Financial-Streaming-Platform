@@ -22,20 +22,20 @@ See the [Protobuf schema evolution guide](https://protobuf.dev/programming-guide
 and [best practices](https://protobuf.dev/best-practices/dos-donts/).
 
 ## Protobuf code generation
-To generate Go code for Protobuf, install `protoc` v33.4 and `protoc-gen-go` v1.36.12. The [Go quickstart](https://grpc.io/docs/languages/go/quickstart/) explains how to install the compiler plugin.
 
-Afterwards, you can run this command to regenerate the code:
+Install `protoc` v33.4 and the Go plugin version used by CI:
 
-```
-export PATH="$PATH:$(go env GOPATH)/bin"
-```
-
-```
-protoc \
-  -I schemas \
-  --go_out=. \
-  --go_opt=module=financial-streaming-platform \
-  schemas/market/v1/events.proto
+```sh
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
 ```
 
-CI runs this command and checks that the committed files in `gen/` match its output.
+From the repository root, regenerate Go code for **all `.proto` files** under
+`schemas`, including `events.proto` and `dlq.proto`:
+
+```sh
+make generate-protobuf
+```
+
+The target adds Go's binary directory to `PATH` so `protoc` can find the plugin.
+Commit the schema changes together with the regenerated files in `gen/`.
+CI regenerates all schemas and checks that those committed files match.
