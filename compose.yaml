@@ -1,0 +1,72 @@
+name: financial-streaming-platform
+volumes:
+  redpanda-0: 
+services:
+  redpanda-0:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.3
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda-0:9092,external://localhost:19092
+      - --rpc-addr redpanda-0:33145
+      - --advertise-rpc-addr redpanda-0:33145
+      - --mode dev-container
+      - --smp 1
+    volumes:
+      - redpanda-0:/var/lib/redpanda/data
+    ports:
+      - "127.0.0.1:19092:19092"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info", "-X", "brokers=localhost:9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  create-topic:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.3
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        #skip topic if it already exists, so re-running is safe 
+        rpk topic describe trade-events -X brokers=redpanda-0:9092 >/dev/null 2>&1 ||
+          rpk topic create trade-events --partitions 1 --replicas 1 -X brokers=redpanda-0:9092
+        rpk topic describe trade-events-dlq -X brokers=redpanda-0:9092 >/dev/null 2>&1 ||
+          rpk topic create trade-events-dlq --partitions 1 --replicas 1 -X brokers=redpanda-0:9092
+
+  console:
+    image: docker.redpanda.com/redpandadata/console:v3.12.0
+    entrypoint: ["/bin/sh", "-ec"]
+    command: 
+      - 'printf "%s" "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml; exec /app/console'
+    environment:
+      CONFIG_FILEPATH: /tmp/config.yml
+      CONSOLE_CONFIG_FILE: |
+        kafka:
+          brokers: ["redpanda-0:9092"]
+        redpanda:
+          adminApi:
+            enabled: true
+            urls: ["http://redpanda-0:9644"]
+        serde:
+          protobuf:
+            enabled: true
+            mappings:
+              - topicName: trade-events
+                valueProtoType: market.v1.PriceEvent
+            fileSystem:
+              enabled: true
+              paths: ["/etc/protos"]
+    volumes:
+      - ./schemas:/etc/protos:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
+    restart: unless-stopped
