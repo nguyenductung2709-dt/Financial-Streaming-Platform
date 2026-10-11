@@ -59,6 +59,8 @@ services:
             mappings:
               - topicName: trade-events
                 valueProtoType: market.v1.PriceEvent
+              - topicName: trade-events-dlq
+                valueProtoType: market.v1.RejectedRow
             fileSystem:
               enabled: true
               paths: ["/etc/protos"]
