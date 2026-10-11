@@ -1,6 +1,7 @@
 name: financial-streaming-platform
 volumes:
-  redpanda-0: 
+  redpanda-0:
+  flink-state:
 services:
   redpanda-0:
     image: docker.redpanda.com/redpandadata/redpanda:v26.2.3
@@ -71,4 +72,60 @@ services:
     depends_on:
       redpanda-0:
         condition: service_healthy
+    restart: unless-stopped
+
+  flink-state-init:
+    image: flink:2.3.0-java17
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mkdir -p /opt/flink/state/checkpoints /opt/flink/state/savepoints
+        chown -R flink:flink /opt/flink/state
+    volumes:
+      - flink-state:/opt/flink/state
+    restart: "no"
+
+  jobmanager:
+    image: flink:2.3.0-java17
+    ports:
+      - "127.0.0.1:8081:8081"
+    command: jobmanager
+    depends_on:
+      flink-state-init:
+        condition: service_completed_successfully
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        rest.profiling.enabled: true
+        rest.address: jobmanager
+        rest.bind-address: 0.0.0.0
+        parallelism.default: 1
+        execution.checkpointing.interval: 30 s
+        execution.checkpointing.storage: filesystem
+        execution.checkpointing.dir: file:///opt/flink/state/checkpoints
+        execution.checkpointing.savepoint-dir: file:///opt/flink/state/savepoints
+        execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+    volumes:
+      - flink-state:/opt/flink/state
+    restart: unless-stopped
+
+  taskmanager:
+    image: flink:2.3.0-java17
+    depends_on:
+      jobmanager:
+        condition: service_started
+      flink-state-init:
+        condition: service_completed_successfully
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        rest.profiling.enabled: true
+        taskmanager.numberOfTaskSlots: 2
+        execution.checkpointing.storage: filesystem
+        execution.checkpointing.dir: file:///opt/flink/state/checkpoints
+        execution.checkpointing.savepoint-dir: file:///opt/flink/state/savepoints
+    volumes:
+      - flink-state:/opt/flink/state
     restart: unless-stopped
