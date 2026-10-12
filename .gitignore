@@ -5,3 +5,19 @@ dataset/
 coverage.out
 coverage.html
 *.prof
+
+# Scala / sbt build outputs and tooling caches
+target/
+*.class
+.metals/
+.bloop/
+.bsp/
+.scala-build/
+
+# Local editor configuration
+.vscode/
+.idea/
+*.iml
+
+# macOS metadata
+.DS_Store

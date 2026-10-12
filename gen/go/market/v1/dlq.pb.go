@@ -102,7 +102,7 @@ const file_market_v1_dlq_proto_rawDesc = "" +
 	"\ferror_reason\x18\x04 \x01(\tR\verrorReason\x1a@\n" +
 	"\x12ColumnIndicesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01B5Z3financial-streaming-platform/gen/market/v1;marketv1b\x06proto3"
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01B8Z6financial-streaming-platform/gen/go/market/v1;marketv1b\x06proto3"
 
 var (
 	file_market_v1_dlq_proto_rawDescOnce sync.Once

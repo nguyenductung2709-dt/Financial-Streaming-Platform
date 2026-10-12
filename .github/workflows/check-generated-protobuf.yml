@@ -23,12 +23,11 @@ jobs:
           GOBIN="$RUNNER_TEMP/protoc/bin" go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
           echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
 
-      - name: Check generated Go code
+      - name: Check generated Protobuf code
         run: |
-          find schemas -type f -name '*.proto' -print0 |
-            xargs -0 protoc -I schemas --go_out=. --go_opt=module=financial-streaming-platform
+          make generate-protobuf
           if [[ -n "$(git status --porcelain -- gen/)" ]]; then
-            echo "Generated Go code is out of date. Regenerate it and commit the result."
+            echo "Generated Protobuf code is out of date. Regenerate it and commit the result."
             git status --short -- gen/
             git diff -- gen/
             exit 1
