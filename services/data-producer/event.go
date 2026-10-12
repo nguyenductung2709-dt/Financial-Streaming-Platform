@@ -2,7 +2,7 @@ package main
 
 import (
 	"errors"
-	marketv1 "financial-streaming-platform/gen/market/v1"
+	marketv1 "financial-streaming-platform/gen/go/market/v1"
 	"fmt"
 	"strconv"
 	"strings"

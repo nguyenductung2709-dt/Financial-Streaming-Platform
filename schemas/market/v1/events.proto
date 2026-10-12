@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package market.v1;
 
-option go_package = "financial-streaming-platform/gen/market/v1;marketv1";
+option go_package = "financial-streaming-platform/gen/go/market/v1;marketv1";
 
 import "google/protobuf/timestamp.proto";
 

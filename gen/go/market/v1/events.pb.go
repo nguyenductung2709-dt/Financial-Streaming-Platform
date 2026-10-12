@@ -164,7 +164,7 @@ const file_market_v1_events_proto_rawDesc = "" +
 	"\fSecurityType\x12\x1d\n" +
 	"\x19SECURITY_TYPE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14SECURITY_TYPE_EQUITY\x10\x01\x12\x17\n" +
-	"\x13SECURITY_TYPE_INDEX\x10\x02B5Z3financial-streaming-platform/gen/market/v1;marketv1b\x06proto3"
+	"\x13SECURITY_TYPE_INDEX\x10\x02B8Z6financial-streaming-platform/gen/go/market/v1;marketv1b\x06proto3"
 
 var (
 	file_market_v1_events_proto_rawDescOnce sync.Once

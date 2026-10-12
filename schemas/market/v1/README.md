@@ -29,7 +29,7 @@ Install `protoc` v33.4 and the Go plugin version used by CI:
 go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
 ```
 
-From the repository root, regenerate Go code for **all `.proto` files** under
+From the repository root, regenerate Go and Java code for **all `.proto` files** under
 `schemas`, including `events.proto` and `dlq.proto`:
 
 ```sh
@@ -39,3 +39,21 @@ make generate-protobuf
 The target adds Go's binary directory to `PATH` so `protoc` can find the plugin.
 Commit the schema changes together with the regenerated files in `gen/`.
 CI regenerates all schemas and checks that those committed files match.
+
+Generated code is separated by language:
+
+```text
+gen/
+├── go/market/v1/       # Go bindings used by the data producer
+└── java/market/v1/     # Java bindings usable from Scala
+```
+
+When setting up the processor's `build.sbt`, include the shared Java sources:
+
+```scala
+Compile / unmanagedSourceDirectories +=
+  (baseDirectory.value / "../../gen/java").getCanonicalFile
+
+libraryDependencies +=
+  "com.google.protobuf" % "protobuf-java" % "4.33.4"
+```
