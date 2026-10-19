@@ -1,7 +1,8 @@
 package financial.streaming
 
 import market.v1.Events.PriceEvent
-import org.apache.flink.api.common.eventtime.WatermarkStrategy
+import java.time.Duration
+import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, WatermarkStrategy}
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.connector.kafka.source.KafkaSource
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer
@@ -9,6 +10,23 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
 import org.apache.kafka.clients.consumer.OffsetResetStrategy
 
 object StreamingProcessor {
+  private val OutOfOrdernessAllowance = Duration.ofSeconds(70)
+
+  private def priceEventWatermarks: WatermarkStrategy[PriceEvent] =
+    WatermarkStrategy
+      .forBoundedOutOfOrderness[PriceEvent](OutOfOrdernessAllowance)
+      .withTimestampAssigner(new SerializableTimestampAssigner[PriceEvent] {
+        override def extractTimestamp(
+            event: PriceEvent,
+            previousTimestamp: Long
+        ): Long = {
+          val timestamp = event.getTradeTime
+
+          timestamp.getSeconds * 1000L +
+            timestamp.getNanos / 1000000L
+        }
+      })
+
   def source(cfg: ProcessorConfig): KafkaSource[PriceEvent] = {
     val offsets = cfg.startingOffsets match {
       case "earliest"  => OffsetsInitializer.earliest()
@@ -47,7 +65,7 @@ object StreamingProcessor {
   // Describe the operators without submitting or executing a job.
   def buildPipeline(env: StreamExecutionEnvironment, cfg: ProcessorConfig): Unit = {
     env
-      .fromSource(source(cfg), WatermarkStrategy.noWatermarks[PriceEvent](), "trade-events-source")
+      .fromSource(source(cfg), priceEventWatermarks, "trade-events-source")
       .uid("trade-events-source-v1")
       .sinkTo(new SampleLoggingSink(cfg.sampleLimit))
       .name("decoded-event-inspection")
