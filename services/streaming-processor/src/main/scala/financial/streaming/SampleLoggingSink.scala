@@ -15,9 +15,12 @@ final class SampleLoggingSink(limit: Int) extends Sink[PriceEvent] {
       override def write(event: PriceEvent, ctx: SinkWriter.Context): Unit = {
         counter.inc()
         if (logged < limit) {
-          log.info("Decoded PriceEvent symbol={} priceMicros={} sourceRow={}",
-            event.getSymbol, java.lang.Long.toUnsignedString(event.getLastPriceMicros),
-            java.lang.Long.toUnsignedString(event.getSourceRow))
+          log.info(
+            "Decoded PriceEvent symbol={} priceMicros={} sourceRow={}",
+            event.getSymbol,
+            java.lang.Long.toUnsignedString(event.getLastPriceMicros),
+            java.lang.Long.toUnsignedString(event.getSourceRow)
+          )
           logged += 1
         }
       }

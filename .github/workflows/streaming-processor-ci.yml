@@ -19,6 +19,8 @@ jobs:
           java-version: '17'
           cache: sbt
       - uses: sbt/setup-sbt@v1
+      - name: Check Scala formatting and compiler lint
+        run: make lint-streaming-processor
       - name: Test and assemble deployment JAR
         working-directory: services/streaming-processor
         run: sbt test verifyAssembly

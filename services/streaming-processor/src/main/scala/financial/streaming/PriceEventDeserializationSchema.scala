@@ -10,11 +10,19 @@ import scala.util.control.NonFatal
 
 // Kafka adapter: add record coordinates to decoding errors and emit valid events.
 final class PriceEventDeserializationSchema extends KafkaRecordDeserializationSchema[PriceEvent] {
-  override def deserialize(record: ConsumerRecord[Array[Byte], Array[Byte]], out: Collector[PriceEvent]): Unit = {
-    val event = try PriceEventDecoder.decode(record.value()) catch {
-      case NonFatal(e) => throw new IOException(
-        s"Invalid PriceEvent at topic=${record.topic()} partition=${record.partition()} offset=${record.offset()}: ${e.getMessage}", e)
-    }
+  override def deserialize(
+      record: ConsumerRecord[Array[Byte], Array[Byte]],
+      out: Collector[PriceEvent]
+  ): Unit = {
+    val event =
+      try PriceEventDecoder.decode(record.value())
+      catch {
+        case NonFatal(e) =>
+          throw new IOException(
+            s"Invalid PriceEvent at topic=${record.topic()} partition=${record.partition()} offset=${record.offset()}: ${e.getMessage}",
+            e
+          )
+      }
     out.collect(event)
   }
   override def getProducedType: TypeInformation[PriceEvent] = new PriceEventTypeInformation

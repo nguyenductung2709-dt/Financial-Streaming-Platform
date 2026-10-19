@@ -8,9 +8,14 @@ import org.apache.flink.util.Collector
 import org.apache.kafka.clients.consumer.ConsumerRecord
 
 class PriceEventSuite extends munit.FunSuite {
-  def valid: PriceEvent = PriceEvent.newBuilder().setSymbol("RUI.FR")
-    .setSecurityType(SecurityType.SECURITY_TYPE_EQUITY).setLastPriceMicros(28040000L)
-    .setSourceRow(728610L).setTradeTime(Timestamp.newBuilder().setSeconds(1636700400L).setNanos(179000000)).build()
+  def valid: PriceEvent = PriceEvent
+    .newBuilder()
+    .setSymbol("RUI.FR")
+    .setSecurityType(SecurityType.SECURITY_TYPE_EQUITY)
+    .setLastPriceMicros(28040000L)
+    .setSourceRow(728610L)
+    .setTradeTime(Timestamp.newBuilder().setSeconds(1636700400L).setNanos(179000000))
+    .build()
 
   test("decode exact producer wire format without float conversion") {
     assertEquals(PriceEventDecoder.decode(valid.toByteArray), valid)
@@ -27,15 +32,26 @@ class PriceEventSuite extends munit.FunSuite {
     }
   }
   test("reject missing or invalid required business fields") {
-    Seq(valid.toBuilder.clearSymbol().build(), valid.toBuilder.setSymbol("\n").build(),
-      valid.toBuilder.setSecurityTypeValue(99).build(), valid.toBuilder.setLastPriceMicros(0L).build(),
-      valid.toBuilder.clearSourceRow().build(), valid.toBuilder.clearTradeTime().build(),
+    Seq(
+      valid.toBuilder.clearSymbol().build(),
+      valid.toBuilder.setSymbol("\n").build(),
+      valid.toBuilder.setSecurityTypeValue(99).build(),
+      valid.toBuilder.setLastPriceMicros(0L).build(),
+      valid.toBuilder.clearSourceRow().build(),
+      valid.toBuilder.clearTradeTime().build(),
       valid.toBuilder.setTradeTime(Timestamp.newBuilder().setSeconds(253402300800L)).build(),
-      valid.toBuilder.setTradeTime(Timestamp.newBuilder().setNanos(-1)).build())
+      valid.toBuilder.setTradeTime(Timestamp.newBuilder().setNanos(-1)).build()
+    )
       .foreach(e => intercept[IllegalArgumentException](PriceEventDecoder.decode(e.toByteArray)))
   }
   test("Kafka decoding errors include source coordinates and retain their cause") {
-    val record = new ConsumerRecord[Array[Byte], Array[Byte]]("trade-events", 2, 73L, null, Array.emptyByteArray)
+    val record = new ConsumerRecord[Array[Byte], Array[Byte]](
+      "trade-events",
+      2,
+      73L,
+      null,
+      Array.emptyByteArray
+    )
     val schema = new PriceEventDeserializationSchema
     var collected = false
     val out = new Collector[PriceEvent] {
@@ -48,13 +64,17 @@ class PriceEventSuite extends munit.FunSuite {
     assert(!collected)
   }
   test("Kafka deserializer emits a typed PriceEvent") {
-    val record = new ConsumerRecord[Array[Byte], Array[Byte]]("trade-events", 0, 1L, null, valid.toByteArray)
+    val record =
+      new ConsumerRecord[Array[Byte], Array[Byte]]("trade-events", 0, 1L, null, valid.toByteArray)
     var decoded: PriceEvent = null
     val schema = new PriceEventDeserializationSchema
-    schema.deserialize(record, new Collector[PriceEvent] {
-      override def collect(e: PriceEvent): Unit = { decoded = e }
-      override def close(): Unit = ()
-    })
+    schema.deserialize(
+      record,
+      new Collector[PriceEvent] {
+        override def collect(e: PriceEvent): Unit = { decoded = e }
+        override def close(): Unit = ()
+      }
+    )
     assertEquals(decoded, valid)
     assert(schema.getProducedType.isInstanceOf[PriceEventTypeInformation])
   }
@@ -64,7 +84,9 @@ class PriceEventSuite extends munit.FunSuite {
     val large = valid.toBuilder.setLastPriceMicros(-1L).build()
     serializer.serialize(large, new DataOutputViewStreamWrapper(bytes))
     val restored = serializer.snapshotConfiguration().restoreSerializer()
-    val decoded = restored.deserialize(new DataInputViewStreamWrapper(new ByteArrayInputStream(bytes.toByteArray)))
+    val decoded = restored.deserialize(
+      new DataInputViewStreamWrapper(new ByteArrayInputStream(bytes.toByteArray))
+    )
     assertEquals(decoded, large)
     assert(serializer.copy(large) eq large)
   }
@@ -73,7 +95,9 @@ class PriceEventSuite extends munit.FunSuite {
       val bytes = new ByteArrayOutputStream
       new DataOutputViewStreamWrapper(bytes).writeInt(size)
       intercept[IOException] {
-        new PriceEventSerializer().deserialize(new DataInputViewStreamWrapper(new ByteArrayInputStream(bytes.toByteArray)))
+        new PriceEventSerializer().deserialize(
+          new DataInputViewStreamWrapper(new ByteArrayInputStream(bytes.toByteArray))
+        )
       }
     }
   }

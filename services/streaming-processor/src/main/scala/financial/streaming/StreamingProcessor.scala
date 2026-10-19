@@ -11,11 +11,12 @@ import org.apache.kafka.clients.consumer.OffsetResetStrategy
 object StreamingProcessor {
   def source(cfg: ProcessorConfig): KafkaSource[PriceEvent] = {
     val offsets = cfg.startingOffsets match {
-      case "earliest" => OffsetsInitializer.earliest()
-      case "latest" => OffsetsInitializer.latest()
+      case "earliest"  => OffsetsInitializer.earliest()
+      case "latest"    => OffsetsInitializer.latest()
       case "committed" => OffsetsInitializer.committedOffsets(OffsetResetStrategy.EARLIEST)
     }
-    val builder = KafkaSource.builder[PriceEvent]()
+    val builder = KafkaSource
+      .builder[PriceEvent]()
       .setBootstrapServers(cfg.brokers)
       .setTopics(cfg.topic)
       .setGroupId(cfg.groupId)
@@ -45,7 +46,8 @@ object StreamingProcessor {
 
   // Describe the operators without submitting or executing a job.
   def buildPipeline(env: StreamExecutionEnvironment, cfg: ProcessorConfig): Unit = {
-    env.fromSource(source(cfg), WatermarkStrategy.noWatermarks[PriceEvent](), "trade-events-source")
+    env
+      .fromSource(source(cfg), WatermarkStrategy.noWatermarks[PriceEvent](), "trade-events-source")
       .uid("trade-events-source-v1")
       .sinkTo(new SampleLoggingSink(cfg.sampleLimit))
       .name("decoded-event-inspection")

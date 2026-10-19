@@ -42,6 +42,20 @@ Flink 2.2.1 / Java 17 is paired with Kafka connector 5.0.0-2.2, following the
 [Apache compatibility matrix](https://flink.apache.org/downloads/).
 No separate Kafka connector installation is needed in the cluster.
 
+## Formatting and lint
+
+From the repository root:
+
+```sh
+make format-streaming-processor  # Apply Scalafmt to Scala sources and sbt files
+make lint-streaming-processor    # Check formatting and compile application/tests
+```
+
+Scalafmt uses the pinned version and style in `.scalafmt.conf`, also readable by
+Metals when formatting in the editor. Generated Java bindings and Metals support
+files are excluded. Compiler lint and unused-import checks are enabled; warnings
+fail the build. CI checks formatting and lint before running tests and packaging.
+
 ## Run on the local Flink cluster
 
 Start infrastructure from the repository root:
