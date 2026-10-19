@@ -6,8 +6,14 @@ import scala.jdk.CollectionConverters._
 
 class StreamingProcessorSuite extends munit.FunSuite {
   test("continuous source defaults and bounded replay source") {
-    assertEquals(StreamingProcessor.source(ProcessorConfig()).getBoundedness, Boundedness.CONTINUOUS_UNBOUNDED)
-    assertEquals(StreamingProcessor.source(ProcessorConfig(bounded = true)).getBoundedness, Boundedness.BOUNDED)
+    assertEquals(
+      StreamingProcessor.source(ProcessorConfig()).getBoundedness,
+      Boundedness.CONTINUOUS_UNBOUNDED
+    )
+    assertEquals(
+      StreamingProcessor.source(ProcessorConfig(bounded = true)).getBoundedness,
+      Boundedness.BOUNDED
+    )
   }
   test("production pipeline builds without executing and preserves stable operator identifiers") {
     val env = StreamExecutionEnvironment.getExecutionEnvironment

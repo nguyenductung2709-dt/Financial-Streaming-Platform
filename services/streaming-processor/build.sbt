@@ -18,7 +18,15 @@ Compile / unmanagedSourceDirectories +=
   (baseDirectory.value / "../../gen/java").getCanonicalFile
 
 Compile / javacOptions ++= Seq("--release", "17")
-scalacOptions ++= Seq("-release:17", "-deprecation", "-feature", "-unchecked")
+scalacOptions ++= Seq(
+  "-release:17",
+  "-deprecation",
+  "-feature",
+  "-unchecked",
+  "-Xlint:_",
+  "-Wunused:imports",
+  "-Werror"
+)
 Compile / mainClass := Some("financial.streaming.StreamingProcessor")
 assembly / mainClass := (Compile / mainClass).value
 assembly / assemblyJarName := "streaming-processor.jar"
@@ -28,10 +36,11 @@ assembly / assemblyShadeRules := Seq(
   ShadeRule.rename("scala.**" -> "financial.streaming.shaded.scala.@1").inAll
 )
 assembly / assemblyMergeStrategy := {
-  case PathList("META-INF", "services", _ @ _*) => MergeStrategy.filterDistinctLines
-  case PathList("META-INF", xs @ _*) if xs.lastOption.exists(n =>
-    n.endsWith(".SF") || n.endsWith(".RSA") || n.endsWith(".DSA")) => MergeStrategy.discard
-  case "module-info.class" => MergeStrategy.discard
+  case PathList("META-INF", "services", _ @_*) => MergeStrategy.filterDistinctLines
+  case PathList("META-INF", xs @ _*)
+      if xs.lastOption.exists(n => n.endsWith(".SF") || n.endsWith(".RSA") || n.endsWith(".DSA")) =>
+    MergeStrategy.discard
+  case "module-info.class"                                      => MergeStrategy.discard
   case PathList("META-INF", "versions", _, "module-info.class") => MergeStrategy.discard
   case x => (assembly / assemblyMergeStrategy).value(x)
 }
@@ -45,9 +54,11 @@ verifyAssembly := {
     Seq("scala/Predef$.class", "com/google/protobuf/Message.class").foreach { entry =>
       require(archive.getJarEntry(entry) == null, s"Unrelocated runtime in assembly: $entry")
     }
-    Seq("financial/streaming/shaded/scala/Predef$.class",
+    Seq(
+      "financial/streaming/shaded/scala/Predef$.class",
       "financial/streaming/shaded/protobuf/Message.class",
-      "org/apache/flink/connector/kafka/source/KafkaSource.class").foreach { entry =>
+      "org/apache/flink/connector/kafka/source/KafkaSource.class"
+    ).foreach { entry =>
       require(archive.getJarEntry(entry) != null, s"Missing deployment dependency: $entry")
     }
   } finally archive.close()

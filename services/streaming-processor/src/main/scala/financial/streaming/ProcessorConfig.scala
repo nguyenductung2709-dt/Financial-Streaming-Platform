@@ -33,30 +33,50 @@ object ProcessorConfig {
       require(seen.add(option), s"duplicate option: $option")
       if (option == "--bounded") cfg = cfg.copy(bounded = true)
       else {
-        require(Set("--brokers", "--topic", "--group-id", "--starting-offsets", "--parallelism",
-          "--checkpoint-interval-ms", "--sample-limit").contains(option), s"unknown option: $option")
+        require(
+          Set(
+            "--brokers",
+            "--topic",
+            "--group-id",
+            "--starting-offsets",
+            "--parallelism",
+            "--checkpoint-interval-ms",
+            "--sample-limit"
+          ).contains(option),
+          s"unknown option: $option"
+        )
         i += 1
         require(i < args.length && !args(i).startsWith("--"), s"missing value for $option")
         val value = args(i).trim
         require(value.nonEmpty, s"$option must not be empty")
-        def intValue: Int = value.toIntOption.getOrElse(throw new IllegalArgumentException(s"$option must be an integer"))
+        def intValue: Int = value.toIntOption.getOrElse(
+          throw new IllegalArgumentException(s"$option must be an integer")
+        )
         cfg = option match {
           case "--brokers" =>
             val addresses = value.split(",", -1).map(_.trim)
             require(addresses.forall(_.nonEmpty), "brokers must not contain empty addresses")
             cfg.copy(brokers = addresses.mkString(","))
           case "--topic" =>
-            require(value.matches("[a-zA-Z0-9._-]{1,249}") && value != "." && value != "..", "invalid Kafka topic name")
+            require(
+              value.matches("[a-zA-Z0-9._-]{1,249}") && value != "." && value != "..",
+              "invalid Kafka topic name"
+            )
             cfg.copy(topic = value)
-          case "--group-id" => cfg.copy(groupId = value)
+          case "--group-id"         => cfg.copy(groupId = value)
           case "--starting-offsets" =>
-            require(Set("committed", "earliest", "latest").contains(value), "starting-offsets must be committed, earliest, or latest")
+            require(
+              Set("committed", "earliest", "latest").contains(value),
+              "starting-offsets must be committed, earliest, or latest"
+            )
             cfg.copy(startingOffsets = value)
           case "--parallelism" =>
             require(intValue > 0, "parallelism must be positive")
             cfg.copy(parallelism = intValue)
           case "--checkpoint-interval-ms" =>
-            val ms = value.toLongOption.getOrElse(throw new IllegalArgumentException("checkpoint interval must be an integer"))
+            val ms = value.toLongOption.getOrElse(
+              throw new IllegalArgumentException("checkpoint interval must be an integer")
+            )
             require(ms >= 1000, "checkpoint interval must be at least 1000 ms")
             cfg.copy(checkpointIntervalMs = ms)
           case "--sample-limit" =>

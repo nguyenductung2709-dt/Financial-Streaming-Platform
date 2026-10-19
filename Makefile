@@ -1,4 +1,4 @@
-.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor
+.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor
 
 test-data-producer:
 	go test -race -count=1 -timeout=2m -coverprofile=coverage.out ./services/data-producer
@@ -26,3 +26,11 @@ build-streaming-processor:
 	cd services/streaming-processor && sbt verifyAssembly
 	mkdir -p bin
 	cp services/streaming-processor/target/scala-2.13/streaming-processor.jar bin/streaming-processor.jar
+
+# Format Scala application/test sources and sbt build files.
+format-streaming-processor:
+	cd services/streaming-processor && sbt scalafmtAll scalafmtSbt
+
+# Check formatting and compiler lint without rewriting files.
+lint-streaming-processor:
+	cd services/streaming-processor && sbt scalafmtCheckAll scalafmtSbtCheck compile Test/compile
