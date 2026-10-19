@@ -60,7 +60,7 @@ jobs:
           cache: true
 
       - name: Unit tests with race detection and coverage
-        run: go test -race -count=1 -timeout=2m -coverprofile=coverage.out ./services/data-producer
+        run: make test-data-producer
 
       - name: Upload coverage
         if: always()
