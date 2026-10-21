@@ -1,4 +1,4 @@
-.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor
+.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks
 
 test-data-producer:
 	go test -race -count=1 -timeout=2m -coverprofile=coverage.out ./services/data-producer
@@ -34,3 +34,7 @@ format-streaming-processor:
 # Check formatting and compiler lint without rewriting files.
 lint-streaming-processor:
 	cd services/streaming-processor && sbt scalafmtCheckAll scalafmtSbtCheck compile Test/compile
+
+# Point git at the checked-in hooks (run once after cloning).
+setup-hooks:
+	git config core.hooksPath .githooks
