@@ -11,6 +11,9 @@ libraryDependencies ++= Seq(
   "org.apache.flink" % "flink-connector-kafka" % "5.0.0-2.2",
   "com.google.protobuf" % "protobuf-java" % "4.33.4",
   "org.slf4j" % "slf4j-api" % "2.0.17" % "provided",
+  // Test-only harness for keyed managed state and checkpoint restoration.
+  "org.apache.flink" % "flink-test-utils" % flinkVersion % Test,
+  "org.apache.flink" % "flink-runtime" % flinkVersion % Test classifier "tests",
   "org.scalameta" %% "munit" % "1.0.4" % Test
 )
 
