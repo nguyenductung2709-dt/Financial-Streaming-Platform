@@ -1,4 +1,6 @@
-package financial.streaming
+package financial.streaming.source
+
+import financial.streaming.serialization.PriceEventTypeInformation
 
 import java.io.IOException
 import market.v1.Events.PriceEvent

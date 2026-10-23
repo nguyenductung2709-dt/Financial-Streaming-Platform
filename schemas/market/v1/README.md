@@ -1,8 +1,20 @@
 # Guidelines for schemas
 
-[`market/v1/events.proto`](events.proto) defines the Protobuf messages
-exchanged through Redpanda. The `.proto` file is the source of truth; regenerate
-language bindings from it rather than editing generated code by hand.
+The `.proto` files define the messages exchanged through Redpanda. They are the
+source of truth; regenerate language bindings rather than editing generated code.
+
+| Schema | Message | Topic |
+| --- | --- | --- |
+| [events.proto](events.proto) | `market.v1.PriceEvent` | `trade-events` |
+| [dlq.proto](dlq.proto) | `market.v1.RejectedRow` | `trade-events-dlq` |
+| [ema.proto](ema.proto) | `market.v1.EmaWindow` | `ema-windows` (planned output) |
+
+`EmaWindow` represents one symbol's completed window: `[window_start, window_end)`.
+The closing price uses integer micros; EMA values use plain decimal strings in
+price units, without exponent notation. For example, a closing price of `418.21`
+is `418210000` micros, while an EMA value might be `21.44666666666666666666666666666667`.
+Use `BigDecimal.toPlainString` when encoding EMA values. The current calculation
+rounds each update to 34 significant digits with HALF_EVEN rounding.
 
 ## Schema evolution
 
@@ -30,7 +42,7 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
 ```
 
 From the repository root, regenerate Go and Java code for **all `.proto` files** under
-`schemas`, including `events.proto` and `dlq.proto`:
+`schemas`, including `events.proto`, `dlq.proto`, and `ema.proto`:
 
 ```sh
 make generate-protobuf
