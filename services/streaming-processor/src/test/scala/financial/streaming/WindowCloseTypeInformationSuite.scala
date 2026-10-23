@@ -4,11 +4,7 @@ import financial.streaming.model.WindowClose
 import market.v1.Events.PriceEvent
 import org.apache.flink.api.common.eventtime.WatermarkStrategy
 import org.apache.flink.api.common.serialization.SerializerConfigImpl
-import org.apache.flink.api.common.typeinfo.Types
-import org.apache.flink.api.java.functions.KeySelector
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
-import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows
-import java.time.Duration
 
 class WindowCloseTypeInformationSuite extends munit.FunSuite {
   test("type information selects the explicit window serializer") {
@@ -27,22 +23,14 @@ class WindowCloseTypeInformationSuite extends munit.FunSuite {
     assert(!first.equals(null))
   }
 
-  test("Flink infers the registered result type when combining aggregate and window function") {
+  test("production windows select the explicit result serializer") {
     val env = StreamExecutionEnvironment.getExecutionEnvironment
     val events = env.fromSource(
       StreamingProcessor.source(ProcessorConfig()),
       WatermarkStrategy.noWatermarks[PriceEvent](),
       "type-registration-test"
     )
-    val windows = events
-      .keyBy(
-        new KeySelector[PriceEvent, String] {
-          override def getKey(event: PriceEvent): String = event.getSymbol
-        },
-        Types.STRING
-      )
-      .window(TumblingEventTimeWindows.of(Duration.ofMinutes(5)))
-      .aggregate(new ClosingPriceAggregate, new WindowCloseFunction)
+    val windows = StreamingProcessor.closingPrices(events)
 
     assert(windows.getType.isInstanceOf[WindowCloseTypeInformation])
     assert(

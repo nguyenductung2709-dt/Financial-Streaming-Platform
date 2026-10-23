@@ -1,8 +1,9 @@
 # Streaming processor
 
 Continuously consumes raw Protobuf `market.v1.PriceEvent` messages from Redpanda,
-validates them, and logs a limited sample. This is the ingestion foundation;
-it does not calculate EMA or persist business results yet.
+validates them, and computes closing trades in five-minute event-time windows
+for each symbol. It logs a limited sample of completed windows; it does not
+calculate EMA or persist business results yet.
 
 ## Code layout
 
@@ -14,9 +15,13 @@ it does not calculate EMA or persist business results yet.
 - `PriceEventDeserializationSchema`: Kafka adapter that emits decoded events and
   adds topic/partition/offset information to decoding errors.
 - `PriceEventTypeInformation`: Flink's internal Protobuf serializer and snapshot.
-- `SampleLoggingSink`: temporary diagnostic output, counting all decoded events
-  and logging a limited sample. Replace this endpoint with indicator output when
-  adding the EMA pipeline.
+- `ClosingPriceAggregate`: selects the latest trade timestamp in each window;
+  equal timestamps use the larger unsigned source row.
+- `WindowCloseFunction`: adds the window start and end to the selected trade.
+- `WindowCloseTypeInformation` / `WindowCloseSerializer`: explicit Flink
+  serialization for window results, including their nested Protobuf trade.
+- `SampleLoggingSink`: counts completed windows and logs a limited sample.
+  Replace this endpoint with indicator output when adding the EMA pipeline.
 
 ## Build and test
 
@@ -81,7 +86,7 @@ docker compose exec jobmanager flink run -d /tmp/streaming-processor.jar \
 Do not resubmit the same continuous job repeatedly: each submission creates a
 separate Flink job. Cancel the old job before replacing it.
 
-Read sampled events from worker logs:
+Read sampled window results from worker logs:
 
 ```sh
 docker compose logs -f taskmanager
@@ -97,7 +102,7 @@ docker compose logs -f taskmanager
 | `--starting-offsets` | `committed` | `committed`, `earliest`, or `latest` |
 | `--parallelism` | `1` | Parallel instances per operator |
 | `--checkpoint-interval-ms` | `30000` | Checkpoint interval, minimum 1000 ms |
-| `--sample-limit` | `5` | Events logged per sink subtask/attempt; zero disables |
+| `--sample-limit` | `5` | Completed windows logged per sink subtask/attempt; zero disables |
 | `--bounded` | Off | Consume up to end offsets captured at source startup, then finish |
 | `--help` | | Print options without starting a job |
 
@@ -120,11 +125,20 @@ For a one-time replay, use a distinct group, `--starting-offsets earliest`, and
   deliberately; automatic retries do not repair it.
 - A dedicated Protobuf serializer preserves uint64 values, including values
   beyond signed JVM Long range, and avoids generic Kryo serialization.
-- `decodedPriceEvents` is a sink metric. Counts and sample limits reset on a new
+- `completedPriceWindows` is a sink metric. Counts and sample limits reset on a new
   attempt. Log samples may repeat after recovery: this inspection sink is not
   an exactly-once business output or durable storage.
-- No event-time windows/watermarks are needed for this ingestion step. EMA and
-  late-event handling must be designed before adding time-based calculations.
+- Windows are `[start, end)`, aligned to five-minute boundaries. They use the
+  event's `trade_time`, with a 70-second out-of-order allowance (see the
+  [dataset analysis](../../documents/event-time-analysis.md)). A window closes
+  when its watermark reaches the end; this is event-time progress, not a
+  wall-clock timer. Empty windows produce no result.
+- A continuous stream that stops receiving events may leave its last windows
+  open. A bounded replay emits the final watermark and closes remaining windows.
+- Events arriving after their window has closed are currently dropped by Flink's
+  default zero allowed lateness. Late-event side output/metrics are not yet added.
+- Window accumulators and results use explicit serializers; generic Kryo is not
+  needed for these types.
 - The bundled defaults target the local plaintext broker. Configure authenticated
   transport and secrets before connecting to a secured deployment.
 

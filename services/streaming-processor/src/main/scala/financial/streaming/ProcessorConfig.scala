@@ -19,7 +19,7 @@ object ProcessorConfig {
     |  --starting-offsets <mode>       committed, earliest, latest (default committed)
     |  --parallelism <number>          Operator parallelism (default 1)
     |  --checkpoint-interval-ms <ms>   Checkpoint interval, at least 1000 (default 30000)
-    |  --sample-limit <number>         Events logged per sink subtask/attempt (default 5; 0 disables)
+    |  --sample-limit <number>         Completed windows logged per sink subtask/attempt (default 5; 0 disables)
     |  --bounded                      Stop at the offsets present when the job starts
     |  --help                         Show this help
     |""".stripMargin

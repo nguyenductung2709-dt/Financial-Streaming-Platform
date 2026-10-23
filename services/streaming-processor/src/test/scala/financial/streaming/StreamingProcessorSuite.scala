@@ -23,6 +23,9 @@ class StreamingProcessorSuite extends munit.FunSuite {
     val graph = env.getStreamGraph
     assertEquals(env.getCheckpointConfig.getCheckpointInterval, 30000L)
     val identifiers = graph.getStreamNodes.asScala.map(_.getTransformationUID).toSet
-    assertEquals(identifiers, Set("trade-events-source-v1", "decoded-event-inspection-v1"))
+    assertEquals(
+      identifiers,
+      Set("trade-events-source-v1", "five-minute-closing-prices-v1", "window-close-inspection-v1")
+    )
   }
 }
