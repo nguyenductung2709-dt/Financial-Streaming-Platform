@@ -8,7 +8,9 @@ import financial.streaming.sink.SampleLoggingSink
 import financial.streaming.window.WindowCloseFunction
 import financial.streaming.serialization.WindowCloseTypeInformation
 
-import financial.streaming.model.WindowClose
+import financial.streaming.ema.EmaProcessFunction
+import financial.streaming.model.{EmaResult, WindowClose}
+import financial.streaming.serialization.EmaResultTypeInformation
 import market.v1.Events.PriceEvent
 import java.time.Duration
 import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, WatermarkStrategy}
@@ -97,15 +99,29 @@ object StreamingProcessor {
       .name("five-minute-closing-prices")
       .uid("five-minute-closing-prices-v1")
 
+  private[streaming] def emaValues(
+      windows: DataStream[WindowClose]
+  ): SingleOutputStreamOperator[EmaResult] =
+    windows
+      .keyBy(
+        new KeySelector[WindowClose, String] {
+          override def getKey(window: WindowClose): String = window.symbol
+        },
+        Types.STRING
+      )
+      .process(new EmaProcessFunction, new EmaResultTypeInformation)
+      .name("window-ema-values")
+      .uid("window-ema-values-v1")
+
   // Describe the operators without submitting or executing a job.
   def buildPipeline(env: StreamExecutionEnvironment, cfg: ProcessorConfig): Unit = {
     val events = env
       .fromSource(source(cfg), priceEventWatermarks, "trade-events-source")
       .uid("trade-events-source-v1")
-    closingPrices(events)
+    emaValues(closingPrices(events))
       .sinkTo(new SampleLoggingSink(cfg.sampleLimit))
-      .name("window-close-inspection")
-      .uid("window-close-inspection-v1")
+      .name("ema-inspection")
+      .uid("ema-inspection-v1")
   }
 
   def main(args: Array[String]): Unit = {
