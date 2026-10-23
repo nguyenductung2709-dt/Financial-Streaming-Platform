@@ -1,18 +1,23 @@
 package financial.streaming
 
+import financial.streaming.model.WindowClose
 import market.v1.Events.PriceEvent
 import java.time.Duration
 import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, WatermarkStrategy}
+import org.apache.flink.api.common.typeinfo.Types
+import org.apache.flink.api.java.functions.KeySelector
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.connector.kafka.source.KafkaSource
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer
+import org.apache.flink.streaming.api.datastream.{DataStream, SingleOutputStreamOperator}
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows
 import org.apache.kafka.clients.consumer.OffsetResetStrategy
 
 object StreamingProcessor {
   private val OutOfOrdernessAllowance = Duration.ofSeconds(70)
 
-  private def priceEventWatermarks: WatermarkStrategy[PriceEvent] =
+  private[streaming] def priceEventWatermarks: WatermarkStrategy[PriceEvent] =
     WatermarkStrategy
       .forBoundedOutOfOrderness[PriceEvent](OutOfOrdernessAllowance)
       .withTimestampAssigner(new SerializableTimestampAssigner[PriceEvent] {
@@ -62,14 +67,37 @@ object StreamingProcessor {
     checkpoints.setMaxConcurrentCheckpoints(1)
   }
 
+  // UTC and fixed CEST (UTC+02) have the same five-minute boundaries.
+  private[streaming] def closingPrices(
+      events: DataStream[PriceEvent]
+  ): SingleOutputStreamOperator[WindowClose] =
+    events
+      .keyBy(
+        new KeySelector[PriceEvent, String] {
+          override def getKey(event: PriceEvent): String = event.getSymbol
+        },
+        Types.STRING
+      )
+      .window(TumblingEventTimeWindows.of(Duration.ofMinutes(5)))
+      .aggregate(
+        new ClosingPriceAggregate,
+        new WindowCloseFunction,
+        new PriceEventTypeInformation,
+        new PriceEventTypeInformation,
+        new WindowCloseTypeInformation
+      )
+      .name("five-minute-closing-prices")
+      .uid("five-minute-closing-prices-v1")
+
   // Describe the operators without submitting or executing a job.
   def buildPipeline(env: StreamExecutionEnvironment, cfg: ProcessorConfig): Unit = {
-    env
+    val events = env
       .fromSource(source(cfg), priceEventWatermarks, "trade-events-source")
       .uid("trade-events-source-v1")
+    closingPrices(events)
       .sinkTo(new SampleLoggingSink(cfg.sampleLimit))
-      .name("decoded-event-inspection")
-      .uid("decoded-event-inspection-v1")
+      .name("window-close-inspection")
+      .uid("window-close-inspection-v1")
   }
 
   def main(args: Array[String]): Unit = {

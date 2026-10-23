@@ -27,6 +27,9 @@ scalacOptions ++= Seq(
   "-Wunused:imports",
   "-Werror"
 )
+// Local Flink runtime tests need a single application classpath, outside sbt classloaders.
+Test / fork := true
+
 Compile / mainClass := Some("financial.streaming.StreamingProcessor")
 assembly / mainClass := (Compile / mainClass).value
 assembly / assemblyJarName := "streaming-processor.jar"
