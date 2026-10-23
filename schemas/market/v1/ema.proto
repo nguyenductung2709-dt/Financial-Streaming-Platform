@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package market.v1;
+
+option go_package = "financial-streaming-platform/gen/go/market/v1;marketv1";
+
+import "google/protobuf/timestamp.proto";
+
+message EmaWindow {
+    string symbol = 1;
+    google.protobuf.Timestamp window_start = 2; // Inclusive.
+    google.protobuf.Timestamp window_end = 3;   // Exclusive.
+    uint64 closing_price_micros = 4;
+    // Decimal prices, not micros; no exponent notation.
+    string ema38 = 5;
+    string ema100 = 6;
+}
