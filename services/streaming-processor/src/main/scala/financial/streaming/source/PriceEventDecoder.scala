@@ -1,4 +1,4 @@
-package financial.streaming
+package financial.streaming.source
 
 import market.v1.Events.{PriceEvent, SecurityType}
 

@@ -1,4 +1,4 @@
-package financial.streaming
+package financial.streaming.serialization
 
 import financial.streaming.model.WindowClose
 import market.v1.Events.PriceEvent

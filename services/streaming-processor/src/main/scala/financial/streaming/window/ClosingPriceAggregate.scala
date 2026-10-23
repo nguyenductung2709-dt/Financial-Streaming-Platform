@@ -1,4 +1,4 @@
-package financial.streaming
+package financial.streaming.window
 
 import market.v1.Events.PriceEvent
 import org.apache.flink.api.common.functions.AggregateFunction

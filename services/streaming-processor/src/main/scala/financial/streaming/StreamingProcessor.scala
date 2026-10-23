@@ -1,5 +1,13 @@
 package financial.streaming
 
+import financial.streaming.window.ClosingPriceAggregate
+import financial.streaming.source.PriceEventDeserializationSchema
+import financial.streaming.serialization.PriceEventTypeInformation
+import financial.streaming.config.ProcessorConfig
+import financial.streaming.sink.SampleLoggingSink
+import financial.streaming.window.WindowCloseFunction
+import financial.streaming.serialization.WindowCloseTypeInformation
+
 import financial.streaming.model.WindowClose
 import market.v1.Events.PriceEvent
 import java.time.Duration

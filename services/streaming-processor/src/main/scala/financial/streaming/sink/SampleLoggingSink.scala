@@ -1,4 +1,4 @@
-package financial.streaming
+package financial.streaming.sink
 
 import financial.streaming.model.WindowClose
 import org.apache.flink.api.connector.sink2.{Sink, SinkWriter, WriterInitContext}

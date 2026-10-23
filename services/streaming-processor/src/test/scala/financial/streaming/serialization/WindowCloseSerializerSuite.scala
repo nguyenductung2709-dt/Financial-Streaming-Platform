@@ -1,4 +1,6 @@
-package financial.streaming
+package financial.streaming.serialization
+
+import financial.streaming.source.PriceEventDecoder
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, IOException}
 import com.google.protobuf.Timestamp

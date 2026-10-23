@@ -1,4 +1,4 @@
-package financial.streaming
+package financial.streaming.window
 
 import com.google.protobuf.Timestamp
 import market.v1.Events.{PriceEvent, SecurityType}

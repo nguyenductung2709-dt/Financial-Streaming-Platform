@@ -1,4 +1,7 @@
-package financial.streaming
+package financial.streaming.window
+
+import financial.streaming.serialization.PriceEventTypeInformation
+import financial.streaming.StreamingProcessor
 
 import com.google.protobuf.Timestamp
 import financial.streaming.model.WindowClose

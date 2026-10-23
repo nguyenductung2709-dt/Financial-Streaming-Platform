@@ -1,4 +1,4 @@
-package financial.streaming
+package financial.streaming.config
 
 final case class ProcessorConfig(
     brokers: String = "redpanda-0:9092",

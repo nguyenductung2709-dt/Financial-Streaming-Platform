@@ -7,21 +7,36 @@ calculate EMA or persist business results yet.
 
 ## Code layout
 
-- `StreamingProcessor`: `main` parses options, configures Flink, calls
-  `buildPipeline`, and executes the job. `buildPipeline` only connects operators,
-  so tests can inspect the real pipeline without starting a consumer.
-- `ProcessorConfig`: command-line options and validation.
-- `PriceEventDecoder`: Protobuf parsing and event validation.
-- `PriceEventDeserializationSchema`: Kafka adapter that emits decoded events and
-  adds topic/partition/offset information to decoding errors.
-- `PriceEventTypeInformation`: Flink's internal Protobuf serializer and snapshot.
-- `ClosingPriceAggregate`: selects the latest trade timestamp in each window;
-  equal timestamps use the larger unsigned source row.
-- `WindowCloseFunction`: adds the window start and end to the selected trade.
-- `WindowCloseTypeInformation` / `WindowCloseSerializer`: explicit Flink
-  serialization for window results, including their nested Protobuf trade.
-- `SampleLoggingSink`: counts completed windows and logs a limited sample.
-  Replace this endpoint with indicator output when adding the EMA pipeline.
+Application packages live under `src/main/scala/financial/streaming/`:
+
+```text
+StreamingProcessor.scala       # Entry point and pipeline wiring
+config/
+  ProcessorConfig.scala        # Command-line options and validation
+source/
+  PriceEventDecoder.scala      # Protobuf parsing and business-field validation
+  PriceEventDeserializationSchema.scala  # Kafka decoding adapter
+window/
+  ClosingPriceAggregate.scala  # Select the closing trade
+  WindowCloseFunction.scala    # Attach window boundaries
+model/
+  WindowClose.scala            # Data passed between pipeline stages
+serialization/
+  PriceEventTypeInformation.scala  # PriceEvent type, serializer, and snapshot
+  WindowCloseSerializer.scala
+  WindowCloseTypeInformation.scala
+sink/
+  SampleLoggingSink.scala      # Count completed windows and log samples
+```
+
+Tests mirror these packages under `src/test/scala/financial/streaming/`.
+The pipeline test remains beside the entry point. Future EMA calculation and
+stateful operators belong in `ema/`.
+
+Moving the serializer snapshot classes into `serialization` changes their fully
+qualified names. Restoring older checkpoints/savepoints requires keeping their
+old snapshot classes available or migrating the state; use a fresh replay for
+this development version.
 
 ## Build and test
 

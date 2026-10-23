@@ -1,4 +1,4 @@
-package financial.streaming
+package financial.streaming.config
 
 class ProcessorConfigSuite extends munit.FunSuite {
   test("defaults resume committed offsets and bound sample logging") {

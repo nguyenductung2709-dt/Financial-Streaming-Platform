@@ -1,5 +1,7 @@
 package financial.streaming
 
+import financial.streaming.config.ProcessorConfig
+
 import org.apache.flink.api.connector.source.Boundedness
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
 import scala.jdk.CollectionConverters._
