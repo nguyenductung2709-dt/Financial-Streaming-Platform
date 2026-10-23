@@ -5,6 +5,7 @@ class ProcessorConfigSuite extends munit.FunSuite {
     val cfg = ProcessorConfig.parse(Array.empty)
     assertEquals(cfg.startingOffsets, "committed")
     assertEquals(cfg.sampleLimit, 5)
+    assertEquals(cfg.outputTopic, "ema-windows")
     assert(!cfg.bounded)
   }
   test("explicit replay configuration") {
@@ -14,6 +15,8 @@ class ProcessorConfigSuite extends munit.FunSuite {
         " a:9092, b:9092 ",
         "--topic",
         "prices",
+        "--output-topic",
+        "ema-results",
         "--group-id",
         "replay",
         "--starting-offsets",
@@ -29,12 +32,32 @@ class ProcessorConfigSuite extends munit.FunSuite {
     )
     assertEquals(
       cfg,
-      ProcessorConfig("a:9092,b:9092", "prices", "replay", "earliest", 2, 1000L, 0, true)
+      ProcessorConfig(
+        "a:9092,b:9092",
+        "prices",
+        "replay",
+        "earliest",
+        2,
+        1000L,
+        0,
+        true,
+        "ema-results"
+      )
     )
   }
   test("reject invalid arguments instead of silently using defaults") {
     Seq(
       Array("--unknown"),
+      Array("--output-topic"),
+      Array("--output-topic", " "),
+      Array("--output-topic", ".."),
+      Array("--output-topic", "contains spaces"),
+      Array("--output-topic", "a" * 250),
+      Array("--output-topic", "a", "--output-topic", "b"),
+      Array("--output-topic", "trade-events"),
+      Array("--topic", "ema-windows"),
+      Array("--topic", "same", "--output-topic", "same"),
+      Array("--output-topic", "same", "--topic", "same"),
       Array("--topic"),
       Array("--topic", ""),
       Array("--topic", ".."),
