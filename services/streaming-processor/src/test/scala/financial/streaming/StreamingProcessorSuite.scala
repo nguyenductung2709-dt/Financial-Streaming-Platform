@@ -27,7 +27,12 @@ class StreamingProcessorSuite extends munit.FunSuite {
     val identifiers = graph.getStreamNodes.asScala.map(_.getTransformationUID).toSet
     assertEquals(
       identifiers,
-      Set("trade-events-source-v1", "five-minute-closing-prices-v1", "window-close-inspection-v1")
+      Set(
+        "trade-events-source-v1",
+        "five-minute-closing-prices-v1",
+        "window-ema-values-v1",
+        "ema-inspection-v1"
+      )
     )
   }
 }

@@ -2,8 +2,9 @@
 
 Continuously consumes raw Protobuf `market.v1.PriceEvent` messages from Redpanda,
 validates them, and computes closing trades in five-minute event-time windows
-for each symbol. It logs a limited sample of completed windows; it does not
-calculate EMA or persist business results yet.
+for each symbol. Completed windows update EMA 38 and EMA 100 in keyed managed
+state. A limited sample is converted to Protobuf `market.v1.EmaWindow` and logged;
+results are not published to Redpanda yet.
 
 ## Code layout
 
@@ -20,18 +21,23 @@ window/
   ClosingPriceAggregate.scala  # Select the closing trade
   WindowCloseFunction.scala    # Attach window boundaries
 model/
-  WindowClose.scala            # Data passed between pipeline stages
+  WindowClose.scala            # Completed window and closing trade
+  EmaResult.scala              # Window and calculated EMA values
 serialization/
   PriceEventTypeInformation.scala  # PriceEvent type, serializer, and snapshot
   WindowCloseSerializer.scala
   WindowCloseTypeInformation.scala
+  EmaResultSerializer.scala
+  EmaResultTypeInformation.scala
+ema/
+  EmaProcessFunction.scala     # Per-symbol EMA 38/100 and managed state
 sink/
-  SampleLoggingSink.scala      # Count completed windows and log samples
+  EmaWindowMapper.scala        # Convert results to Protobuf
+  SampleLoggingSink.scala      # Count EMA results and log samples
 ```
 
 Tests mirror these packages under `src/test/scala/financial/streaming/`.
-The pipeline test remains beside the entry point. Future EMA calculation and
-stateful operators belong in `ema/`.
+The pipeline test remains beside the entry point.
 
 Moving the serializer snapshot classes into `serialization` changes their fully
 qualified names. Restoring older checkpoints/savepoints requires keeping their
@@ -101,10 +107,10 @@ docker compose exec jobmanager flink run -d /tmp/streaming-processor.jar \
 Do not resubmit the same continuous job repeatedly: each submission creates a
 separate Flink job. Cancel the old job before replacing it.
 
-Read sampled window results from worker logs:
+Read sampled EMA results from worker logs (timestamps are UTC):
 
 ```sh
-docker compose logs -f taskmanager
+docker compose logs -f taskmanager | rg 'EmaWindow symbol='
 ```
 
 ## Options
@@ -117,12 +123,27 @@ docker compose logs -f taskmanager
 | `--starting-offsets` | `committed` | `committed`, `earliest`, or `latest` |
 | `--parallelism` | `1` | Parallel instances per operator |
 | `--checkpoint-interval-ms` | `30000` | Checkpoint interval, minimum 1000 ms |
-| `--sample-limit` | `5` | Completed windows logged per sink subtask/attempt; zero disables |
+| `--sample-limit` | `5` | EMA results logged per sink subtask/attempt; zero disables |
 | `--bounded` | Off | Consume up to end offsets captured at source startup, then finish |
 | `--help` | | Print options without starting a job |
 
 For a one-time replay, use a distinct group, `--starting-offsets earliest`, and
 `--bounded`. This replays all retained events, not just newly produced events.
+
+## EMA flow
+
+`trade-events → decode → keyBy(symbol) → five-minute closing prices → keyBy(symbol) → EMA → logs`
+
+Both EMAs start at zero for a new symbol. Each non-empty window applies the
+course formula with `j = 38` and `j = 100`. Empty windows leave state unchanged;
+there is no daily reset. Each update uses 34 significant decimal digits with
+HALF_EVEN rounding. EMA values are in price units, not micros.
+
+Flink keeps the previous values in keyed managed state with decimal serializers.
+`EmaWindowMapper` preserves decimal precision with `toPlainString` and converts
+window boundaries to Protobuf timestamps. The log sink uses the mapper for each
+sample. `EmaResultSerializer` handles internal Flink transfers; the mapper defines
+the Protobuf output for the future Redpanda sink.
 
 ## Processing and recovery
 
@@ -140,7 +161,7 @@ For a one-time replay, use a distinct group, `--starting-offsets earliest`, and
   deliberately; automatic retries do not repair it.
 - A dedicated Protobuf serializer preserves uint64 values, including values
   beyond signed JVM Long range, and avoids generic Kryo serialization.
-- `completedPriceWindows` is a sink metric. Counts and sample limits reset on a new
+- `completedEmaWindows` is a sink metric. Counts and sample limits reset on a new
   attempt. Log samples may repeat after recovery: this inspection sink is not
   an exactly-once business output or durable storage.
 - Windows are `[start, end)`, aligned to five-minute boundaries. They use the
