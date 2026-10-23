@@ -2,13 +2,25 @@
 # Check-only pre-commit hook: verifies formatting and lint of staged service files.
 # Never rewrites files. Activate once per clone with: make setup-hooks
 # Missing tools are skipped with a warning; CI enforces the same checks.
+# Checks run against a snapshot of the index, so unstaged edits can't mask
+# unformatted staged content.
 
 set -u
 
-staged=$(git diff --cached --name-only --diff-filter=ACM)
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
 
 go_files=$(printf '%s\n' "$staged" | grep -E '^services/data-producer/.*\.go$' || true)
 scala_files=$(printf '%s\n' "$staged" | grep -E '^services/streaming-processor/.*\.(scala|sbt)$' || true)
+
+if [[ -z "$go_files" && -z "$scala_files" ]]; then
+  exit 0
+fi
+
+# Export the staged versions of all tracked files into a temporary tree.
+snapshot=$(mktemp -d)
+trap 'rm -rf "$snapshot"' EXIT
+git checkout-index --all --prefix="$snapshot/"
+cd "$snapshot" || exit 1
 
 failed=0
 
