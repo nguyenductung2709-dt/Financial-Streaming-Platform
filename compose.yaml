@@ -64,6 +64,8 @@ services:
                 valueProtoType: market.v1.PriceEvent
               - topicName: trade-events-dlq
                 valueProtoType: market.v1.RejectedRow
+              - topicName: ema-windows
+                valueProtoType: market.v1.EmaWindow
             fileSystem:
               enabled: true
               paths: ["/etc/protos"]
