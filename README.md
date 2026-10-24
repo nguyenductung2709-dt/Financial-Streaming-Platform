@@ -26,17 +26,24 @@ Pushes and pull requests run checks based on the changed paths:
 | --- | --- |
 | `services/data-producer/**` (except Markdown) | Producer formatting, lint, tests, and build |
 | `services/streaming-processor/**` (except Markdown) | Processor formatting, lint, tests, and assembly verification |
-| `schemas/**/*.proto` | All three workflows |
+| `schemas/**/*.proto` | Producer, processor, and Protobuf generation |
 | `gen/go/**` | Producer and Protobuf generation |
 | `gen/java/**` | Processor and Protobuf generation |
 | Other files under `gen/**` | Protobuf generation |
 | `go.mod`, `go.sum` | Producer and Protobuf generation |
-| `Makefile` | All three workflows |
+| `Makefile` | Producer, processor, and Protobuf generation |
+| `compose.yaml` | Infrastructure Compose configuration validation |
 | A file in `.github/workflows/` | The workflow defined by that file |
 
-Documentation-only changes and changes to local infrastructure/scripts do not
-trigger these checks. Changes spanning multiple areas run all matching workflows.
-The producer workflow also supports manual runs with `workflow_dispatch`.
+Documentation-only changes and changes to local scripts do not trigger these
+checks. Changes spanning multiple areas run all matching workflows.
+The producer and infrastructure workflows also support manual runs with
+`workflow_dispatch`.
+
+Infrastructure CI runs `docker compose -f compose.yaml config --quiet` to validate
+the Compose configuration without starting containers. This checks configuration
+validity; it does not verify image availability or service startup. Run the same
+command locally before pushing Compose changes.
 
 GitHub leaves checks pending when an entire workflow is skipped by path filters.
 If branch protection requires these checks, use job-level change detection instead
