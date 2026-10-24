@@ -41,6 +41,8 @@ services:
           rpk topic create trade-events-dlq --partitions 1 --replicas 1 -X brokers=redpanda-0:9092
         rpk topic describe ema-windows -X brokers=redpanda-0:9092 >/dev/null 2>&1 ||
           rpk topic create ema-windows --partitions 1 --replicas 1 -X brokers=redpanda-0:9092
+        rpk topic describe trade-advisories -X brokers=redpanda-0:9092 >/dev/null 2>&1 ||
+          rpk topic create trade-advisories --partitions 1 --replicas 1 -X brokers=redpanda-0:9092
 
   console:
     image: docker.redpanda.com/redpandadata/console:v3.12.0
@@ -64,6 +66,8 @@ services:
                 valueProtoType: market.v1.PriceEvent
               - topicName: trade-events-dlq
                 valueProtoType: market.v1.RejectedRow
+              - topicName: trade-advisories
+                valueProtoType: market.v1.TradeAdvisory
               - topicName: ema-windows
                 valueProtoType: market.v1.EmaWindow
             fileSystem:

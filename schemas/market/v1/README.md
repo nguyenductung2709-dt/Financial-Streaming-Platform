@@ -8,6 +8,7 @@ source of truth; regenerate language bindings rather than editing generated code
 | [events.proto](events.proto) | `market.v1.PriceEvent` | `trade-events` |
 | [dlq.proto](dlq.proto) | `market.v1.RejectedRow` | `trade-events-dlq` |
 | [ema.proto](ema.proto) | `market.v1.EmaWindow` | `ema-windows` (planned output) |
+| [advisory.proto](advisory.proto) | `market.v1.TradeAdvisory` | `trade-advisories` (planned output) |
 
 `EmaWindow` represents one symbol's completed window: `[window_start, window_end)`.
 The closing price uses integer micros; EMA values use plain decimal strings in
@@ -15,6 +16,11 @@ price units, without exponent notation. For example, a closing price of `418.21`
 is `418210000` micros, while an EMA value might be `21.44666666666666666666666666666667`.
 Use `BigDecimal.toPlainString` when encoding EMA values. The current calculation
 rounds each update to 34 significant digits with HALF_EVEN rounding.
+
+`TradeAdvisory` embeds the current `EmaWindow`, a recommended BUY/SELL action, and both previous
+EMA values as decimal price strings. An unspecified action is not a trading signal.
+The embedded window supplies the symbol, boundaries, closing price, and current
+EMA values. Previous EMAs are `"0"` when no previous state exists.
 
 ## Schema evolution
 
@@ -42,7 +48,7 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
 ```
 
 From the repository root, regenerate Go and Java code for **all `.proto` files** under
-`schemas`, including `events.proto`, `dlq.proto`, and `ema.proto`:
+`schemas`, including `events.proto`, `dlq.proto`, `ema.proto`, and `advisory.proto`:
 
 ```sh
 make generate-protobuf
