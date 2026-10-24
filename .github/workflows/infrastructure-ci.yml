@@ -1,0 +1,25 @@
+name: Infrastructure CI
+
+on:
+  push:
+    paths:
+      - 'compose.yaml'
+      - '.github/workflows/infrastructure-ci.yml'
+  pull_request:
+    paths:
+      - 'compose.yaml'
+      - '.github/workflows/infrastructure-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-compose:
+    name: Validate Compose configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        run: docker compose -f compose.yaml config --quiet
