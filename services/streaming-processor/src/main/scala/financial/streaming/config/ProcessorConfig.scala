@@ -8,13 +8,15 @@ final case class ProcessorConfig(
     parallelism: Int = 1,
     checkpointIntervalMs: Long = 30000L,
     sampleLimit: Int = 5,
-    bounded: Boolean = false
+    bounded: Boolean = false,
+    outputTopic: String = "ema-windows"
 )
 
 object ProcessorConfig {
   val usage: String = """Usage: streaming-processor [options]
     |  --brokers <addresses>           Kafka bootstrap servers (default redpanda-0:9092)
     |  --topic <name>                  Input topic (default trade-events)
+    |  --output-topic <name>          EMA output topic (default ema-windows)
     |  --group-id <name>               Consumer group (default streaming-processor)
     |  --starting-offsets <mode>       committed, earliest, latest (default committed)
     |  --parallelism <number>          Operator parallelism (default 1)
@@ -37,6 +39,7 @@ object ProcessorConfig {
           Set(
             "--brokers",
             "--topic",
+            "--output-topic",
             "--group-id",
             "--starting-offsets",
             "--parallelism",
@@ -57,12 +60,13 @@ object ProcessorConfig {
             val addresses = value.split(",", -1).map(_.trim)
             require(addresses.forall(_.nonEmpty), "brokers must not contain empty addresses")
             cfg.copy(brokers = addresses.mkString(","))
-          case "--topic" =>
+          case "--topic" | "--output-topic" =>
             require(
               value.matches("[a-zA-Z0-9._-]{1,249}") && value != "." && value != "..",
               "invalid Kafka topic name"
             )
-            cfg.copy(topic = value)
+            if (option == "--topic") cfg.copy(topic = value)
+            else cfg.copy(outputTopic = value)
           case "--group-id"         => cfg.copy(groupId = value)
           case "--starting-offsets" =>
             require(
@@ -86,6 +90,7 @@ object ProcessorConfig {
       }
       i += 1
     }
+    require(cfg.topic != cfg.outputTopic, "input and output topics must be different")
     cfg
   }
 }

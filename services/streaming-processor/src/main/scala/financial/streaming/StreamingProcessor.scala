@@ -4,7 +4,7 @@ import financial.streaming.window.ClosingPriceAggregate
 import financial.streaming.source.PriceEventDeserializationSchema
 import financial.streaming.serialization.PriceEventTypeInformation
 import financial.streaming.config.ProcessorConfig
-import financial.streaming.sink.SampleLoggingSink
+import financial.streaming.sink.{EmaRedpandaSink, SampleLoggingSink}
 import financial.streaming.window.WindowCloseFunction
 import financial.streaming.serialization.WindowCloseTypeInformation
 
@@ -118,10 +118,15 @@ object StreamingProcessor {
     val events = env
       .fromSource(source(cfg), priceEventWatermarks, "trade-events-source")
       .uid("trade-events-source-v1")
-    emaValues(closingPrices(events))
+    val results = emaValues(closingPrices(events))
+    results
       .sinkTo(new SampleLoggingSink(cfg.sampleLimit))
       .name("ema-inspection")
       .uid("ema-inspection-v1")
+    results
+      .sinkTo(EmaRedpandaSink.create(cfg.brokers, cfg.outputTopic))
+      .name("ema-redpanda-output")
+      .uid("ema-redpanda-output-v1")
   }
 
   def main(args: Array[String]): Unit = {

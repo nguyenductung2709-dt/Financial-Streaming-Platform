@@ -1,4 +1,9 @@
 .DEFAULT_GOAL := help
+FLINK_ARGS ?= --starting-offsets earliest
+PRODUCER_ARGS ?= -rate=1000
+FLINK_START_TIMEOUT ?= 120
+
+.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow
 
 .PHONY: help \
 	build-data-producer test-data-producer run-data-producer \
@@ -39,7 +44,27 @@ build-streaming-processor: ## Assemble and verify the deployment JAR, then copy 
 test-streaming-processor: ## Run the Scala processor test suite with sbt
 	cd services/streaming-processor && sbt test
 
-format-streaming-processor: ## Rewrite Scala sources, tests, and sbt files using Scalafmt
+# Build, start local infrastructure, create topics, and submit one processor job.
+run-streaming-processor: build-streaming-processor ## Build the processor, start local infrastructure, create topics, and submit a Flink job; use FLINK_ARGS="..." for job flags
+	docker compose up -d redpanda-0 console jobmanager taskmanager
+	docker compose run --rm create-topic
+	python3 scripts/submit-flink-job.py --timeout $(FLINK_START_TIMEOUT) -- $(FLINK_ARGS)
+
+# Example: make run-flow PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
+run-flow: build-data-producer ## Start the processor and publish CSV events; use PRODUCER_ARGS="..." for producer flags
+	@if [ -n "$(filter --bounded,$(FLINK_ARGS))" ]; then \
+		echo "run-flow needs a continuous Flink job; remove --bounded from FLINK_ARGS." >&2; \
+		exit 1; \
+	fi
+	$(MAKE) run-streaming-processor
+	./bin/data-producer $(PRODUCER_ARGS)
+
+# Stop the producer with Ctrl+C first. This permanently clears project topic records.
+reset-flow: ## Cancel processor jobs and permanently clear trade-events, ema-windows, and trade-events-dlq; stop the producer first
+	python3 scripts/reset-flow.py
+
+# Format Scala application/test sources and sbt build files.
+format-streaming-processor: ## Format Scala application/test sources and sbt build files
 	cd services/streaming-processor && sbt scalafmtAll scalafmtSbt
 
 lint-streaming-processor: ## Check formatting and compile application/tests with lint; does not rewrite sources

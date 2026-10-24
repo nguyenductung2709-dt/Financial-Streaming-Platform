@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package market.v1;
+
+option go_package = "financial-streaming-platform/gen/go/market/v1;marketv1";
+
+import "market/v1/ema.proto";
+
+message TradeAdvisory {
+    EmaWindow ema_window = 1;
+    AdvisoryAction action = 2;
+    // Decimal price strings, using the same format as EmaWindow EMA values.
+    string previous_ema38 = 3;
+    string previous_ema100 = 4;
+}
+
+enum AdvisoryAction {
+    ADVISORY_ACTION_UNSPECIFIED = 0;
+    ADVISORY_ACTION_BUY = 1;
+    ADVISORY_ACTION_SELL = 2;
+}
