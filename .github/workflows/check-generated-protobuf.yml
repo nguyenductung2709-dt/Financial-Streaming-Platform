@@ -2,7 +2,21 @@ name: Check generated Protobuf code
 
 on:
   push:
+    paths:
+      - 'schemas/**/*.proto'
+      - 'gen/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/check-generated-protobuf.yml'
   pull_request:
+    paths:
+      - 'schemas/**/*.proto'
+      - 'gen/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/check-generated-protobuf.yml'
 
 permissions:
   contents: read
