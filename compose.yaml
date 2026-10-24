@@ -68,6 +68,8 @@ services:
                 valueProtoType: market.v1.RejectedRow
               - topicName: trade-advisories
                 valueProtoType: market.v1.TradeAdvisory
+              - topicName: ema-windows
+                valueProtoType: market.v1.EmaWindow
             fileSystem:
               enabled: true
               paths: ["/etc/protos"]
