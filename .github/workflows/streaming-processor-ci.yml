@@ -2,7 +2,21 @@ name: Streaming processor CI
 
 on:
   push:
+    paths:
+      - 'services/streaming-processor/**'
+      - '!services/streaming-processor/**/*.md'
+      - 'gen/java/**'
+      - 'schemas/**/*.proto'
+      - 'Makefile'
+      - '.github/workflows/streaming-processor-ci.yml'
   pull_request:
+    paths:
+      - 'services/streaming-processor/**'
+      - '!services/streaming-processor/**/*.md'
+      - 'gen/java/**'
+      - 'schemas/**/*.proto'
+      - 'Makefile'
+      - '.github/workflows/streaming-processor-ci.yml'
 
 permissions:
   contents: read

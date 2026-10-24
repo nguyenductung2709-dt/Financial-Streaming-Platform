@@ -2,7 +2,25 @@ name: Data producer CI
 
 on:
   push:
+    paths:
+      - 'services/data-producer/**'
+      - '!services/data-producer/**/*.md'
+      - 'gen/go/**'
+      - 'schemas/**/*.proto'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/data-producer-ci.yml'
   pull_request:
+    paths:
+      - 'services/data-producer/**'
+      - '!services/data-producer/**/*.md'
+      - 'gen/go/**'
+      - 'schemas/**/*.proto'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/data-producer-ci.yml'
   workflow_dispatch:
 
 permissions:
