@@ -33,7 +33,7 @@ ema/
   EmaProcessFunction.scala     # Per-symbol EMA 38/100 and managed state
 sink/
   EmaWindowMapper.scala        # Convert results to Protobuf
-  SampleLoggingSink.scala      # Count EMA results and log samples
+  EmaLoggingSink.scala      # Count EMA results and log samples
 ```
 
 Tests mirror these packages under `src/test/scala/financial/streaming/`.

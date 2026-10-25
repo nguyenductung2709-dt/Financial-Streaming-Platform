@@ -6,12 +6,12 @@ import org.apache.flink.api.connector.sink2.{Sink, SinkWriter, WriterInitContext
 import org.slf4j.LoggerFactory
 
 // Diagnostic output; log samples are not checkpointed or exactly-once business output.
-final class SampleLoggingSink(limit: Int) extends Sink[EmaResult] {
+final class EmaLoggingSink(limit: Int) extends Sink[EmaResult] {
   override def createWriter(context: WriterInitContext): SinkWriter[EmaResult] = {
     val counter = context.metricGroup().counter("completedEmaWindows")
     new SinkWriter[EmaResult] {
       private var logged = 0
-      private val log = LoggerFactory.getLogger(classOf[SampleLoggingSink])
+      private val log = LoggerFactory.getLogger(classOf[EmaLoggingSink])
       override def write(result: EmaResult, ctx: SinkWriter.Context): Unit = {
         counter.inc()
         if (logged < limit) {
