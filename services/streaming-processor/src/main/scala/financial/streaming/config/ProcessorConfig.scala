@@ -9,7 +9,8 @@ final case class ProcessorConfig(
     checkpointIntervalMs: Long = 30000L,
     sampleLimit: Int = 5,
     bounded: Boolean = false,
-    outputTopic: String = "ema-windows"
+    outputTopic: String = "ema-windows",
+    advisoryTopic: String = "trade-advisories"
 )
 
 object ProcessorConfig {
@@ -17,11 +18,12 @@ object ProcessorConfig {
     |  --brokers <addresses>           Kafka bootstrap servers (default redpanda-0:9092)
     |  --topic <name>                  Input topic (default trade-events)
     |  --output-topic <name>          EMA output topic (default ema-windows)
+    |  --advisory-topic <name>         Advisory output topic (default trade-advisories)
     |  --group-id <name>               Consumer group (default streaming-processor)
     |  --starting-offsets <mode>       committed, earliest, latest (default committed)
     |  --parallelism <number>          Operator parallelism (default 1)
     |  --checkpoint-interval-ms <ms>   Checkpoint interval, at least 1000 (default 30000)
-    |  --sample-limit <number>         EMA results logged per sink subtask/attempt (default 5; 0 disables)
+    |  --sample-limit <number>         EMA/advisory results logged per sink subtask/attempt (default 5; 0 disables)
     |  --bounded                      Stop at the offsets present when the job starts
     |  --help                         Show this help
     |""".stripMargin
@@ -40,6 +42,7 @@ object ProcessorConfig {
             "--brokers",
             "--topic",
             "--output-topic",
+            "--advisory-topic",
             "--group-id",
             "--starting-offsets",
             "--parallelism",
@@ -60,13 +63,14 @@ object ProcessorConfig {
             val addresses = value.split(",", -1).map(_.trim)
             require(addresses.forall(_.nonEmpty), "brokers must not contain empty addresses")
             cfg.copy(brokers = addresses.mkString(","))
-          case "--topic" | "--output-topic" =>
+          case "--topic" | "--output-topic" | "--advisory-topic" =>
             require(
               value.matches("[a-zA-Z0-9._-]{1,249}") && value != "." && value != "..",
               "invalid Kafka topic name"
             )
             if (option == "--topic") cfg.copy(topic = value)
-            else cfg.copy(outputTopic = value)
+            else if (option == "--output-topic") cfg.copy(outputTopic = value)
+            else cfg.copy(advisoryTopic = value)
           case "--group-id"         => cfg.copy(groupId = value)
           case "--starting-offsets" =>
             require(
@@ -91,6 +95,10 @@ object ProcessorConfig {
       i += 1
     }
     require(cfg.topic != cfg.outputTopic, "input and output topics must be different")
+    require(
+      cfg.advisoryTopic != cfg.topic && cfg.advisoryTopic != cfg.outputTopic,
+      "advisory topic must differ from input and EMA output topics"
+    )
     cfg
   }
 }

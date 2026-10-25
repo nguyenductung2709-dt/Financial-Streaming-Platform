@@ -4,7 +4,12 @@ import financial.streaming.window.ClosingPriceAggregate
 import financial.streaming.source.PriceEventDeserializationSchema
 import financial.streaming.serialization.PriceEventTypeInformation
 import financial.streaming.config.ProcessorConfig
-import financial.streaming.sink.{AdvisoryLoggingSink, EmaRedpandaSink, EmaLoggingSink}
+import financial.streaming.sink.{
+  AdvisoryLoggingSink,
+  AdvisoryRedpandaSink,
+  EmaRedpandaSink,
+  EmaLoggingSink
+}
 import financial.streaming.window.WindowCloseFunction
 import financial.streaming.serialization.WindowCloseTypeInformation
 
@@ -148,6 +153,10 @@ object StreamingProcessor {
       .sinkTo(new AdvisoryLoggingSink(cfg.sampleLimit))
       .name("trade-advisories-inspection")
       .uid("trade-advisories-v1")
+    tradeAdvisoriesResults
+      .sinkTo(AdvisoryRedpandaSink.create(cfg.brokers, cfg.advisoryTopic))
+      .name("advisory-redpanda-output")
+      .uid("advisory-redpanda-output-v1")
   }
 
   def main(args: Array[String]): Unit = {

@@ -3,8 +3,9 @@
 Continuously consumes raw Protobuf `market.v1.PriceEvent` messages from Redpanda,
 validates them, and computes closing trades in five-minute event-time windows
 for each symbol. Completed windows update EMA 38 and EMA 100 in keyed managed
-state. A limited sample is converted to Protobuf `market.v1.EmaWindow` and logged;
-results are not published to Redpanda yet.
+state. Every EMA result is published as raw Protobuf `market.v1.EmaWindow` to
+`ema-windows`. Crossovers produce `market.v1.TradeAdvisory` messages on
+`trade-advisories`. Both streams also log a limited sample.
 
 ## Code layout
 
@@ -23,17 +24,26 @@ window/
 model/
   WindowClose.scala            # Completed window and closing trade
   EmaResult.scala              # Window and calculated EMA values
+  CrossoverResult.scala        # Crossover action and previous/current EMA values
 serialization/
   PriceEventTypeInformation.scala  # PriceEvent type, serializer, and snapshot
   WindowCloseSerializer.scala
   WindowCloseTypeInformation.scala
   EmaResultSerializer.scala
   EmaResultTypeInformation.scala
+  CrossoverResultSerializer.scala
+  CrossoverResultTypeInformation.scala
 ema/
   EmaProcessFunction.scala     # Per-symbol EMA 38/100 and managed state
+advisory/
+  CrossoverProcessFunction.scala  # Per-symbol BUY/SELL crossover detection
 sink/
   EmaWindowMapper.scala        # Convert results to Protobuf
-  EmaLoggingSink.scala      # Count EMA results and log samples
+  EmaLoggingSink.scala         # Count EMA results and log samples
+  EmaRedpandaSink.scala        # Publish EMA windows
+  TradeAdvisoryMapper.scala    # Convert crossovers to Protobuf
+  AdvisoryLoggingSink.scala   # Count advisories and log samples
+  AdvisoryRedpandaSink.scala   # Publish trade advisories
 ```
 
 Tests mirror these packages under `src/test/scala/financial/streaming/`.
@@ -110,7 +120,7 @@ separate Flink job. Cancel the old job before replacing it.
 Read sampled EMA results from worker logs (timestamps are UTC):
 
 ```sh
-docker compose logs -f taskmanager | rg 'EmaWindow symbol='
+docker compose logs -f taskmanager | rg 'EmaWindow symbol=|TradeAdvisory symbol='
 ```
 
 ## Options
@@ -119,11 +129,13 @@ docker compose logs -f taskmanager | rg 'EmaWindow symbol='
 | --- | --- | --- |
 | `--brokers` | `redpanda-0:9092` | Kafka bootstrap servers inside Compose |
 | `--topic` | `trade-events` | Topic containing raw PriceEvent Protobuf values |
+| `--output-topic` | `ema-windows` | Topic for raw EmaWindow Protobuf values |
+| `--advisory-topic` | `trade-advisories` | Topic for raw TradeAdvisory Protobuf values |
 | `--group-id` | `streaming-processor` | Kafka consumer group |
 | `--starting-offsets` | `committed` | `committed`, `earliest`, or `latest` |
 | `--parallelism` | `1` | Parallel instances per operator |
 | `--checkpoint-interval-ms` | `30000` | Checkpoint interval, minimum 1000 ms |
-| `--sample-limit` | `5` | EMA results logged per sink subtask/attempt; zero disables |
+| `--sample-limit` | `5` | EMA/advisory results logged per sink subtask/attempt; zero disables |
 | `--bounded` | Off | Consume up to end offsets captured at source startup, then finish |
 | `--help` | | Print options without starting a job |
 
@@ -132,7 +144,9 @@ For a one-time replay, use a distinct group, `--starting-offsets earliest`, and
 
 ## EMA flow
 
-`trade-events → decode → keyBy(symbol) → five-minute closing prices → keyBy(symbol) → EMA → logs`
+`trade-events → decode → keyBy(symbol) → five-minute closing prices → keyBy(symbol) → EMA → ema-windows + logs`
+
+`EMA → keyBy(symbol) → crossovers → trade-advisories + logs`
 
 Both EMAs start at zero for a new symbol. Each non-empty window applies the
 course formula with `j = 38` and `j = 100`. Empty windows leave state unchanged;
@@ -143,7 +157,11 @@ Flink keeps the previous values in keyed managed state with decimal serializers.
 `EmaWindowMapper` preserves decimal precision with `toPlainString` and converts
 window boundaries to Protobuf timestamps. The log sink uses the mapper for each
 sample. `EmaResultSerializer` handles internal Flink transfers; the mapper defines
-the Protobuf output for the future Redpanda sink.
+the Protobuf EMA output. The crossover operator compares each new EMA pair with
+its previous pair, emitting BUY on an upward cross and SELL on a downward cross.
+`TradeAdvisoryMapper` includes the current window, action, and previous EMA values.
+Both Redpanda sinks use UTF-8 symbol keys and at-least-once delivery; recovery or
+replay can produce duplicates. Input, EMA output, and advisory topics must differ.
 
 ## Processing and recovery
 
