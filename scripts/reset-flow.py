@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cancel local processor jobs and clear the three project topics."""
+"""Cancel local processor jobs and clear the project topics."""
 
 import json
 from pathlib import Path
@@ -11,7 +11,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
 REST_URL = "http://localhost:8081"
-TOPICS = ("trade-events", "ema-windows", "trade-events-dlq")
+TOPICS = ("trade-events", "ema-windows", "trade-advisories", "trade-events-dlq")
 TERMINAL_STATES = {"FINISHED", "FAILED", "CANCELED", "SUSPENDED"}
 
 
@@ -63,7 +63,7 @@ def main():
                 raise RuntimeError("Topics still contain records. Stop the producer and reset again.")
 
     (ROOT / "bin/streaming-processor.job-id").unlink(missing_ok=True)
-    print("Reset complete: processor stopped; trade-events, ema-windows and trade-events-dlq are empty.")
+    print(f"Reset complete: processor stopped; {', '.join(TOPICS)} are empty.")
     print("Infrastructure, topic configurations and checkpoint files are preserved.")
 
 
