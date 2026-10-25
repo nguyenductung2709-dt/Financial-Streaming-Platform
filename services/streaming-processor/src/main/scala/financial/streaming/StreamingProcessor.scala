@@ -4,13 +4,14 @@ import financial.streaming.window.ClosingPriceAggregate
 import financial.streaming.source.PriceEventDeserializationSchema
 import financial.streaming.serialization.PriceEventTypeInformation
 import financial.streaming.config.ProcessorConfig
-import financial.streaming.sink.{EmaRedpandaSink, SampleLoggingSink}
+import financial.streaming.sink.{AdvisoryLoggingSink, EmaRedpandaSink, EmaLoggingSink}
 import financial.streaming.window.WindowCloseFunction
 import financial.streaming.serialization.WindowCloseTypeInformation
 
 import financial.streaming.ema.EmaProcessFunction
-import financial.streaming.model.{EmaResult, WindowClose}
-import financial.streaming.serialization.EmaResultTypeInformation
+import financial.streaming.advisory.CrossoverProcessFunction
+import financial.streaming.model.{EmaResult, WindowClose, CrossoverResult}
+import financial.streaming.serialization.{EmaResultTypeInformation, CrossoverResultTypeInformation}
 import market.v1.Events.PriceEvent
 import java.time.Duration
 import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, WatermarkStrategy}
@@ -113,20 +114,40 @@ object StreamingProcessor {
       .name("window-ema-values")
       .uid("window-ema-values-v1")
 
+  private[streaming] def crossoverResults(
+      emaResults: DataStream[EmaResult]
+  ): SingleOutputStreamOperator[CrossoverResult] =
+    emaResults
+      .keyBy(
+        new KeySelector[EmaResult, String] {
+          override def getKey(result: EmaResult): String = result.window.symbol
+        },
+        Types.STRING
+      )
+      .process(new CrossoverProcessFunction, new CrossoverResultTypeInformation)
+      .name("trade-advisories-values")
+      .uid("trade-advisories-values-v1")
+
   // Describe the operators without submitting or executing a job.
   def buildPipeline(env: StreamExecutionEnvironment, cfg: ProcessorConfig): Unit = {
     val events = env
       .fromSource(source(cfg), priceEventWatermarks, "trade-events-source")
       .uid("trade-events-source-v1")
-    val results = emaValues(closingPrices(events))
-    results
-      .sinkTo(new SampleLoggingSink(cfg.sampleLimit))
+    val emaResults = emaValues(closingPrices(events))
+    emaResults
+      .sinkTo(new EmaLoggingSink(cfg.sampleLimit))
       .name("ema-inspection")
       .uid("ema-inspection-v1")
-    results
+    emaResults
       .sinkTo(EmaRedpandaSink.create(cfg.brokers, cfg.outputTopic))
       .name("ema-redpanda-output")
       .uid("ema-redpanda-output-v1")
+
+    val tradeAdvisoriesResults = crossoverResults(emaResults)
+    tradeAdvisoriesResults
+      .sinkTo(new AdvisoryLoggingSink(cfg.sampleLimit))
+      .name("trade-advisories-inspection")
+      .uid("trade-advisories-v1")
   }
 
   def main(args: Array[String]): Unit = {
