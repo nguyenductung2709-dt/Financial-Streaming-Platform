@@ -39,7 +39,7 @@ final class CrossoverProcessFunction
 
     /* If prevEMA38 <= prevEMA100 && currEMA38 > currEMA100 => BUY advice
       Else if prevEMA38 >= prevEMA100 && currEMA38 < currEMA100 => SELL advice
-    */
+     */
     if (previousOrder <= 0 && currentOrder > 0) {
       out.collect(
         CrossoverResult(ema, AdvisoryAction.ADVISORY_ACTION_BUY, previousShort, previousLong)
