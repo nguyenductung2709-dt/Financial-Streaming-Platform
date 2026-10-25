@@ -1,14 +1,12 @@
 package financial.streaming.advisory
 
 import financial.streaming.model.{CrossoverResult, EmaResult, WindowClose}
+import financial.streaming.serialization.CrossoverResultSerializer
 import java.math.BigDecimal
 import market.v1.Advisory.AdvisoryAction
 import market.v1.Events.PriceEvent
 import org.apache.flink.api.common.typeinfo.Types
-import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot
-import org.apache.flink.api.common.typeutils.base.TypeSerializerSingleton
 import org.apache.flink.api.java.functions.KeySelector
-import org.apache.flink.core.memory.{DataInputView, DataOutputView}
 import org.apache.flink.streaming.api.operators.KeyedProcessOperator
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness
@@ -25,7 +23,7 @@ class CrossoverProcessFunctionSuite extends munit.FunSuite {
       },
       Types.STRING
     )
-    h.setup(new OutputCopySerializer)
+    h.setup(new CrossoverResultSerializer)
     h
   }
 
@@ -192,21 +190,4 @@ class CrossoverProcessFunctionSuite extends munit.FunSuite {
     } finally original.close()
   }
 
-  // Only emitted immutable objects use identity copies; managed state uses Flink serializers.
-  private class OutputCopySerializer extends TypeSerializerSingleton[CrossoverResult] {
-    override def isImmutableType: Boolean = true
-    override def createInstance(): CrossoverResult = unsupported()
-    override def copy(value: CrossoverResult): CrossoverResult = value
-    override def copy(value: CrossoverResult, reuse: CrossoverResult): CrossoverResult = value
-    override def getLength: Int = -1
-    override def serialize(value: CrossoverResult, target: DataOutputView): Unit = unsupported()
-    override def deserialize(source: DataInputView): CrossoverResult = unsupported()
-    override def deserialize(reuse: CrossoverResult, source: DataInputView): CrossoverResult =
-      unsupported()
-    override def copy(source: DataInputView, target: DataOutputView): Unit = unsupported()
-    override def snapshotConfiguration(): TypeSerializerSnapshot[CrossoverResult] = unsupported()
-    private def unsupported(): Nothing = throw new UnsupportedOperationException(
-      "Output serialization is outside these operator tests"
-    )
-  }
 }
