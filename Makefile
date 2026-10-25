@@ -8,7 +8,7 @@ FLINK_START_TIMEOUT ?= 120
 .PHONY: help \
 	build-data-producer test-data-producer run-data-producer \
 	build-streaming-processor test-streaming-processor \
-	format-streaming-processor lint-streaming-processor \
+	formatall format-data-producer format-streaming-processor lint-streaming-processor \
 	generate-protobuf setup-hooks
 
 help: ## Show command usage; also displayed by plain make
@@ -62,6 +62,11 @@ run-flow: build-data-producer ## Start the processor and publish CSV events; use
 # Stop the producer with Ctrl+C first. This permanently clears project topic records.
 reset-flow: ## Cancel processor jobs and permanently clear trade-events, ema-windows, and trade-events-dlq; stop the producer first
 	python3 scripts/reset-flow.py
+
+formatall: format-data-producer format-streaming-processor ## Format Go sources, Scala sources, and sbt build files
+
+format-data-producer: ## Format Go producer application and test sources
+	gofmt -w services/data-producer
 
 # Format Scala application/test sources and sbt build files.
 format-streaming-processor: ## Format Scala application/test sources and sbt build files

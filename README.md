@@ -8,13 +8,17 @@ After cloning, activate the git hooks once:
 make setup-hooks
 ```
 
-The pre-commit hook checks (never rewrites) files staged from the services:
+The pre-commit hook formats staged service files:
 
-- `services/data-producer`: `gofmt -l` and `go vet`
-- `services/streaming-processor`: `scalafmtCheckAll` and `scalafmtSbtCheck` (slow: JVM startup)
+- `services/data-producer`: `gofmt -w` and `go vet`
+- `services/streaming-processor`: `scalafmtAll` and `scalafmtSbt` (slow: JVM startup)
 
-If it rejects a commit, run `gofmt -w services/data-producer` or
-`make format-streaming-processor`, re-stage the fixed files, and commit again.
+Formatting runs on a snapshot of the staged files. Formatting changes are copied
+back and re-staged only for fully staged files. If a file needs formatting and
+also has unstaged changes, the hook stops without changing your files or staging
+area. Run `make formatall`, review, and stage the intended changes before retrying.
+Already formatted staged files can still have unstaged edits.
+
 If a toolchain is missing, the hook skips that check with a warning —
 CI still enforces the full format and lint suite.
 
