@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Check-only pre-commit hook: verifies formatting and lint of staged service files.
-# Never rewrites files. Activate once per clone with: make setup-hooks
+# Format fully staged service files and check Go lint.
+# Activate once per clone with: make setup-hooks
 # Missing tools are skipped with a warning; CI enforces the same checks.
 # Checks run against a snapshot of the index, so unstaged edits can't mask
 # unformatted staged content.
 
 set -u
+
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
 
 staged=$(git diff --cached --name-only --diff-filter=ACMR)
 
@@ -19,7 +22,7 @@ fi
 # Export the staged versions of all tracked files into a temporary tree.
 snapshot=$(mktemp -d)
 trap 'rm -rf "$snapshot"' EXIT
-git checkout-index --all --prefix="$snapshot/"
+git checkout-index --all --prefix="$snapshot/" || exit 1
 cd "$snapshot" || exit 1
 
 failed=0
@@ -28,11 +31,8 @@ if [[ -n "$go_files" ]]; then
   if ! command -v gofmt >/dev/null 2>&1; then
     echo "pre-commit: gofmt not found on PATH, skipping Go format check (CI still enforces it)." >&2
   else
-    unformatted=$(printf '%s\n' "$go_files" | xargs gofmt -l)
-    if [[ -n "$unformatted" ]]; then
-      echo "pre-commit: gofmt found unformatted Go files:" >&2
-      printf '%s\n' "$unformatted" >&2
-      echo "Fix with: gofmt -w services/data-producer, then re-stage." >&2
+    if ! printf '%s\n' "$go_files" | xargs gofmt -w; then
+      echo "pre-commit: Go formatting failed." >&2
       failed=1
     fi
   fi
@@ -47,11 +47,44 @@ fi
 if [[ -n "$scala_files" ]]; then
   if ! command -v sbt >/dev/null 2>&1; then
     echo "pre-commit: sbt not found on PATH, skipping Scala format check (CI still enforces it)." >&2
-  elif ! (cd services/streaming-processor && sbt scalafmtCheckAll scalafmtSbtCheck); then
-    echo "pre-commit: scalafmt found unformatted Scala files." >&2
-    echo "Fix with: make format-streaming-processor, then re-stage." >&2
+  elif ! (cd services/streaming-processor && sbt scalafmtAll scalafmtSbt); then
+    echo "pre-commit: Scala formatting failed." >&2
+    echo "Fix with: make formatall, then re-stage." >&2
     failed=1
   fi
 fi
 
-exit "$failed"
+if [[ "$failed" -ne 0 ]]; then
+  exit "$failed"
+fi
+
+cd "$root" || exit 1
+changed=()
+while IFS= read -r file; do
+  [[ -n "$file" ]] || continue
+  if ! git show ":$file" | cmp -s - "$snapshot/$file"; then
+    changed+=("$file")
+  fi
+done < <(printf '%s\n%s\n' "$go_files" "$scala_files")
+
+if [[ ${#changed[@]} -eq 0 ]]; then
+  exit 0
+fi
+
+# Check every candidate before copying anything back.
+for file in "${changed[@]}"; do
+  if ! git diff --quiet -- "$file"; then
+    echo "pre-commit: $file needs formatting and has unstaged changes." >&2
+    echo "Run make formatall, review, and stage the intended changes before committing." >&2
+    echo "Your working files and staging area have not been changed by the hook." >&2
+    exit 1
+  fi
+done
+
+for file in "${changed[@]}"; do
+  cp "$snapshot/$file" "$file" || exit 1
+  git add -- "$file" || exit 1
+  echo "pre-commit: formatted and re-staged $file"
+done
+
+exit 0
