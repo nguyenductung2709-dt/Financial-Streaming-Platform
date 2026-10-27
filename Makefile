@@ -60,7 +60,7 @@ run-flow: build-data-producer ## Start the processor and publish CSV events; use
 	./bin/data-producer $(PRODUCER_ARGS)
 
 # Stop the producer with Ctrl+C first. This permanently clears project topic records.
-reset-flow: ## Cancel processor jobs and permanently clear trade-events, ema-windows, and trade-events-dlq; stop the producer first
+reset-flow: ## Cancel processor jobs and permanently clear trade-events, ema-windows, trade-advisories, and trade-events-dlq; stop the producer first
 	python3 scripts/reset-flow.py
 
 formatall: format-data-producer format-streaming-processor ## Format Go sources, Scala sources, and sbt build files

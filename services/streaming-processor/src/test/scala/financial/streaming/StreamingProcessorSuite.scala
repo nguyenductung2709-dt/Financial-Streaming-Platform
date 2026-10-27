@@ -33,6 +33,8 @@ class StreamingProcessorSuite extends munit.FunSuite {
         "window-ema-values-v1",
         "trade-advisories-values-v1",
         "trade-advisories-v1",
+        "advisory-redpanda-output-v1",
+        "Sink Committer: advisory-redpanda-output-v1",
         "ema-inspection-v1",
         "ema-redpanda-output-v1",
         "Sink Committer: ema-redpanda-output-v1"

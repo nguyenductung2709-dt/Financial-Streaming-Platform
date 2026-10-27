@@ -6,6 +6,7 @@ class ProcessorConfigSuite extends munit.FunSuite {
     assertEquals(cfg.startingOffsets, "committed")
     assertEquals(cfg.sampleLimit, 5)
     assertEquals(cfg.outputTopic, "ema-windows")
+    assertEquals(cfg.advisoryTopic, "trade-advisories")
     assert(!cfg.bounded)
   }
   test("explicit replay configuration") {
@@ -17,6 +18,8 @@ class ProcessorConfigSuite extends munit.FunSuite {
         "prices",
         "--output-topic",
         "ema-results",
+        "--advisory-topic",
+        "advice",
         "--group-id",
         "replay",
         "--starting-offsets",
@@ -41,13 +44,28 @@ class ProcessorConfigSuite extends munit.FunSuite {
         1000L,
         0,
         true,
-        "ema-results"
+        "ema-results",
+        "advice"
       )
     )
   }
   test("reject invalid arguments instead of silently using defaults") {
     Seq(
       Array("--unknown"),
+      Array("--advisory-topic"),
+      Array("--advisory-topic", " "),
+      Array("--advisory-topic", ".."),
+      Array("--advisory-topic", "contains spaces"),
+      Array("--advisory-topic", "a" * 250),
+      Array("--advisory-topic", "a", "--advisory-topic", "b"),
+      Array("--advisory-topic", "trade-events"),
+      Array("--advisory-topic", "ema-windows"),
+      Array("--topic", "trade-advisories"),
+      Array("--output-topic", "trade-advisories"),
+      Array("--advisory-topic", "same", "--topic", "same"),
+      Array("--topic", "same", "--advisory-topic", "same"),
+      Array("--advisory-topic", "same", "--output-topic", "same"),
+      Array("--output-topic", "same", "--advisory-topic", "same"),
       Array("--output-topic"),
       Array("--output-topic", " "),
       Array("--output-topic", ".."),
