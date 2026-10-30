@@ -33,7 +33,7 @@ def wait_for_cluster(timeout):
             overview = get_json("/overview")
             if overview.get("taskmanagers", 0) > 0 and overview.get("slots-total", 0) > 0:
                 return
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
             pass
         time.sleep(1)
     raise RuntimeError(f"Flink has no registered TaskManager slots after {timeout}s: {REST_URL}")
@@ -45,7 +45,11 @@ def wait_for_job(job_id, timeout, bounded_timeout=None, bounded=False):
     wait_timeout = bounded_timeout if bounded else timeout
     deadline = time.monotonic() + wait_timeout
     while time.monotonic() < deadline:
-        job = get_json(f"/jobs/{job_id}")
+        try:
+            job = get_json(f"/jobs/{job_id}")
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            time.sleep(1)
+            continue
         state = job["state"]
         vertices = job.get("vertices", [])
         if state == "FINISHED" and bounded:
@@ -116,6 +120,7 @@ if __name__ == "__main__":
         if error.output:
             print(error.output, file=sys.stderr, end="")
         sys.exit(error.returncode)
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except (RuntimeError, urllib.error.URLError, TimeoutError,
+            ConnectionError) as error:
         print(f"Error: {error}", file=sys.stderr)
         sys.exit(1)

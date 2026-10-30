@@ -5,9 +5,11 @@ wait_for_job is exercised over canned /jobs/{id} state sequences with a
 stubbed get_json and a fake clock (sleep advances monotonic time, so the
 1 s poll loop runs deterministically): live mode returns as soon as every
 vertex is RUNNING, while bounded mode keeps polling past RUNNING until
-FINISHED, another terminal state, or --bounded-timeout expiry. The
-argparse layer is covered via parse_args, including the
-`-- ...job args` REMAINDER shape the full-flow validation target uses.
+FINISHED, another terminal state, or --bounded-timeout expiry. Both
+wait helpers also retry through transient connection errors (a reset
+mid-response is not a URLError). The argparse layer is covered via
+parse_args, including the `-- ...job args` REMAINDER shape the
+full-flow validation target uses.
 """
 
 import contextlib
@@ -59,7 +61,10 @@ class WaitForJobTest(unittest.TestCase):
 
         def fake_get_json(path):
             self.paths.append(path)
-            return self.responses.pop(0)
+            response = self.responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
 
         self.mod.get_json = fake_get_json
 
@@ -105,6 +110,13 @@ class WaitForJobTest(unittest.TestCase):
         self.assertIn("ended with state FAILED", message)
         self.assertIn("/#/job/failedjob/overview", message)
 
+    def test_bounded_retries_transient_connection_errors(self):
+        reset = ConnectionResetError("connection reset by peer")
+        self.responses = [reset, job_payload("FINISHED")]
+        self.wait(job_id="flakyjob", timeout=120, bounded_timeout=10,
+                  bounded=True)
+        self.assertEqual(self.paths, ["/jobs/flakyjob"] * 2)
+
     def test_bounded_timeout_expiry_raises(self):
         # one RUNNING poll, then the 1 s sleep exhausts the 1 s budget
         self.responses = [job_payload("RUNNING")]
@@ -113,6 +125,39 @@ class WaitForJobTest(unittest.TestCase):
         self.assertIn("did not finish within 1s", message)
         self.assertIn("/#/job/stuckjob/overview", message)
         self.assertEqual(self.paths, ["/jobs/stuckjob"])
+
+
+class WaitForClusterTest(unittest.TestCase):
+    """wait_for_cluster retries transient connection errors."""
+
+    def setUp(self):
+        self.mod = load_module()
+        self.mod.time = FakeClock()
+        self.responses = []
+
+        def fake_get_json(path):
+            response = self.responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        self.mod.get_json = fake_get_json
+
+    def test_retries_reset_until_slots_registered(self):
+        self.responses = [ConnectionResetError("connection reset by peer"),
+                          {"taskmanagers": 1, "slots-total": 0},
+                          {"taskmanagers": 1, "slots-total": 8}]
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.mod.wait_for_cluster(120)
+        self.assertIn("Waiting for Flink", buffer.getvalue())
+
+    def test_expiry_raises_when_never_ready(self):
+        self.responses = [ConnectionResetError("connection reset by peer")]
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.mod.wait_for_cluster(0)
+        self.assertIn("no registered TaskManager slots", str(ctx.exception))
 
 
 class ParseArgsTest(unittest.TestCase):
