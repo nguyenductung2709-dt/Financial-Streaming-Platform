@@ -9,8 +9,10 @@ TopicPartition, KafkaError) lives only in the default factory.
 """
 
 import sys
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -106,6 +108,42 @@ class OffsetOrderTest(unittest.TestCase):
             "localhost:19092", "trade-events", consumer_factory=lambda _: fake)
         self.assertEqual([offset for offset, _ in records], [0, 1, 2, 3, 4])
         self.assertEqual(records, sorted(records))
+
+
+class RealConsumerAdapterTest(unittest.TestCase):
+    """_RealConsumer adapts the four-method surface to confluent-kafka.
+
+    Consumer.get_watermark_offsets (2.x) requires a TopicPartition, so the
+    adapter must forward one rather than the (topic, partition) pair.
+    confluent_kafka stays stubbed via sys.modules: the real library never
+    loads here either.
+    """
+
+    def test_watermark_query_passes_topic_partition(self):
+        seen = []
+
+        class StubTopicPartition:
+            def __init__(self, topic, partition, offset=None):
+                self.topic, self.partition = topic, partition
+
+        class StubConsumer:
+            def __init__(self, config):
+                self.config = config
+
+            def get_watermark_offsets(self, topic_partition):
+                seen.append(topic_partition)
+                return (0, 5)
+
+        stub = types.ModuleType("confluent_kafka")
+        stub.Consumer = StubConsumer
+        stub.TopicPartition = StubTopicPartition
+        with mock.patch.dict(sys.modules, {"confluent_kafka": stub}):
+            consumer = kafka_topics._default_consumer_factory(
+                "localhost:19092")
+            self.assertEqual(
+                consumer.get_watermark_offsets("trade-events", 0), (0, 5))
+            self.assertEqual(seen[0].topic, "trade-events")
+            self.assertEqual(seen[0].partition, 0)
 
 
 if __name__ == "__main__":

@@ -41,7 +41,9 @@ class _RealConsumer:
         return set() if topic_metadata is None else set(topic_metadata.partitions)
 
     def get_watermark_offsets(self, topic, partition):
-        return self._consumer.get_watermark_offsets(topic, partition)
+        from confluent_kafka import TopicPartition
+        return self._consumer.get_watermark_offsets(
+            TopicPartition(topic, partition))
 
     def assign(self, topic, partition):
         from confluent_kafka import OFFSET_BEGINNING, TopicPartition
