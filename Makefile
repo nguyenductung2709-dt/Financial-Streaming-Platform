@@ -23,7 +23,7 @@ endef
 	build-materializer test-materializer test-materializer-integration run-materializer \
 	build-streaming-processor test-streaming-processor \
 	formatall format-data-producer format-materializer format-streaming-processor lint-streaming-processor \
-	generate-protobuf setup-hooks run-postgres postgres-shell
+	generate-protobuf generate-python-protobuf setup-hooks run-postgres postgres-shell
 
 help: ## Show command usage; also displayed by plain make
 	@printf 'Run from the repository root: make <target>\n\nCommands:\n\n'
@@ -118,6 +118,9 @@ generate-protobuf: ## Regenerate gen/ bindings after schema changes; commit them
 		xargs -0 protoc -I schemas \
 			--go_out=. --go_opt=module=financial-streaming-platform \
 			--java_out=gen/java
+
+generate-python-protobuf: ## Regenerate gen/python bindings after schema changes; commit them with the schemas
+	python3 validation/generate_bindings.py
 
 setup-hooks: ## Run once after cloning to set this checkout's Git hooks path to .githooks
 	git config core.hooksPath .githooks
