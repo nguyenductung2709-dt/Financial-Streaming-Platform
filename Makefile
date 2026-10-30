@@ -2,6 +2,8 @@
 FLINK_ARGS ?= --starting-offsets earliest
 PRODUCER_ARGS ?= -rate=1000
 FLINK_START_TIMEOUT ?= 120
+RATE ?= 0
+BOUNDED_TIMEOUT ?= 3600
 
 # Load the same settings for the standalone materializer and the complete flow.
 define materializer-env
@@ -16,7 +18,7 @@ export MATERIALIZER_BROKERS="$${materializer_brokers:-$${MATERIALIZER_BROKERS-}}
 export MATERIALIZER_GROUP_ID="$${materializer_group_id:-$${MATERIALIZER_GROUP_ID-}}";
 endef
 
-.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow
+.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow infra-up run-bounded-processor compare-flow validate-flow test-validation
 
 .PHONY: help \
 	build-data-producer test-data-producer run-data-producer \
@@ -78,11 +80,33 @@ build-streaming-processor: ## Assemble and verify the deployment JAR, then copy 
 test-streaming-processor: ## Run the Scala processor test suite with sbt
 	cd services/streaming-processor && sbt test
 
-# Build, start local infrastructure, create topics, and submit one processor job.
-run-streaming-processor: build-streaming-processor ## Build the processor, start local infrastructure, create topics, and submit a Flink job; use FLINK_ARGS="..." for job flags
+infra-up: ## Start local infrastructure and create topics
 	docker compose up -d redpanda-0 console jobmanager taskmanager
 	docker compose run --rm create-topic
+
+# Build, start local infrastructure, create topics, and submit one processor job.
+run-streaming-processor: build-streaming-processor infra-up ## Build the processor, start local infrastructure, create topics, and submit a Flink job; use FLINK_ARGS="..." for job flags
 	python3 scripts/submit-flink-job.py --timeout $(FLINK_START_TIMEOUT) -- $(FLINK_ARGS)
+
+run-bounded-processor: build-streaming-processor infra-up ## Process everything currently in trade-events, then stop
+	python3 scripts/submit-flink-job.py --timeout $(FLINK_START_TIMEOUT) --bounded-timeout $(BOUNDED_TIMEOUT) -- --bounded --starting-offsets earliest
+
+compare-flow: ## Compare ema-windows and trade-advisories against the Python shadow
+	python3 validation/verify_flow.py
+
+validate-flow: ## Full validation run; CSV required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv
+	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv))
+	$(MAKE) infra-up
+	$(MAKE) reset-flow
+	$(MAKE) run-data-producer ARGS="-csvPath=$(CSV) -rate=$(RATE) -dlqEnabled"
+	$(MAKE) run-bounded-processor
+	$(MAKE) compare-flow
+
+test-validation: ## Run all Python validation and flow tests
+	for t in validation/*_test.py scripts/submit_flink_job_test.py; do \
+		echo "== $$t"; \
+		python3 $$t || exit 1; \
+	done
 
 # Example: make run-flow PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
 run-flow: build-data-producer build-materializer ## Start all local services, initialize PostgreSQL, and run the producer and materializer; use PRODUCER_ARGS="..."
