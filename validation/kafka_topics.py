@@ -8,7 +8,10 @@ a simple drain: capture the high watermark up front, consume from the
 beginning until reaching it, then re-check — a watermark that grew
 mid-read means records appeared while reading and the result would be
 silently partial, so that (and more than one partition, or a poll
-error) raises RuntimeError.
+error) raises RuntimeError.  Retention truncation is the same sin in
+two shapes — a purged segment mid-read (polled offsets skip forward)
+and a topic head already truncated (low watermark past 0) — and both
+raise RuntimeError rather than silently under-validate.
 
 The default consumer factory is the only place confluent_kafka appears;
 everything else, including these tests, drives the five plain methods
@@ -110,16 +113,25 @@ def consume_all(brokers: str, topic: str,
     RuntimeError when the topic has more than one partition, when its
     high watermark grew between the pre-read capture and the post-read
     re-check (records appeared mid-read), or when a poll fails.
+    Retention truncation also raises: a low watermark already past 0
+    (the head was purged before the run) or a polled offset skipping
+    past the expected next offset (a segment was purged mid-read) —
+    either way the read would be silently partial.
     """
     consumer = (consumer_factory or _default_consumer_factory)(brokers)
     try:
         partitions = consumer.list_topics(topic)
         if len(partitions) != 1:
             raise RuntimeError(
-                f"topic {topic!r} has {len(partitions)} partitions,"
-                " expected exactly one")
+                f"topic {topic!r} is missing or has {len(partitions)}"
+                " partitions, expected exactly one")
         partition = next(iter(partitions))
         low, high = _watermarks(consumer, topic, partition)
+        if low > 0:
+            raise RuntimeError(
+                f"topic {topic!r} head already truncated by retention:"
+                f" low watermark is {low}, not 0 (records [0, {low}) are"
+                " gone; reading now would be silently partial)")
         consumer.assign(topic, partition)
         records = []
         next_offset = low
@@ -128,6 +140,12 @@ def consume_all(brokers: str, topic: str,
             if record is None:
                 continue
             offset, value = record
+            if offset != next_offset:
+                raise RuntimeError(
+                    f"topic {topic!r} read gap: polled offset {offset},"
+                    f" expected {next_offset} (retention likely purged a"
+                    " segment mid-read; the skipped records would make"
+                    " the read silently partial)")
             records.append((offset, value))
             next_offset = offset + 1
         if _watermarks(consumer, topic, partition)[1] > high:

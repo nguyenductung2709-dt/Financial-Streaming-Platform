@@ -20,15 +20,17 @@ import kafka_topics  # noqa: E402
 
 
 class FakeConsumer:
-    """In-memory stand-in for the four methods consume_all uses.
+    """In-memory stand-in for the five methods consume_all uses.
 
-    Messages are (offset, value) pairs queued in fetch order; the high
-    watermark is last offset + 1, like the real consumer's.
+    Messages are (offset, value) pairs queued in fetch order; the low
+    watermark defaults to 0 and the high watermark is last offset + 1,
+    like the real consumer's.
     """
 
-    def __init__(self, messages=(), partitions=(0,)):
+    def __init__(self, messages=(), partitions=(0,), low=0):
         self.messages = list(messages)
         self.partitions = set(partitions)
+        self.low = low
         self.high = max((offset for offset, _ in self.messages), default=-1) + 1
         self.requested_topic = None
         self.assigned = None
@@ -39,7 +41,7 @@ class FakeConsumer:
         return self.partitions
 
     def get_watermark_offsets(self, topic, partition):
-        return (0, self.high)
+        return (self.low, self.high)
 
     def assign(self, topic, partition):
         self.assigned = (topic, partition)
@@ -95,6 +97,42 @@ class WatermarkGrowthTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             kafka_topics.consume_all(
                 "localhost:19092", "trade-events", consumer_factory=lambda _: fake)
+        self.assertTrue(fake.closed)
+
+
+class RetentionGapTest(unittest.TestCase):
+    """A purged segment mid-read: polled offsets skip forward, the
+    skipped records would be a silently partial PASS, so it raises."""
+
+    def test_offset_gap_mid_read_raises(self):
+        fake = FakeConsumer([(0, b"m0"), (2, b"m2")])  # offset 1 is gone
+        with self.assertRaises(RuntimeError) as raised:
+            kafka_topics.consume_all(
+                "localhost:19092", "trade-events", consumer_factory=lambda _: fake)
+        message = str(raised.exception)
+        self.assertIn("gap", message)
+        self.assertIn("2", message)
+        self.assertIn("1", message)
+        self.assertIn("retention", message)
+        self.assertTrue(fake.closed)
+
+
+class TruncatedHeadTest(unittest.TestCase):
+    """Retention already purged the topic head before the run: the
+    low watermark is past 0, so reading now would silently skip
+    everything before it."""
+
+    def test_nonzero_low_watermark_raises_before_any_poll(self):
+        fake = FakeConsumer([(5, b"m5")], low=5)
+        with self.assertRaises(RuntimeError) as raised:
+            kafka_topics.consume_all(
+                "localhost:19092", "trade-events", consumer_factory=lambda _: fake)
+        message = str(raised.exception)
+        self.assertIn("trade-events", message)
+        self.assertIn("low", message)
+        self.assertIn("5", message)
+        self.assertIn("retention", message)
+        self.assertIsNone(fake.assigned)  # raised before assign/poll
         self.assertTrue(fake.closed)
 
 
