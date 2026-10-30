@@ -8,7 +8,7 @@ the design's order:
   match              actual equals the keep-all shadow for that window;
   lateness_explained the drop-model shadow reproduces actual exactly
                      (what Flink should emit given watermark drops);
-  lateness_related   a window the watermark could have dropped
+  lateness_related   a window the drop model dropped events for
                      (at-risk), but the drop model does not reproduce;
   unexplained        anything else; `passed` iff this class is empty.
 

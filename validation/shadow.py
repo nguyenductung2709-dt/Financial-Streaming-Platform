@@ -16,10 +16,11 @@ bound on Flink's periodic watermarking):
   - Drop rule: an event is dropped iff its window's maxTimestamp
     `(tt_ms // WindowMs + 1) * WindowMs - 1` is <= running max - 70_000
     (note the `<=`: exactly at the watermark is late).
-  - At-risk: the same test against the FINAL max, over surviving events.
-    An event can only actually be dropped if its window maxTimestamp <=
-    final_max_tt - 70_000; a window with no at-risk events cannot mismatch
-    the keep-all shadow for watermark reasons.
+  - At-risk: the drop rule's victims.  A window in which the model
+    drops at least one event may mismatch the keep-all shadow for
+    watermark reasons (periodic watermarking can only drop fewer);
+    any other window cannot, so a mismatch there is a definite
+    failure.  at_risk_events counts the dropped events.
 
 Memory is O(windows): per-(symbol, window) close states and window keys
 are accumulated in a single pass; events are never retained.
@@ -52,8 +53,9 @@ class ShadowOutput(NamedTuple):
 
     keep_all:       every event folded in.
     drop_model:     only surviving events (per-event watermark idealization).
-    at_risk_windows: surviving-event windows that close before the final
-                    watermark; at_risk_events counts their surviving events.
+    at_risk_windows: windows the drop model dropped at least one event
+                     for; at_risk_events counts those dropped events
+                     (expected zero on near-chronological data).
     final_max_tt_ms: max event time over all events (None for zero events).
     """
 
@@ -75,11 +77,12 @@ def shadow_replay(events: Iterable[ShadowEvent]) -> ShadowOutput:
 
     The running max (over ALL events, watermark generation at the source)
     is updated before each event's drop test; keep-all accumulates every
-    event, the drop model only survivors; at-risk re-tests each surviving
-    window against the final max.
+    event, the drop model only survivors; at-risk tracks the windows
+    the drop test rejected events for.
     """
     keep_closes: dict[tuple[str, int], CloseState] = {}
     drop_closes: dict[tuple[str, int], CloseState] = {}
+    dropped: dict[tuple[str, int], int] = {}
     total_events = 0
     max_tt: int | None = None
     for ev in events:
@@ -92,16 +95,11 @@ def shadow_replay(events: Iterable[ShadowEvent]) -> ShadowOutput:
         if _window_max_tt(key[1]) > max_tt - OutOfOrdernessMs:
             drop_closes[key] = update_close(
                 drop_closes.get(key), ev.tt_ms, ev.micros, ev.order)
+        else:
+            dropped[key] = dropped.get(key, 0) + 1
     keep_all = {(r.symbol, r.window_index): r for r in replay(keep_closes)}
     drop_model = {(r.symbol, r.window_index): r for r in replay(drop_closes)}
-    if max_tt is None:
-        at_risk_windows = frozenset()
-        at_risk_events = 0
-    else:
-        deadline = max_tt - OutOfOrdernessMs
-        at_risk_windows = frozenset(
-            key for key in drop_closes if _window_max_tt(key[1]) <= deadline)
-        at_risk_events = sum(
-            drop_closes[key].event_count for key in at_risk_windows)
+    at_risk_windows = frozenset(dropped)
+    at_risk_events = sum(dropped.values())
     return ShadowOutput(keep_all, drop_model, at_risk_windows,
                         at_risk_events, total_events, max_tt)

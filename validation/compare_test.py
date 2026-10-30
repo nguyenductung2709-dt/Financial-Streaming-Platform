@@ -390,15 +390,20 @@ class BuildReportTest(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(report)), report)
 
     def test_mismatch_lists_capped_at_100_with_truncated_flag(self):
-        # 105 in-order windows: none dropped; the final watermark puts
-        # windows 0..102 (closes before final max - 70_000) at-risk, the
-        # two latest windows outside the set.
+        # 105 in-order windows, then one late event per window 0..102:
+        # those windows are at-risk (the model drops their late event),
+        # the two latest windows have no drops and stay off the set.
         events = [make_event(SYM, i * er.WindowMs + 100, 1_000_000 + i, i)
                   for i in range(105)]
+        events += [make_event(SYM, i * er.WindowMs + 50_000,
+                              1_000_000 + i, 200 + i)
+                   for i in range(103)]
         result = sh.shadow_replay(events)
+        self.assertEqual(result.at_risk_windows,
+                         {(SYM, i) for i in range(103)})
         windows, advisories = actual_from_shadow(result)
         windows = [w._replace(closing_price_micros=w.closing_price_micros + 1)
-                   for w in windows]
+                  for w in windows]
         compared = cmp.compare(windows, advisories, result)
         report = cmp.build_report(result, compared, Decimal("1e-9"), TOPICS)
         related = report["lateness_related"]

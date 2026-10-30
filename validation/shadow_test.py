@@ -2,7 +2,7 @@
 """Tests for shadow.py.
 
 Keep-all vs drop-model replay, the out-of-orderness drop rule (with its
-`<=` boundary), at-risk classification against the final max, and EMA
+`<=` boundary), at-risk tracking of the drop rule's victims, and EMA
 cross-checks against an independent exact-rational model
 (fractions.Fraction), mirroring ema_replay_test.py.
 
@@ -85,10 +85,10 @@ class LateEventTest(unittest.TestCase):
         self.assertEqual(result.keep_all[(SYM, 0)].event_count, 1)
         self.assertEqual(result.total_events, 2)
         self.assertEqual(result.final_max_tt_ms, 1_000_000)
-        # the fully-dropped window has no surviving events, so it is not
-        # at-risk (at-risk re-tests only surviving events)
-        self.assertEqual(result.at_risk_windows, frozenset())
-        self.assertEqual(result.at_risk_events, 0)
+        # the dropped event's window is at-risk (its events could differ
+        # from keep-all under periodic watermarking too)
+        self.assertEqual(result.at_risk_windows, frozenset({(SYM, 0)}))
+        self.assertEqual(result.at_risk_events, 1)
 
 
 class BoundaryTest(unittest.TestCase):
@@ -112,7 +112,8 @@ class BoundaryTest(unittest.TestCase):
         ]
         result = sh.shadow_replay(events)
         self.assertEqual(keys(result.drop_model), {(SYM, 0), (SYM, 1)})
-        self.assertEqual(result.at_risk_windows, frozenset())  # both clean
+        self.assertEqual(result.at_risk_windows, frozenset())  # no drops
+        self.assertEqual(result.at_risk_events, 0)
 
 
 class WatermarkAdvanceTest(unittest.TestCase):
@@ -146,9 +147,10 @@ class WatermarkAdvanceTest(unittest.TestCase):
         self.assertEqual(result.drop_model[(SYM, 3)].close_micros, 50_000_000)
         # w5 has only dropped events: keep-all row, no drop-model row
         self.assertEqual(result.keep_all[(SYM, 5)].event_count, 2)
-        # kept-early windows can still be at-risk against the FINAL max
-        self.assertEqual(result.at_risk_windows, {(SYM, 3)})  # 1_199_999 <= 1_930_000
-        self.assertEqual(result.at_risk_events, 1)
+        # at-risk: the windows the drop test rejected events for
+        self.assertEqual(result.at_risk_windows,
+                         {(SYM, 0), (SYM, 3), (SYM, 5)})
+        self.assertEqual(result.at_risk_events, 5)
         self.assertEqual(result.total_events, 7)
         self.assertEqual(result.final_max_tt_ms, 2_000_000)
 
@@ -178,14 +180,14 @@ class EmptyWindowCarryForwardTest(unittest.TestCase):
         # the carry is visible directly: w2's prev pair == w0's ema pair
         self.assertEqual(drop_rows[1].prev_ema38_micros, drop_rows[0].ema38_micros)
         self.assertEqual(drop_rows[1].prev_ema100_micros, drop_rows[0].ema100_micros)
-        # at-risk: w0 (1 event) and w2 (2 events) close before 1_020_000 - 70_000
-        self.assertEqual(result.at_risk_windows, {(SYM, 0), (SYM, 2)})
-        self.assertEqual(result.at_risk_events, 3)
+        # at-risk: w1's event is the only one the drop test rejects
+        self.assertEqual(result.at_risk_windows, {(SYM, 1)})
+        self.assertEqual(result.at_risk_events, 1)
         self.assertEqual(result.total_events, 5)
 
 
 class AtRiskSetTest(unittest.TestCase):
-    """At-risk flags surviving events whose windows close before final_max - 70_000."""
+    """At-risk flags the drop rule's victims; clean windows stay absent."""
 
     def test_at_risk_flags_clean_absent_and_counts_right(self):
         events = [
@@ -193,20 +195,19 @@ class AtRiskSetTest(unittest.TestCase):
             make_event(SYM, 100_000, 15_000_000, 2),      # S w0 keep
             make_event(SYM, 1_000_000, 25_000_000, 3),    # S w3 keep; max -> 1_000_000
             make_event(SYM, 120_000, 5_000_000, 4),       # S w0 drop (299_999 <= 930_000)
-            make_event(SYM, 2_000_000, 9_000_000, 5),     # S w6 keep; max -> 2_000_000
+            make_event(SYM, 2_000_000, 9_000_000, 5),      # S w6 keep; max -> 2_000_000
             make_event("BB.DE", 2_050_000, 13_000_000, 6),  # T w6 keep; max -> 2_050_000
         ]
         result = sh.shadow_replay(events)
-        # final max 2_050_000 -> deadline 1_980_000
         self.assertEqual(result.final_max_tt_ms, 2_050_000)
-        self.assertEqual(result.at_risk_windows,
-                         {(SYM, 0), (SYM, 3), ("BB.DE", 0)})
-        self.assertEqual(result.at_risk_events, 3)  # one event per at-risk window
+        # only S w0 lost an event to the drop rule
+        self.assertEqual(result.at_risk_windows, {(SYM, 0)})
+        self.assertEqual(result.at_risk_events, 1)
         self.assertEqual(result.total_events, 6)
-        # clean windows are absent: both w6 windows close after the deadline
-        for clean in [(SYM, 6), ("BB.DE", 6)]:
+        # clean windows are absent: no drop ever rejected their events
+        for clean in [(SYM, 3), (SYM, 6), ("BB.DE", 0), ("BB.DE", 6)]:
             self.assertNotIn(clean, result.at_risk_windows)
-        # the dropped S w0 event re-appears in keep-all but counts nowhere else
+        # the dropped S w0 event re-appears in keep-all only
         self.assertEqual(result.keep_all[(SYM, 0)].event_count, 2)
         self.assertEqual(result.drop_model[(SYM, 0)].event_count, 1)
 
@@ -249,7 +250,7 @@ class RandomizedAgainstSpecFormulaTest(unittest.TestCase):
 
     Reference: update max from ALL events first, then drop iff
     `(tt // WindowMs + 1) * WindowMs - 1 <= max_so_far - 70_000`; at-risk
-    is the same test against the final max, over surviving events only.
+    is the set of windows the drop test rejected events for.
     """
 
     def test_matches_reference_decisions_and_counts(self):
@@ -265,6 +266,7 @@ class RandomizedAgainstSpecFormulaTest(unittest.TestCase):
         # reference fold
         max_tt = None
         ref_keep, ref_drop = {}, {}  # key -> (close_tt, close_order, micros, count)
+        ref_dropped = {}  # key -> dropped-event count
 
         def fold(table, key, ev):
             close_tt, close_order, micros, count = table.get(
@@ -283,6 +285,9 @@ class RandomizedAgainstSpecFormulaTest(unittest.TestCase):
             wmax = (widx + 1) * er.WindowMs - 1
             if wmax > max_tt - 70_000:
                 fold(ref_drop, (ev.symbol, widx), ev)
+            else:
+                key = (ev.symbol, widx)
+                ref_dropped[key] = ref_dropped.get(key, 0) + 1
 
         result = sh.shadow_replay(events)
         self.assertEqual(result.total_events, len(events))
@@ -290,19 +295,14 @@ class RandomizedAgainstSpecFormulaTest(unittest.TestCase):
         self.assertEqual(keys(result.keep_all), set(ref_keep))
         self.assertEqual(keys(result.drop_model), set(ref_drop))
         for table, result_dict in ((ref_keep, result.keep_all),
-                                  (ref_drop, result.drop_model)):
+                                   (ref_drop, result.drop_model)):
             for key, (close_tt, close_order, micros, count) in table.items():
                 row = result_dict[key]
                 self.assertEqual(row.close_micros, micros, key)
                 self.assertEqual(row.close_order, close_order, key)
                 self.assertEqual(row.event_count, count, key)
-        deadline = max(tts) - 70_000
-        ref_at_risk = frozenset(
-            key for key in ref_drop
-            if (key[1] + 1) * er.WindowMs - 1 <= deadline)
-        self.assertEqual(result.at_risk_windows, ref_at_risk)
-        self.assertEqual(result.at_risk_events,
-                         sum(ref_drop[key][3] for key in ref_at_risk))
+        self.assertEqual(result.at_risk_windows, frozenset(ref_dropped))
+        self.assertEqual(result.at_risk_events, sum(ref_dropped.values()))
         self.assertTrue(result.at_risk_windows)  # the stream actually exercises it
         self.assertTrue(ref_drop.keys() != ref_keep.keys())  # drops happened
 
