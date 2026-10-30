@@ -15,7 +15,7 @@ docs/superpowers/plans/2026-10-30-full-flow-validation.md.
 import argparse
 import json
 import sys
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import bindings
@@ -95,6 +95,15 @@ def run(brokers: str, topics: dict[str, str], report_path: Path,
     return result
 
 
+def _tolerance_arg(text: str) -> Decimal:
+    """argparse type for --tolerance: raise ValueError (which argparse
+    turns into a clean usage error) instead of InvalidOperation."""
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        raise ValueError(f"invalid tolerance: {text!r}")
+
+
 def main(argv=None) -> int:
     """Parse the CLI args, run the validation, return 0 iff it passed."""
     parser = argparse.ArgumentParser(
@@ -107,7 +116,8 @@ def main(argv=None) -> int:
     parser.add_argument("--advisory-topic", default="trade-advisories")
     parser.add_argument("--report", default="validation/out/flow-report.json",
                         help="path of the JSON report to write")
-    parser.add_argument("--tolerance", type=Decimal, default=Decimal("1e-9"),
+    parser.add_argument("--tolerance", type=_tolerance_arg,
+                        default=Decimal("1e-9"),
                         help="EMA comparison tolerance in price units")
     args = parser.parse_args(argv)
     topics = {"events": args.events_topic, "ema": args.ema_topic,

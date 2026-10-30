@@ -19,7 +19,7 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from decimal import Decimal
 from pathlib import Path
 from unittest import mock
@@ -237,6 +237,16 @@ class MainTest(unittest.TestCase):
             self.assertEqual(code, 1)
             report = json.loads(report_path.read_text())
             self.assertFalse(report["passed"])
+
+    def test_garbage_tolerance_is_a_clean_usage_error(self):
+        # --tolerance soon must produce argparse's usage error, not a
+        # raw decimal.InvalidOperation traceback.
+        with redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as raised:
+                vf.main(["--tolerance", "soon"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("usage:", err.getvalue().lower())
+        self.assertIn("--tolerance", err.getvalue())
 
 
 if __name__ == "__main__":

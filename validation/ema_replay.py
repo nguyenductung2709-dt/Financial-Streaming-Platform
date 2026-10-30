@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Shared EMA replay for the two course project queries.
 
 Pure replay of per-(symbol, window) close states through the EMA 38/100

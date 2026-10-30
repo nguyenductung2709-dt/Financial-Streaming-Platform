@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Single import point for the generated Python protobuf bindings.
 
 gen/python holds the *_pb2.py modules generated from schemas/market/v1
