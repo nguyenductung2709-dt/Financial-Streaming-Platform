@@ -86,9 +86,11 @@ of four mismatch classes:
 - `match` - actual output equals the shadow's keep-all replay.
 - `lateness-explained` - the drop-model shadow reproduces the actual
   output exactly (watermark drops account for the difference).
-- `lateness-related` - the window differs and the drop model dropped at
-  least one of its events; periodic watermark timing can drop a subset,
-  so the residual is reported but does not fail the run.
+- `lateness-related` - the window differs, the drop model does not
+  reproduce it, but the drop model's expected row for the window differs
+  from the keep-all row (a dropped event in this window or an upstream
+  one); periodic watermark timing can drop a subset, so the residual is
+  reported but does not fail the run.
 - `unexplained` - anything else; this class fails the run.
 
 `at_risk_events` in the report counts the events the drop model drops;

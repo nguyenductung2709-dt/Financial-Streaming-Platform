@@ -4,7 +4,9 @@
 Actual-side protobuf decoding, the (symbol, window_start_ms) join
 against the shadow, per-aspect mismatch parts, the four-way
 classification (match / lateness_explained / lateness_related /
-unexplained), both directions of window-set inequality, the tolerance
+unexplained) — lateness_related driven by keep-all/drop-model row
+divergence, which covers at-risk windows and their EMA cascades —,
+both directions of window-set inequality, the tolerance
 boundary (exactly 1e-9 matches, 1.1e-9 does not), malformed records
 (empty/unparseable EMA strings, unspecified advisory action) surviving
 as unexplained mismatches instead of crashes, and the JSON report
@@ -196,7 +198,9 @@ class LatenessExplainedTest(unittest.TestCase):
 
 
 class LatenessRelatedTest(unittest.TestCase):
-    def test_mismatch_on_at_risk_window_not_reproduced_by_model(self):
+    """lateness_related = drop-model row differs from keep-all's row."""
+
+    def test_mismatch_on_divergent_at_risk_window_not_reproduced(self):
         result = sh.shadow_replay([
             make_event(SYM, 100_000, 10_000_000, 1),    # w0 keep
             make_event(SYM, 1_000_000, 50_000_000, 2),  # w3 keep; max -> 1_000_000
@@ -212,6 +216,65 @@ class LatenessRelatedTest(unittest.TestCase):
         self.assertEqual(compared.unexplained, [])
         self.assertEqual(compared.lateness_related, [
             cmp.Mismatch(SYM, 0, ("closing_price_micros 11000000 != 9000000",))])
+
+
+class CascadeRelatedTest(unittest.TestCase):
+    """A dropped event shifts the prev-pair EMA state into every later
+    window of its symbol; those cascade windows diverge from keep-all
+    with no at-risk events of their own and must classify
+    lateness_related, not unexplained."""
+
+    def late_then_later_stream(self):
+        # w0's second event arrives after w4 pushed the watermark past
+        # w0: keep-all folds it (and it wins the close), the model drops
+        # it; the different w0 close chains different EMA pairs into w3
+        # and w4 (cascade divergence), so all three windows diverge.
+        return sh.shadow_replay([
+            make_event(SYM, 100_000, 10_000_000, 1),     # w0 keep
+            make_event(SYM, 1_000_000, 50_000_000, 2),   # w3 keep
+            make_event(SYM, 150_000, 9_000_000, 3),      # w0 late -> dropped
+            make_event(SYM, 1_300_000, 20_000_000, 4),   # w4 keep
+        ])
+
+    def test_cascade_window_mismatch_is_lateness_related(self):
+        result = self.late_then_later_stream()
+        self.assertEqual(result.at_risk_windows, {(SYM, 0)})
+        self.assertNotIn((SYM, 4), result.at_risk_windows)
+        windows, advisories = actual_from_shadow(result)
+        # w4 holds no at-risk events and the drop model does not
+        # reproduce the tweak (its w4 close is the same 20M), but its
+        # row diverges from keep-all through the EMA cascade -> the
+        # mismatch is lateness-related, not a false failure.
+        windows = tweak(windows, 4 * er.WindowMs,
+                        closing_price_micros=21_000_000)
+        compared = cmp.compare(windows, advisories, result)
+        self.assertTrue(compared.passed)
+        self.assertEqual(compared.lateness_explained, [])
+        self.assertEqual(compared.unexplained, [])
+        self.assertEqual(compared.lateness_related, [
+            cmp.Mismatch(SYM, 4 * er.WindowMs,
+                         ("closing_price_micros 21000000 != 20000000",))])
+
+    def test_at_risk_window_without_row_divergence_is_unexplained(self):
+        # the dropped event loses the close race, so keep-all and
+        # drop-model rows are identical everywhere: at-risk membership
+        # alone must no longer excuse a mismatch.
+        result = sh.shadow_replay([
+            make_event(SYM, 150_000, 10_000_000, 1),   # w0 keep, wins close
+            make_event(SYM, 1_000_000, 50_000_000, 2),  # w3 keep
+            make_event(SYM, 100_000, 9_000_000, 3),    # w0 late -> dropped
+        ])
+        self.assertEqual(result.at_risk_windows, {(SYM, 0)})
+        self.assertEqual(result.drop_model[(SYM, 0)].close_micros, 10_000_000)
+        self.assertEqual(result.keep_all[(SYM, 0)].close_micros, 10_000_000)
+        windows, advisories = actual_from_shadow(result)
+        windows = tweak(windows, 0, closing_price_micros=11_000_000)
+        compared = cmp.compare(windows, advisories, result)
+        self.assertFalse(compared.passed)
+        self.assertEqual(compared.lateness_explained, [])
+        self.assertEqual(compared.lateness_related, [])
+        self.assertEqual(compared.unexplained, [
+            cmp.Mismatch(SYM, 0, ("closing_price_micros 11000000 != 10000000",))])
 
 
 class UnexplainedTest(unittest.TestCase):
@@ -390,24 +453,31 @@ class BuildReportTest(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(report)), report)
 
     def test_mismatch_lists_capped_at_100_with_truncated_flag(self):
-        # 105 in-order windows, then one late event per window 0..102:
-        # those windows are at-risk (the model drops their late event),
-        # the two latest windows have no drops and stay off the set.
-        events = [make_event(SYM, i * er.WindowMs + 100, 1_000_000 + i, i)
-                  for i in range(105)]
+        # OTHER's two clean windows arrive first (the watermark is
+        # global; later arrivals at old event times would be dropped),
+        # then 105 in-order SYM windows and one late event per window
+        # 0..102 with a higher price: keep-all folds the late event (and
+        # it wins the close), the model drops it, so windows 0..102
+        # diverge directly and 103-104 through the EMA cascade.  Every
+        # SYM close is tweaked +1 -> 105 lateness_related (capped,
+        # truncated); OTHER's non-divergent tweaks stay unexplained.
+        events = [make_event(OTHER, 10_000, 5_000_000, 0),
+                  make_event(OTHER, 310_000, 5_000_000, 1)]
+        events += [make_event(SYM, i * er.WindowMs + 100, 1_000_000 + i, 2 + i)
+                   for i in range(105)]
         events += [make_event(SYM, i * er.WindowMs + 50_000,
-                              1_000_000 + i, 200 + i)
+                              2_000_000 + i, 200 + i)
                    for i in range(103)]
         result = sh.shadow_replay(events)
         self.assertEqual(result.at_risk_windows,
                          {(SYM, i) for i in range(103)})
         windows, advisories = actual_from_shadow(result)
         windows = [w._replace(closing_price_micros=w.closing_price_micros + 1)
-                  for w in windows]
+                   for w in windows]
         compared = cmp.compare(windows, advisories, result)
         report = cmp.build_report(result, compared, Decimal("1e-9"), TOPICS)
         related = report["lateness_related"]
-        self.assertEqual(related["count"], 103)
+        self.assertEqual(related["count"], 105)
         self.assertTrue(related["truncated"])
         self.assertEqual(len(related["windows"]), 100)
         self.assertEqual(related["windows"][0]["window_start_ms"], 0)
@@ -416,12 +486,12 @@ class BuildReportTest(unittest.TestCase):
         self.assertEqual(unexplained["count"], 2)
         self.assertFalse(unexplained["truncated"])
         self.assertEqual(len(unexplained["windows"]), 2)
-        # the unexplained class holds the two latest windows (103, 104),
-        # sorted by window start
-        self.assertEqual(unexplained["windows"][0]["window_start_ms"],
-                         103 * er.WindowMs)
+        # the unexplained class holds OTHER's two clean windows, sorted
+        # by window start
+        self.assertEqual(unexplained["windows"][0]["symbol"], OTHER)
+        self.assertEqual(unexplained["windows"][0]["window_start_ms"], 0)
         self.assertEqual(unexplained["windows"][0]["parts"],
-                         ["closing_price_micros 1000104 != 1000103"])
+                        ["closing_price_micros 5000001 != 5000000"])
         self.assertFalse(report["passed"])
         json.loads(json.dumps(report))
 

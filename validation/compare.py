@@ -8,8 +8,10 @@ the design's order:
   match              actual equals the keep-all shadow for that window;
   lateness_explained the drop-model shadow reproduces actual exactly
                      (what Flink should emit given watermark drops);
-  lateness_related   a window the drop model dropped events for
-                     (at-risk), but the drop model does not reproduce;
+  lateness_related   the drop model's expected row for the window
+                      differs from the keep-all row (a dropped event
+                      in this window or an upstream one), but the drop
+                      model does not reproduce actual;
   unexplained        anything else; `passed` iff this class is empty.
 
 Set inequality in both directions is a mismatch: a shadow window with no
@@ -164,6 +166,40 @@ def _window_diff(window: ActualEmaWindow | None, advisory: ActualAdvisory | None
     return tuple(parts)
 
 
+def _row_as_actuals(row) -> tuple[ActualEmaWindow, ActualAdvisory | None]:
+    """One shadow WindowResult re-encoded as the actual-side pair."""
+    window = ActualEmaWindow(row.symbol, row.window_index * WindowMs,
+                             row.close_micros,
+                             row.ema38_micros / MICROS,
+                             row.ema100_micros / MICROS)
+    advisory = (None if row.advisory == "" else
+                ActualAdvisory(row.symbol, row.window_index * WindowMs,
+                               row.advisory,
+                               row.prev_ema38_micros / MICROS,
+                               row.prev_ema100_micros / MICROS))
+    return window, advisory
+
+
+def _model_diverges(shadow, shadow_key, tolerance: Decimal) -> bool:
+    """True when the drop model's row for a window differs from keep-all's.
+
+    That is the complete set of windows where actual can legitimately
+    sit between the two models: Flink's periodic watermarking drops a
+    subset of the model's drops, and row equality propagates through
+    the replay.  A drop-model row absent while keep-all has one (every
+    event of the window dropped) counts as divergent (absent vs
+    present); the comparison covers exactly the aspects _window_diff
+    compares: close micros, EMA38/EMA100, and advisory
+    presence/action/prev pair.
+    """
+    keep_row = shadow.keep_all.get(shadow_key)
+    drop_row = shadow.drop_model.get(shadow_key)
+    if keep_row is None or drop_row is None:
+        return keep_row is not drop_row
+    window, advisory = _row_as_actuals(drop_row)
+    return bool(_window_diff(window, advisory, keep_row, tolerance))
+
+
 def compare(ema_actual: list[ActualEmaWindow],
             advisories_actual: list[ActualAdvisory],
             shadow, tolerance: Decimal = Decimal("1e-9")) -> CompareResult:
@@ -172,8 +208,8 @@ def compare(ema_actual: list[ActualEmaWindow],
     The union is keyed over (symbol, window_start_ms); a shadow window's
     start is window_index * WindowMs.  Classification order: keep-all
     match, then drop-model reproduction (lateness_explained), then
-    at-risk membership (lateness_related), else unexplained.  `passed`
-    iff unexplained is empty.
+    keep-all/drop-model row divergence (lateness_related), else
+    unexplained.  `passed` iff unexplained is empty.
     """
     windows = {(w.symbol, w.window_start_ms): w for w in ema_actual}
     advisories = {(a.symbol, a.window_start_ms): a for a in advisories_actual}
@@ -186,15 +222,15 @@ def compare(ema_actual: list[ActualEmaWindow],
         window = windows.get(key)
         advisory = advisories.get(key)
         parts = _window_diff(window, advisory,
-                             shadow.keep_all.get(shadow_key), tolerance)
+                              shadow.keep_all.get(shadow_key), tolerance)
         if not parts:
             matched += 1
             continue
         mismatch = Mismatch(key[0], key[1], parts)
         if not _window_diff(window, advisory,
-                            shadow.drop_model.get(shadow_key), tolerance):
+                           shadow.drop_model.get(shadow_key), tolerance):
             explained.append(mismatch)
-        elif shadow_key in shadow.at_risk_windows:
+        elif _model_diverges(shadow, shadow_key, tolerance):
             related.append(mismatch)
         else:
             unexplained.append(mismatch)

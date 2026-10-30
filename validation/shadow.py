@@ -18,9 +18,14 @@ bound on Flink's periodic watermarking):
     (note the `<=`: exactly at the watermark is late).
   - At-risk: the drop rule's victims.  A window in which the model
     drops at least one event may mismatch the keep-all shadow for
-    watermark reasons (periodic watermarking can only drop fewer);
-    any other window cannot, so a mismatch there is a definite
-    failure.  at_risk_events counts the dropped events.
+    watermark reasons (periodic watermarking can only drop fewer),
+    and so may any later window of the same symbol: a drop shifts
+    the prev-pair EMA state that cascades through the replay.
+    compare.py drives its lateness_related class from the wider
+    keep-all/drop-model row divergence set, which covers both the
+    directly-hit windows and their cascades.  at_risk_windows reports
+    only the directly-hit windows; at_risk_events counts the dropped
+    events.
 
 Memory is O(windows): per-(symbol, window) close states and window keys
 are accumulated in a single pass; events are never retained.
