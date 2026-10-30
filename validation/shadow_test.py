@@ -281,7 +281,7 @@ class RandomizedAgainstSpecFormulaTest(unittest.TestCase):
             widx = ev.tt_ms // er.WindowMs
             fold(ref_keep, (ev.symbol, widx), ev)
             wmax = (widx + 1) * er.WindowMs - 1
-            if wmax > max_tt - sh.OutOfOrdernessMs:
+            if wmax > max_tt - 70_000:
                 fold(ref_drop, (ev.symbol, widx), ev)
 
         result = sh.shadow_replay(events)
@@ -296,7 +296,7 @@ class RandomizedAgainstSpecFormulaTest(unittest.TestCase):
                 self.assertEqual(row.close_micros, micros, key)
                 self.assertEqual(row.close_order, close_order, key)
                 self.assertEqual(row.event_count, count, key)
-        deadline = max(tts) - sh.OutOfOrdernessMs
+        deadline = max(tts) - 70_000
         ref_at_risk = frozenset(
             key for key in ref_drop
             if (key[1] + 1) * er.WindowMs - 1 <= deadline)
