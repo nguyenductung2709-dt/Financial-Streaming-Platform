@@ -103,7 +103,7 @@ validate-flow: ## Full validation run; CSV required, e.g. make validate-flow CSV
 	$(MAKE) compare-flow
 
 test-validation: ## Run all Python validation and flow tests
-	for t in validation/*_test.py scripts/submit_flink_job_test.py; do \
+	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py; do \
 		echo "== $$t"; \
 		python3 $$t || exit 1; \
 	done
@@ -117,7 +117,7 @@ run-flow: build-data-producer build-materializer ## Start all local services, in
 	@$(materializer-env) exec python3 scripts/flow.py -- $(PRODUCER_ARGS)
 
 # This permanently clears project topic records and materialized database results.
-reset-flow: build-materializer ## Stop the managed flow, cancel Flink, and clear project topics, consumer offsets, and PostgreSQL results
+reset-flow: build-materializer ## Stop the managed flow, cancel Flink, recreate the project topics empty, and clear consumer offsets and PostgreSQL results
 	@$(materializer-env) exec python3 scripts/reset-flow.py
 
 formatall: format-data-producer format-materializer format-streaming-processor ## Format Go sources, Scala sources, and sbt build files
