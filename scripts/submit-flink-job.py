@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Submit the local processor after Flink is ready, then wait for its tasks."""
+"""Submit the local processor after Flink is ready, then wait for its tasks.
+
+With a --bounded job arg, instead wait for the run to reach FINISHED
+within --bounded-timeout seconds."""
 
 import argparse
 import json
@@ -36,36 +39,46 @@ def wait_for_cluster(timeout):
     raise RuntimeError(f"Flink has no registered TaskManager slots after {timeout}s: {REST_URL}")
 
 
-def wait_for_job(job_id, timeout, bounded):
-    print(f"Waiting for job {job_id} to start...", flush=True)
-    deadline = time.monotonic() + timeout
+def wait_for_job(job_id, timeout, bounded_timeout=None, bounded=False):
+    goal = "finish" if bounded else "start"
+    print(f"Waiting for job {job_id} to {goal}...", flush=True)
+    wait_timeout = bounded_timeout if bounded else timeout
+    deadline = time.monotonic() + wait_timeout
     while time.monotonic() < deadline:
         job = get_json(f"/jobs/{job_id}")
         state = job["state"]
         vertices = job.get("vertices", [])
-        if state == "RUNNING" and vertices and all(
-            vertex.get("tasks", {}).get("RUNNING", 0) == vertex["parallelism"]
-            for vertex in vertices
-        ):
-            return
         if state == "FINISHED" and bounded:
             return
         if state in TERMINAL_STATES:
             raise RuntimeError(f"Job {job_id} ended with state {state}; inspect {REST_URL}/#/job/{job_id}/overview")
+        if not bounded and state == "RUNNING" and vertices and all(
+            vertex.get("tasks", {}).get("RUNNING", 0) == vertex["parallelism"]
+            for vertex in vertices
+        ):
+            return
         time.sleep(1)
-    raise RuntimeError(f"Job {job_id} did not start within {timeout}s; inspect {REST_URL}/#/job/{job_id}/overview")
+    raise RuntimeError(f"Job {job_id} did not {goal} within {wait_timeout}s; inspect {REST_URL}/#/job/{job_id}/overview")
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--bounded-timeout", type=int, default=3600)
+    parser.add_argument("job_args", nargs=argparse.REMAINDER)
+    options = parser.parse_args(argv)
+    if options.timeout <= 0:
+        parser.error("timeout must be positive")
+    if options.bounded_timeout <= 0:
+        parser.error("bounded-timeout must be positive")
+    if options.job_args[:1] == ["--"]:
+        options.job_args = options.job_args[1:]
+    return options
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--timeout", type=int, default=120)
-    parser.add_argument("job_args", nargs=argparse.REMAINDER)
-    options = parser.parse_args()
-    if options.timeout <= 0:
-        parser.error("timeout must be positive")
+    options = parse_args()
     job_args = options.job_args
-    if job_args[:1] == ["--"]:
-        job_args = job_args[1:]
 
     wait_for_cluster(options.timeout)
     active = [job for job in get_json("/jobs/overview")["jobs"]
@@ -88,8 +101,12 @@ def main():
         raise RuntimeError("Flink did not return a job ID; check the submission output above")
     job_id = match.group(1)
     (ROOT / "bin/streaming-processor.job-id").write_text(job_id + "\n")
-    wait_for_job(job_id, options.timeout, bounded="--bounded" in job_args)
-    print(f"Processor ready: {REST_URL}/#/job/{job_id}/overview", flush=True)
+    bounded = "--bounded" in job_args
+    wait_for_job(job_id, options.timeout,
+                 bounded_timeout=options.bounded_timeout if bounded else None,
+                 bounded=bounded)
+    status = "Bounded run finished" if bounded else "Processor ready"
+    print(f"{status}: {REST_URL}/#/job/{job_id}/overview", flush=True)
 
 
 if __name__ == "__main__":
