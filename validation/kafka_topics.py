@@ -11,11 +11,16 @@ silently partial, so that (and more than one partition, or a poll
 error) raises RuntimeError.
 
 The default consumer factory is the only place confluent_kafka appears;
-everything else, including these tests, drives the four plain methods
-(list_topics, get_watermark_offsets, assign, poll) on an injected fake.
+everything else, including these tests, drives the five plain methods
+(list_topics, get_watermark_offsets, assign, poll, close) on an injected
+fake.
 """
 
+import time
+
 POLL_TIMEOUT_S = 1.0
+WATERMARK_ATTEMPTS = 5
+WATERMARK_BACKOFF_S = 0.5
 
 
 class _RealConsumer:
@@ -41,9 +46,27 @@ class _RealConsumer:
         return set() if topic_metadata is None else set(topic_metadata.partitions)
 
     def get_watermark_offsets(self, topic, partition):
-        from confluent_kafka import TopicPartition
-        return self._consumer.get_watermark_offsets(
-            TopicPartition(topic, partition))
+        """Retry transient failures; the query is otherwise one-shot.
+
+        A fresh consumer's one-shot query can race its own broker
+        connection bring-up (e.g. an advertised name that resolves to a
+        refused address first) and fail with a local transport error
+        even though the broker is fine; metadata and fetches retry
+        internally, this query does not.
+        """
+        from confluent_kafka import KafkaError, KafkaException, TopicPartition
+        transient = {KafkaError._ALL_BROKERS_DOWN,
+                     KafkaError._DESTROY_BROKER,
+                     KafkaError._TRANSPORT}
+        for attempt in range(WATERMARK_ATTEMPTS):
+            try:
+                return self._consumer.get_watermark_offsets(
+                    TopicPartition(topic, partition))
+            except KafkaException as error:
+                if (attempt == WATERMARK_ATTEMPTS - 1
+                        or error.args[0].code() not in transient):
+                    raise
+                time.sleep(WATERMARK_BACKOFF_S)
 
     def assign(self, topic, partition):
         from confluent_kafka import OFFSET_BEGINNING, TopicPartition
@@ -59,6 +82,9 @@ class _RealConsumer:
                 f"kafka poll error on {message.topic()}[{message.partition()}]:"
                 f" {error}")
         return (message.offset(), message.value())
+
+    def close(self):
+        self._consumer.close()
 
 
 def _default_consumer_factory(brokers):
@@ -86,25 +112,28 @@ def consume_all(brokers: str, topic: str,
     re-check (records appeared mid-read), or when a poll fails.
     """
     consumer = (consumer_factory or _default_consumer_factory)(brokers)
-    partitions = consumer.list_topics(topic)
-    if len(partitions) != 1:
-        raise RuntimeError(
-            f"topic {topic!r} has {len(partitions)} partitions,"
-            " expected exactly one")
-    partition = next(iter(partitions))
-    low, high = _watermarks(consumer, topic, partition)
-    consumer.assign(topic, partition)
-    records = []
-    next_offset = low
-    while next_offset < high:
-        record = consumer.poll(POLL_TIMEOUT_S)
-        if record is None:
-            continue
-        offset, value = record
-        records.append((offset, value))
-        next_offset = offset + 1
-    if _watermarks(consumer, topic, partition)[1] > high:
-        raise RuntimeError(
-            f"topic {topic!r} is not quiescent: high watermark grew past"
-            f" {high} during the read")
-    return records
+    try:
+        partitions = consumer.list_topics(topic)
+        if len(partitions) != 1:
+            raise RuntimeError(
+                f"topic {topic!r} has {len(partitions)} partitions,"
+                " expected exactly one")
+        partition = next(iter(partitions))
+        low, high = _watermarks(consumer, topic, partition)
+        consumer.assign(topic, partition)
+        records = []
+        next_offset = low
+        while next_offset < high:
+            record = consumer.poll(POLL_TIMEOUT_S)
+            if record is None:
+                continue
+            offset, value = record
+            records.append((offset, value))
+            next_offset = offset + 1
+        if _watermarks(consumer, topic, partition)[1] > high:
+            raise RuntimeError(
+                f"topic {topic!r} is not quiescent: high watermark grew past"
+                f" {high} during the read")
+        return records
+    finally:
+        consumer.close()

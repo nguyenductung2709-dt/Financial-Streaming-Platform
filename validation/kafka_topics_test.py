@@ -32,6 +32,7 @@ class FakeConsumer:
         self.high = max((offset for offset, _ in self.messages), default=-1) + 1
         self.requested_topic = None
         self.assigned = None
+        self.closed = False
 
     def list_topics(self, topic):
         self.requested_topic = topic
@@ -47,6 +48,9 @@ class FakeConsumer:
         if not self.messages:
             return None
         return self.messages.pop(0)
+
+    def close(self):
+        self.closed = True
 
 
 class GrowingConsumer(FakeConsumer):
@@ -74,6 +78,7 @@ class HappyPathTest(unittest.TestCase):
         self.assertEqual(factory_brokers, ["localhost:19092"])
         self.assertEqual(fake.requested_topic, "trade-events")
         self.assertEqual(fake.assigned, ("trade-events", 0))
+        self.assertTrue(fake.closed)
 
 
 class EmptyTopicTest(unittest.TestCase):
@@ -90,6 +95,7 @@ class WatermarkGrowthTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             kafka_topics.consume_all(
                 "localhost:19092", "trade-events", consumer_factory=lambda _: fake)
+        self.assertTrue(fake.closed)
 
 
 class MultiPartitionTest(unittest.TestCase):
@@ -111,16 +117,32 @@ class OffsetOrderTest(unittest.TestCase):
 
 
 class RealConsumerAdapterTest(unittest.TestCase):
-    """_RealConsumer adapts the four-method surface to confluent-kafka.
+    """_RealConsumer adapts the five-method surface to confluent-kafka.
 
     Consumer.get_watermark_offsets (2.x) requires a TopicPartition, so the
-    adapter must forward one rather than the (topic, partition) pair.
-    confluent_kafka stays stubbed via sys.modules: the real library never
-    loads here either.
+    adapter must forward one rather than the (topic, partition) pair; a
+    transient failure of the otherwise one-shot query (local transport
+    error while the broker connection races bring-up) is retried, while a
+    permanent error surfaces immediately.  confluent_kafka stays stubbed
+    via sys.modules: the real library never loads here either.
     """
 
-    def test_watermark_query_passes_topic_partition(self):
+    def _stub(self, responses):
         seen = []
+
+        class StubKafkaError:
+            _ALL_BROKERS_DOWN = -151
+            _DESTROY_BROKER = -137
+            _TRANSPORT = -195
+
+            def __init__(self, code):
+                self._code = code
+
+            def code(self):
+                return self._code
+
+        class StubKafkaException(Exception):
+            pass
 
         class StubTopicPartition:
             def __init__(self, topic, partition, offset=None):
@@ -132,11 +154,23 @@ class RealConsumerAdapterTest(unittest.TestCase):
 
             def get_watermark_offsets(self, topic_partition):
                 seen.append(topic_partition)
-                return (0, 5)
+                response = responses.pop(0)
+                if isinstance(response, Exception):
+                    raise response
+                return response
+
+            def close(self):
+                pass
 
         stub = types.ModuleType("confluent_kafka")
         stub.Consumer = StubConsumer
         stub.TopicPartition = StubTopicPartition
+        stub.KafkaException = StubKafkaException
+        stub.KafkaError = StubKafkaError
+        return stub, seen
+
+    def test_watermark_query_passes_topic_partition(self):
+        stub, seen = self._stub([(0, 5)])
         with mock.patch.dict(sys.modules, {"confluent_kafka": stub}):
             consumer = kafka_topics._default_consumer_factory(
                 "localhost:19092")
@@ -144,6 +178,32 @@ class RealConsumerAdapterTest(unittest.TestCase):
                 consumer.get_watermark_offsets("trade-events", 0), (0, 5))
             self.assertEqual(seen[0].topic, "trade-events")
             self.assertEqual(seen[0].partition, 0)
+
+    def test_watermark_query_retries_transient_failure(self):
+        responses = [None, None, (0, 5)]
+        stub, seen = self._stub(responses)
+        for attempt in (0, 1):
+            responses[attempt] = stub.KafkaException(
+                type("error", (), {"code": lambda self: -195})())
+        with mock.patch.dict(sys.modules, {"confluent_kafka": stub}):
+            with mock.patch.object(kafka_topics.time, "sleep"):
+                consumer = kafka_topics._default_consumer_factory(
+                    "localhost:19092")
+                self.assertEqual(
+                    consumer.get_watermark_offsets("trade-events", 0), (0, 5))
+                self.assertEqual(len(seen), 3)
+
+    def test_watermark_query_raises_permanent_error_immediately(self):
+        responses = [None, (0, 5)]
+        stub, seen = self._stub(responses)
+        responses[0] = stub.KafkaException(
+            type("error", (), {"code": lambda self: -3})())
+        with mock.patch.dict(sys.modules, {"confluent_kafka": stub}):
+            consumer = kafka_topics._default_consumer_factory(
+                "localhost:19092")
+            with self.assertRaises(stub.KafkaException):
+                consumer.get_watermark_offsets("trade-events", 0)
+            self.assertEqual(len(seen), 1)
 
 
 if __name__ == "__main__":
