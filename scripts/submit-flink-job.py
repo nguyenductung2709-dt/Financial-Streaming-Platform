@@ -56,13 +56,19 @@ def wait_for_job(job_id, timeout, bounded):
     raise RuntimeError(f"Job {job_id} did not start within {timeout}s; inspect {REST_URL}/#/job/{job_id}/overview")
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--restore-from", help="Checkpoint/savepoint URI accessible inside the Flink containers")
     parser.add_argument("job_args", nargs=argparse.REMAINDER)
-    options = parser.parse_args()
+    options = parser.parse_args(argv)
     if options.timeout <= 0:
         parser.error("timeout must be positive")
+    restore_from = options.restore_from
+    if restore_from is not None:
+        restore_from = restore_from.strip()
+        if not restore_from:
+            parser.error("--restore-from must not be empty")
     job_args = options.job_args
     if job_args[:1] == ["--"]:
         job_args = job_args[1:]
@@ -78,8 +84,11 @@ def main():
         "docker", "compose", "cp", "bin/streaming-processor.jar",
         "jobmanager:/tmp/streaming-processor.jar",
     ], cwd=ROOT, check=True)
+    restore_args = ["--fromSavepoint", restore_from] if restore_from else []
+    if restore_from:
+        print(f"Restoring processor state from: {restore_from}", flush=True)
     submitted = subprocess.run([
-        "docker", "compose", "exec", "-T", "jobmanager", "flink", "run", "-d",
+        "docker", "compose", "exec", "-T", "jobmanager", "flink", "run", "-d", *restore_args,
         "/tmp/streaming-processor.jar", *job_args,
     ], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True)
     print(submitted.stdout, end="", flush=True)

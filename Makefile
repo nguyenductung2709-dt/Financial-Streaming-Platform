@@ -2,8 +2,13 @@
 FLINK_ARGS ?= --starting-offsets earliest
 PRODUCER_ARGS ?= -rate=1000
 FLINK_START_TIMEOUT ?= 120
+FLINK_HA ?= 0
+ifeq ($(FLINK_HA),1)
+export COMPOSE_FILE := compose.yaml:compose.ha.yaml
+endif
+FLINK_RESTORE_PATH ?=
 
-.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow
+.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow restore-streaming-processor test-flink-scripts
 
 .PHONY: help \
 	build-data-producer test-data-producer run-data-producer \
@@ -19,6 +24,8 @@ help: ## Show command usage; also displayed by plain make
 		'  make run-data-producer ARGS="-help"' \
 		'  make run-data-producer ARGS="-dlqEnabled -maxEvents=100"' \
 		'  make run-data-producer ARGS="-csvPath=/path/to/trades.csv -brokers=localhost:19092"' \
+		'' \
+		'Optional automatic Flink recovery: append FLINK_HA=1 (see services/streaming-processor/README.md).' \
 		'' \
 		'Requirements:' \
 		'  Producer: Go; race tests also require cgo and a C compiler.' \
@@ -48,7 +55,17 @@ test-streaming-processor: ## Run the Scala processor test suite with sbt
 run-streaming-processor: build-streaming-processor ## Build the processor, start local infrastructure, create topics, and submit a Flink job; use FLINK_ARGS="..." for job flags
 	docker compose up -d redpanda-0 console jobmanager taskmanager
 	docker compose run --rm create-topic
-	python3 scripts/submit-flink-job.py --timeout $(FLINK_START_TIMEOUT) -- $(FLINK_ARGS)
+	python3 scripts/submit-flink-job.py --timeout $(FLINK_START_TIMEOUT) $(if $(strip $(FLINK_RESTORE_PATH)),--restore-from "$(FLINK_RESTORE_PATH)") -- $(FLINK_ARGS)
+
+restore-streaming-processor: ## Restore the processor; requires FLINK_RESTORE_PATH=file:///opt/flink/state/checkpoints/.../chk-N
+	@if [ -z "$(strip $(FLINK_RESTORE_PATH))" ]; then \
+		echo "Set FLINK_RESTORE_PATH to a completed checkpoint or savepoint URI." >&2; \
+		exit 1; \
+	fi
+	$(MAKE) run-streaming-processor
+
+test-flink-scripts: ## Test Flink submission and restore commands without Docker
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
 # Example: make run-flow PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
 run-flow: build-data-producer ## Start the processor and publish CSV events; use PRODUCER_ARGS="..." for producer flags

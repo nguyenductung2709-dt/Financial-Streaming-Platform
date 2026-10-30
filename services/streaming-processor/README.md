@@ -199,3 +199,83 @@ replay can produce duplicates. Input, EMA output, and advisory topics must diffe
 Persistent checkpoint files alone do not restart jobs after the entire standalone
 cluster is lost. Submit again with `flink run -s <checkpoint-or-savepoint-path>`
 when restoring, or deploy with a suitable HA/application lifecycle setup.
+
+## Restore a checkpoint or savepoint
+
+With the default Compose configuration, worker failures are retried automatically from the latest completed checkpoint
+while the JobManager stays alive. If the whole standalone cluster or job stops,
+submit explicitly from a retained checkpoint or savepoint:
+
+```sh
+make restore-streaming-processor \
+  FLINK_RESTORE_PATH="file:///opt/flink/state/checkpoints/<job-id>/chk-<number>"
+```
+
+Find the external path in the Flink UI's Checkpoints tab. After cancellation, use
+the latest completed checkpoint listed for that job; older checkpoints may have
+been cleaned up. The URI is inside the Flink containers, not a host path. Keep the
+`flink-state` volume and the complete checkpoint directory, including referenced
+state files. The same command accepts a savepoint URI.
+
+Pass the original topic configuration through `FLINK_ARGS` if it differs from the
+defaults. Restored Kafka positions take precedence over `--starting-offsets`.
+Restoration recovers those positions, unfinished window accumulators/timers,
+EMA38/EMA100 state, and the crossover operator's previous values together.
+The launcher refuses to submit while another processor job is active, and a
+restore failure is reported instead of falling back to an empty-state job.
+
+Do not run `make reset-flow` for a recovery experiment: it clears the input and
+output records. Do not restart the CSV from its beginning just to recover Flink;
+the input records already retained by Redpanda are replayed as needed.
+
+Both output sinks remain at-least-once: a failure can repeat output records even
+when the restored calculations are correct. Compare unique outputs using
+`(symbol, window_start, window_end)` and verify duplicate payloads agree; count
+and report duplicates separately. No exactly-once sink or standalone cluster HA
+is introduced by this command.
+
+Test launcher behavior without Docker:
+
+```sh
+make test-flink-scripts
+```
+
+The focused live restart and restore results are recorded in
+[the recovery verification report](../../documents/flink-recovery-verification.md).
+
+## Automatic JobManager recovery (optional)
+
+Enable the ZooKeeper HA override consistently for all Make commands:
+
+```sh
+make run-flow FLINK_HA=1 PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
+```
+
+`FLINK_HA=1` exports `COMPOSE_FILE=compose.yaml:compose.ha.yaml`, including to the
+submission and reset scripts. The default remains the base Compose configuration.
+For direct Docker commands, use both files:
+
+```sh
+docker compose -f compose.yaml -f compose.ha.yaml ps
+```
+
+The override adds persistent ZooKeeper data and Flink HA metadata under
+`/opt/flink/state/ha`. Docker restarts crashed Flink containers; the restarted
+JobManager discovers submitted jobs and restores their latest completed
+checkpoints automatically, without another submission command. Intentional
+cancellation and terminal job failure do not trigger resubmission.
+
+Keep `flink-state`, `zookeeper-data`, and `zookeeper-log` volumes. This is a local
+recovery demonstration with one JobManager and one ZooKeeper server; it is not
+redundant across machines and does not survive loss of local storage. Output
+sinks remain at-least-once.
+
+Switch modes only after canceling or saving the running job. A job originally
+submitted without HA is not automatically registered with HA; migrate it with
+an explicit retained-checkpoint/savepoint restore using `FLINK_HA=1` and
+`FLINK_RESTORE_PATH`. Running `make run-flow` again is not necessary for recovery
+and would restart the CSV producer. Existing jobs are protected by the launcher's
+active-job check.
+
+See [the recovery verification report](../../documents/flink-recovery-verification.md)
+for measured restart/restore results.

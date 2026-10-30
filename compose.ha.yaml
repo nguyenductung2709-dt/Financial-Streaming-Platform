@@ -1,0 +1,64 @@
+# Optional local JobManager recovery: docker compose -f compose.yaml -f compose.ha.yaml ...
+volumes:
+  zookeeper-data:
+  zookeeper-log:
+
+services:
+  zookeeper:
+    image: zookeeper:3.9.3
+    volumes:
+      - zookeeper-data:/data
+      - zookeeper-log:/datalog
+    healthcheck:
+      test: ["CMD", "zkServer.sh", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  flink-state-init:
+    command:
+      - |
+        mkdir -p /opt/flink/state/checkpoints /opt/flink/state/savepoints /opt/flink/state/ha
+        chown -R flink:flink /opt/flink/state
+
+  jobmanager:
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        rest.profiling.enabled: true
+        rest.address: jobmanager
+        rest.bind-address: 0.0.0.0
+        parallelism.default: 1
+        execution.checkpointing.interval: 30 s
+        execution.checkpointing.storage: filesystem
+        execution.checkpointing.dir: file:///opt/flink/state/checkpoints
+        execution.checkpointing.savepoint-dir: file:///opt/flink/state/savepoints
+        execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+        high-availability.type: zookeeper
+        high-availability.zookeeper.quorum: zookeeper:2181
+        high-availability.zookeeper.path.root: /flink
+        high-availability.cluster-id: /financial-streaming-platform
+        high-availability.storageDir: file:///opt/flink/state/ha
+
+  taskmanager:
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        rest.profiling.enabled: true
+        taskmanager.numberOfTaskSlots: 2
+        execution.checkpointing.storage: filesystem
+        execution.checkpointing.dir: file:///opt/flink/state/checkpoints
+        execution.checkpointing.savepoint-dir: file:///opt/flink/state/savepoints
+        high-availability.type: zookeeper
+        high-availability.zookeeper.quorum: zookeeper:2181
+        high-availability.zookeeper.path.root: /flink
+        high-availability.cluster-id: /financial-streaming-platform
+        high-availability.storageDir: file:///opt/flink/state/ha
