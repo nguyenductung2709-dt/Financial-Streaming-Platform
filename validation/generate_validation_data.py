@@ -15,6 +15,17 @@ parsed strictly as DD-MM-YYYY HH:MM:SS.sss CEST wall clock; prices are exact
 integers in millionths (micros); rows the producer would reject are excluded
 and counted as would-DLQ.
 
+Late events follow services/streaming-processor: its watermark is
+forBoundedOutOfOrderness(70 s) over all symbols (the trade-events topic has
+one partition) with zero allowed lateness, so a price event whose 5-minute
+window the watermark (max trade time seen - 70 s - 1 ms) has already passed is
+dropped by Flink.  The script applies the same rule in file order and only
+counts the dropped events (rows.dropped_late_by_watermark).
+--out-of-orderness-seconds changes the delay, --keep-late-events disables the
+rule.  The watermark here advances after every event while Flink emits it
+periodically, so an event right at the cutoff can be kept by Flink and dropped
+here.
+
 Interpretation decisions (recorded in summary.json):
   1. The EMA of the previous window is 0, so a symbol's first EMA is
      Close * 2/(1+j).  Alternatives: --ema-init first-close seeds both EMAs
@@ -28,6 +39,9 @@ Interpretation decisions (recorded in summary.json):
      (EMA38 = c*2/39 > c*2/101 = EMA100 with previous pair (0, 0)), so each
      symbol starts with one BUY advisory.  This is inherent to the formulas,
      not a bug.
+  5. Late events: dropped as above, so a stale update arriving long after
+     its window (e.g. the end of the day-10 file) neither adds a window nor
+     becomes a symbol's first window.
 
 Validate streaming output by joining on (symbol, window): EMA tolerance
 1e-3 micros (this script uses 50-digit decimal arithmetic; double-precision
@@ -38,6 +52,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import re
 import sys
 import time
@@ -54,6 +69,8 @@ WINDOW_MS = 300_000        # 5-minute tumbling windows anchored at 00:00 CEST (P
 MS_PER_DAY = 86_400_000
 PRICE_SCALE = 1_000_000    # prices are exact integers in millionths, like last_price_micros
 UINT64_MAX = 2**64 - 1
+# StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s), allowed lateness 0.
+OUT_OF_ORDERNESS_MS = 70_000
 DECIMAL_PREC = 50          # far tighter than double precision
 EMA_PLACES = 9             # decimals emitted for EMA values in micros
 J_SHORT, J_LONG = 38, 100  # smoothing factors (PDF 3.2, 3.3)
@@ -83,6 +100,10 @@ INTERPRETATION_NOTES = (
     "Close = price of the event with the maximum trade time in the window (ties: later source row).",
     "Under prev-zero/zero-window initialization every symbol's first window fires a BUY "
     "advisory (inherent to the formulas, not a bug).",
+    "Late events: like the Flink job, a price event whose 5-minute window is already behind "
+    "the watermark (max trade time seen over all symbols - out_of_orderness_ms - 1 ms, allowed "
+    "lateness 0) is dropped and only counted in rows.dropped_late_by_watermark; "
+    "--keep-late-events disables this (out_of_orderness_ms is then null).",
 )
 
 
@@ -120,16 +141,26 @@ def parse_trade_dt(date_text, time_text):
     return day.toordinal(), hh * 3600 + mi * 60 + ss, ms
 
 
-def scan_events(csv_path, limit_rows=None):
+def is_late(tt_ms, max_tt_ms, out_of_orderness_ms):
+    """Whether Flink drops an event: the watermark (max trade time seen -
+    out_of_orderness - 1 ms) has reached its window's last timestamp."""
+    window_last_ms = (tt_ms // WINDOW_MS + 1) * WINDOW_MS - 1
+    return window_last_ms <= max_tt_ms - out_of_orderness_ms - 1
+
+
+def scan_events(csv_path, limit_rows=None, out_of_orderness_ms=OUT_OF_ORDERNESS_MS):
     """Single pass over the CSV, mirroring the producer's row handling.
 
-    Returns (closes, symbols, stats) with per (symbol, window) close state
-    (close by trade time, tie: later row; plus last-arrival state for
-    diagnostics), per symbol [sectype, last_tt_ms, late_count], and counters.
+    Price events later than the watermark are dropped like the Flink job does
+    (None keeps them all) and only counted.  Returns (closes, symbols, stats)
+    with per (symbol, window) close state (close by trade time, tie: later
+    row; plus last-arrival state for diagnostics), per symbol [sectype,
+    last_tt_ms, late_count], and counters.
     """
     stats = Counter()
     closes, symbols = {}, {}
     columns = None
+    max_tt_ms = float("-inf")  # the watermark follows the max trade time over all symbols
     started = time.monotonic()
     with open(csv_path, newline="", encoding="utf-8", errors="replace") as f:
         reader = csv.reader(f)
@@ -192,13 +223,17 @@ def scan_events(csv_path, limit_rows=None):
 
             stats["price_events"] += 1
             tt_ms = ordinal * MS_PER_DAY + sod * 1000 + ms
+            if out_of_orderness_ms is not None and is_late(tt_ms, max_tt_ms, out_of_orderness_ms):
+                stats["dropped_late"] += 1
+                continue
+            max_tt_ms = max(max_tt_ms, tt_ms)
             sym_state = symbols.get(symbol)
             if sym_state is None:
                 symbols[symbol] = [sect, tt_ms, 0]
             else:
                 if sym_state[SECTYPE] != sect:
                     stats["sectype_conflicts"] += 1
-                if tt_ms < sym_state[LAST_TT_MS]:  # trade time went backwards
+                if tt_ms < sym_state[LAST_TT_MS]:  # trade time went backwards, within the allowance
                     sym_state[LATE] += 1
                     stats["late_events"] += 1
                 sym_state[LAST_TT_MS] = tt_ms
@@ -314,10 +349,15 @@ def display_path(path):
         return str(path)
 
 
-def run(csv_path, out_dir, limit_rows=None, ema_init="prev-zero", compute_md5=True):
+def run(csv_path, out_dir, limit_rows=None, ema_init="prev-zero", compute_md5=True,
+        out_of_orderness_ms=OUT_OF_ORDERNESS_MS):
     print(f"Input CSV : {csv_path}")
     print(f"Output dir: {out_dir}")
-    closes, symbols, stats = scan_events(csv_path, limit_rows=limit_rows)
+    closes, symbols, stats = scan_events(csv_path, limit_rows=limit_rows,
+                                         out_of_orderness_ms=out_of_orderness_ms)
+    if stats["dropped_late"]:
+        print(f"Dropped {stats['dropped_late']:,} late events (watermark delay "
+              f"{out_of_orderness_ms / 1000:g}s)")
     print(f"Computing EMAs and advisories (init={ema_init})...")
     out_stats, ema_path, adv_path = compute_outputs(closes, symbols, out_dir, ema_init)
 
@@ -328,6 +368,7 @@ def run(csv_path, out_dir, limit_rows=None, ema_init="prev-zero", compute_md5=Tr
             "smoothing_short": J_SHORT,
             "smoothing_long": J_LONG,
             "ema_init": ema_init,
+            "out_of_orderness_ms": out_of_orderness_ms,
             "ema_recursion": "EMA_i = Close_i * 2/(1+j) + EMA_{i-1} * (1 - 2/(1+j))",
             "first_window_ema": {
                 "prev-zero": "Close * 2/(1+j) (EMA of previous window = 0)",
@@ -356,6 +397,7 @@ def run(csv_path, out_dir, limit_rows=None, ema_init="prev-zero", compute_md5=Tr
                 "bad_trade_time": stats["rejected_bad_trade_time"],
             },
             "price_events_accepted": stats["price_events"],
+            "dropped_late_by_watermark": stats["dropped_late"],
         },
         "symbols": {
             "with_price_events": len(symbols),
@@ -390,6 +432,13 @@ def run(csv_path, out_dir, limit_rows=None, ema_init="prev-zero", compute_md5=Tr
     return summary
 
 
+def finite_non_negative_seconds(text):
+    seconds = float(text)
+    if not (math.isfinite(seconds) and seconds >= 0):
+        raise argparse.ArgumentTypeError("must be a finite number >= 0")
+    return seconds
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Generate the EMA/advisory validation dataset from the trading CSV.")
@@ -400,9 +449,17 @@ def main(argv=None):
     parser.add_argument("--ema-init", choices=EMA_INIT_MODES, default="prev-zero",
                         help="first-window EMA initialization mode")
     parser.add_argument("--no-md5", action="store_true", help="skip the CSV md5 checksum")
+    late = parser.add_mutually_exclusive_group()
+    late.add_argument("--out-of-orderness-seconds", type=finite_non_negative_seconds,
+                      default=OUT_OF_ORDERNESS_MS / 1000,
+                      help="watermark delay after which Flink drops late events "
+                           "(default: %(default)g, the processor's setting)")
+    late.add_argument("--keep-late-events", action="store_true",
+                      help="never drop late events (the Flink job would)")
     args = parser.parse_args(argv)
-    run(args.csv, args.out, limit_rows=args.limit_rows,
-        ema_init=args.ema_init, compute_md5=not args.no_md5)
+    out_of_orderness_ms = None if args.keep_late_events else round(args.out_of_orderness_seconds * 1000)
+    run(args.csv, args.out, limit_rows=args.limit_rows, ema_init=args.ema_init,
+        compute_md5=not args.no_md5, out_of_orderness_ms=out_of_orderness_ms)
     return 0
 
 

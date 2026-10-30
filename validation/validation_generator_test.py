@@ -6,7 +6,10 @@ subset; the full tables live in the Go tests).  End-to-end scenarios are
 checked against an independent exact-rational model (fractions.Fraction).
 """
 
+import contextlib
 import csv
+import io
+import json
 import sys
 import tempfile
 import unittest
@@ -39,10 +42,22 @@ def data_row(symbol, sect, time_s, last, tdate="", date_col="12-11-2021"):
     return ",".join(fields)
 
 
+def stale_tail_rows():
+    """The day-10 shape: genuine events, then a stale 01:00 update at the end."""
+    return [data_row("EEE.FR", "I", "10:00:30.000", "5.000000"),
+            data_row("EEE.FR", "I", "10:10:00.000", "6.000000"),
+            data_row("EEE.FR", "I", "01:00:00.000", "99.000000")]
+
+
 def build_csv(rows):
     """CSV shaped like the dataset: preamble 1-11, header at 12, units at 13."""
     lines = [f"# preamble {i}" for i in range(1, 12)] + [HEADER, "#units"] + rows
     return "\r\n".join(lines) + "\r\n"
+
+
+def tt(hour, minute, second=0, ms=0, day=date(2021, 11, 12)):
+    """Trade time in the generator's ms scale (ordinal-day based, wall clock)."""
+    return day.toordinal() * gvd.MS_PER_DAY + ((hour * 60 + minute) * 60 + second) * 1000 + ms
 
 
 def model_series(closes_micros, init="prev-zero"):
@@ -134,18 +149,46 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(end, "2021-11-13T00:00")  # last window rolls to the next date
 
 
-class EndToEndTest(unittest.TestCase):
-    """Full pipeline on synthetic CSVs, checked against model_series."""
+class IsLateTest(unittest.TestCase):
+    """Flink drops an event once the watermark (max trade time - delay - 1 ms)
+    reaches its window's last timestamp (allowed lateness 0)."""
+
+    DELAY = 70_000  # StreamingProcessor.OutOfOrdernessAllowance
+
+    def test_late_exactly_when_watermark_reaches_window_end(self):
+        event = tt(8, 3)  # window 08:00-08:05, last timestamp 08:04:59.999
+        self.assertFalse(gvd.is_late(event, tt(8, 6, 9, 999), self.DELAY))
+        self.assertTrue(gvd.is_late(event, tt(8, 6, 10), self.DELAY))
+
+    def test_window_start_belongs_to_the_new_window(self):
+        event = tt(8, 5)  # first millisecond of window 08:05-08:10
+        self.assertFalse(gvd.is_late(event, tt(8, 11, 9, 999), self.DELAY))
+        self.assertTrue(gvd.is_late(event, tt(8, 11, 10), self.DELAY))
+
+    def test_event_ahead_of_the_watermark_is_not_late(self):
+        self.assertFalse(gvd.is_late(tt(9, 0), tt(8, 0), self.DELAY))
+
+
+class SyntheticCsvTestCase(unittest.TestCase):
+    """Runs the generator on a CSV built from `rows` into a temp directory."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.out_dir = Path(self.tmp.name) / "out"
 
-    def run_csv(self, rows, **kwargs):
+    def write_csv(self, rows):
         csv_path = Path(self.tmp.name) / "synthetic.csv"
         csv_path.write_text(build_csv(rows), newline="", encoding="utf-8")
-        return gvd.run(csv_path=csv_path, out_dir=self.out_dir, compute_md5=False, **kwargs)
+        return csv_path
+
+    def run_csv(self, rows, **kwargs):
+        return gvd.run(csv_path=self.write_csv(rows), out_dir=self.out_dir,
+                       compute_md5=False, **kwargs)
+
+
+class EndToEndTest(SyntheticCsvTestCase):
+    """Full pipeline on synthetic CSVs, checked against model_series."""
 
     def test_scenario_against_rational_model(self):
         rows, closes = [], []
@@ -186,6 +229,7 @@ class EndToEndTest(unittest.TestCase):
                                          "bad_sectype": 1, "missing_date": 1,
                                          "bad_trade_time": 1},
             "price_events_accepted": 46,
+            "dropped_late_by_watermark": 0,
         })
         ema_rows = read_csv(self.out_dir / "ema_windows.csv")
         adv_rows = read_csv(self.out_dir / "advisories.csv")
@@ -235,6 +279,91 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(rows_out[2]["window_end"], "2021-11-13T00:00")
         self.assertEqual(rows_out[3]["window_start"], "2021-11-13T00:00")
         self.assertEqual(summary["diagnostics"]["late_events"], 0)
+
+
+class LateEventDropTest(SyntheticCsvTestCase):
+    """Mirrors StreamingProcessor: one global watermark (max trade time seen
+    - 70 s - 1 ms) across all symbols, no allowed lateness, late events dropped."""
+
+    def window_starts(self):
+        return [r["window_start"][-5:] for r in read_csv(self.out_dir / "ema_windows.csv")]
+
+    def test_other_symbol_advances_the_watermark_at_the_exact_boundary(self):
+        summary = self.run_csv([
+            data_row("AAA.NL", "E", "08:01:00.000", "10.000000"),
+            data_row("BBB.NL", "E", "08:06:09.999", "1.000000"),   # watermark 08:04:59.998
+            data_row("AAA.NL", "E", "08:02:00.000", "20.000000"),  # window 08:00 still open
+            data_row("BBB.NL", "E", "08:06:10.000", "2.000000"),   # watermark 08:04:59.999
+            data_row("AAA.NL", "E", "08:03:00.000", "30.000000"),  # window 08:00 closed: dropped
+        ])
+        aaa = read_csv(self.out_dir / "ema_windows.csv")[0]
+        self.assertEqual(aaa["symbol"], "AAA.NL")
+        self.assertEqual((aaa["event_count"], aaa["close_micros"], aaa["close_source_row"]),
+                         ("2", "20000000", "16"))
+        self.assertEqual(summary["rows"]["price_events_accepted"], 5)
+        self.assertEqual(summary["rows"]["dropped_late_by_watermark"], 1)
+
+    def test_stale_tail_event_does_not_become_the_first_window(self):
+        summary = self.run_csv(stale_tail_rows())
+        self.assertEqual(self.window_starts(), ["10:00", "10:10"])
+        adv_rows = read_csv(self.out_dir / "advisories.csv")
+        self.assertEqual((adv_rows[0]["window_start"][-5:], adv_rows[0]["is_first_window"]),
+                         ("10:00", "1"))
+        self.assertEqual(summary["rows"]["dropped_late_by_watermark"], 1)
+
+    def test_symbol_with_only_late_events_has_no_output(self):
+        summary = self.run_csv([data_row("EEE.FR", "I", "10:00:30.000", "5.000000"),
+                                data_row("GGG.FR", "I", "01:00:00.000", "7.000000")])
+        self.assertEqual({r["symbol"] for r in read_csv(self.out_dir / "ema_windows.csv")},
+                         {"EEE.FR"})
+        self.assertEqual(summary["symbols"]["with_price_events"], 1)
+        self.assertEqual(summary["rows"]["dropped_late_by_watermark"], 1)
+
+    def test_disabled_keeps_the_stale_event_as_first_window(self):
+        summary = self.run_csv(stale_tail_rows(), out_of_orderness_ms=None)
+        self.assertEqual(self.window_starts(), ["01:00", "10:00", "10:10"])
+        adv_rows = read_csv(self.out_dir / "advisories.csv")
+        self.assertEqual((adv_rows[0]["window_start"][-5:], adv_rows[0]["is_first_window"]),
+                         ("01:00", "1"))
+        self.assertEqual(summary["rows"]["dropped_late_by_watermark"], 0)
+        self.assertIsNone(summary["spec"]["out_of_orderness_ms"])
+
+
+class LateEventDropCliTest(SyntheticCsvTestCase):
+    def run_cli(self, *flags):
+        csv_path = self.write_csv(stale_tail_rows())
+        gvd.main(["--csv", str(csv_path), "--out", str(self.out_dir), "--no-md5", *flags])
+        windows = [r["window_start"][-5:] for r in read_csv(self.out_dir / "ema_windows.csv")]
+        with open(self.out_dir / "summary.json", encoding="utf-8") as f:
+            return windows, json.load(f)
+
+    def parse_error(self, *flags):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            self.run_cli(*flags)
+        return stderr.getvalue()
+
+    def test_default_follows_the_processor_70_seconds(self):
+        windows, summary = self.run_cli()
+        self.assertEqual(windows, ["10:00", "10:10"])
+        self.assertEqual(summary["spec"]["out_of_orderness_ms"], 70_000)
+
+    def test_keep_late_events(self):
+        windows, summary = self.run_cli("--keep-late-events")
+        self.assertEqual(windows, ["01:00", "10:00", "10:10"])
+        self.assertIsNone(summary["spec"]["out_of_orderness_ms"])
+
+    def test_custom_out_of_orderness_seconds(self):
+        windows, summary = self.run_cli("--out-of-orderness-seconds", "86400")  # 9 h late < 24 h
+        self.assertEqual(windows, ["01:00", "10:00", "10:10"])
+        self.assertEqual(summary["spec"]["out_of_orderness_ms"], 86_400_000)
+
+    def test_negative_out_of_orderness_is_rejected(self):
+        self.assertIn("finite number >= 0", self.parse_error("--out-of-orderness-seconds", "-1"))
+
+    def test_keep_late_events_conflicts_with_out_of_orderness_seconds(self):
+        self.assertIn("not allowed with argument",
+                      self.parse_error("--keep-late-events", "--out-of-orderness-seconds", "70"))
 
 
 class EmaInitModesTest(unittest.TestCase):
