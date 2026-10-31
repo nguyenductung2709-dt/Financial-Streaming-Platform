@@ -22,6 +22,7 @@ or unparseable EMA strings, unspecified advisory action) become
 docs/superpowers/plans/2026-10-30-full-flow-validation.md.
 """
 
+import config
 from decimal import Decimal, InvalidOperation
 from typing import NamedTuple
 
@@ -29,7 +30,7 @@ from bindings import ADVISORY_ACTION_BUY, ADVISORY_ACTION_SELL
 from ema_replay import WindowMs
 
 MICROS = Decimal(10**6)       # shadow EMAs are micros; actuals are price strings
-MAX_REPORT_MISMATCHES = 100   # per-class cap in the JSON report
+MAX_REPORT_MISMATCHES = config.MAX_REPORT_MISMATCHES   # per-class cap in the JSON report
 
 
 class ActualEmaWindow(NamedTuple):
@@ -202,7 +203,7 @@ def _model_diverges(shadow, shadow_key, tolerance: Decimal) -> bool:
 
 def compare(ema_actual: list[ActualEmaWindow],
             advisories_actual: list[ActualAdvisory],
-            shadow, tolerance: Decimal = Decimal("1e-9")) -> CompareResult:
+            shadow, tolerance: Decimal = config.EMA_TOLERANCE) -> CompareResult:
     """Join actual windows/advisories against the shadow and classify mismatches.
 
     The union is keyed over (symbol, window_start_ms); a shadow window's

@@ -19,6 +19,7 @@ through the decoders under test.
 """
 
 import json
+import subprocess
 import sys
 import unittest
 from decimal import Decimal
@@ -494,6 +495,32 @@ class BuildReportTest(unittest.TestCase):
                         ["closing_price_micros 5000001 != 5000000"])
         self.assertFalse(report["passed"])
         json.loads(json.dumps(report))
+
+
+def module_follows_override(module_name, overrides, expression):
+    """`expression` evaluated against `module_name` in a fresh interpreter
+    (copied from config_test.py; see there for the rationale)."""
+    lines = ["import sys", "import inspect", "from decimal import Decimal",
+             f"sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})",
+             "import config"]
+    lines += [f"config.{name} = {value!r}" for name, value in overrides.items()]
+    lines += [f"import {module_name}", f"print({expression})"]
+    result = subprocess.run([sys.executable, "-c", "\n".join(lines)],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise AssertionError(f"override subprocess failed:\n{result.stderr}")
+    return result.stdout.strip()
+
+
+class CompareFollowsConfigTest(unittest.TestCase):
+    def test_tolerance_default_and_cap_follow_config(self):
+        self.assertEqual(module_follows_override(
+            "compare", {"EMA_TOLERANCE": Decimal("5e-1")},
+            "inspect.signature(compare.compare).parameters['tolerance'].default"),
+            "0.5")
+        self.assertEqual(module_follows_override(
+            "compare", {"MAX_REPORT_MISMATCHES": 3},
+            "compare.MAX_REPORT_MISMATCHES"), "3")
 
 
 if __name__ == "__main__":
