@@ -24,7 +24,7 @@ type EmaWindow struct {
 }
 
 func (s *Postgres) SaveEmaWindow(ctx context.Context, window *EmaWindow) error {
-	if err := validateWindow(window); err != nil {
+	if err := window.Validate(); err != nil {
 		return err
 	}
 	return s.transaction(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -53,7 +53,8 @@ func upsertWindow(ctx context.Context, tx *sql.Tx, window *EmaWindow) error {
 	return nil
 }
 
-func validateWindow(window *EmaWindow) error {
+// Validate checks the fields required to store a completed EMA window.
+func (window *EmaWindow) Validate() error {
 	if window == nil {
 		return errors.New("EMA window is nil")
 	}

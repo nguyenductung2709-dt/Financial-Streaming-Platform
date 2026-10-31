@@ -23,7 +23,7 @@ type TradeAdvisory struct {
 
 // SaveTradeAdvisory also saves its embedded window, regardless of topic arrival order.
 func (s *Postgres) SaveTradeAdvisory(ctx context.Context, advisory *TradeAdvisory) error {
-	if err := validateTradeAdvisory(advisory); err != nil {
+	if err := advisory.Validate(); err != nil {
 		return err
 	}
 	return s.transaction(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -47,11 +47,12 @@ func (s *Postgres) SaveTradeAdvisory(ctx context.Context, advisory *TradeAdvisor
 	})
 }
 
-func validateTradeAdvisory(advisory *TradeAdvisory) error {
+// Validate checks the advisory and its embedded EMA window.
+func (advisory *TradeAdvisory) Validate() error {
 	if advisory == nil {
 		return errors.New("advisory is nil")
 	}
-	if err := validateWindow(advisory.EmaWindow); err != nil {
+	if err := advisory.EmaWindow.Validate(); err != nil {
 		return fmt.Errorf("advisory window: %w", err)
 	}
 	switch advisory.Action {
