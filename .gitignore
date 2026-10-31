@@ -5,6 +5,10 @@ validation/out/
 
 # Python byte-code caches
 __pycache__/
+# Local environment configuration
+.env
+.env.*
+!.env.example
 
 # Go build and test outputs
 /bin/

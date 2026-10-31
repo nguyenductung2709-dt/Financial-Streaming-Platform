@@ -22,6 +22,47 @@ Already formatted staged files can still have unstaged edits.
 If a toolchain is missing, the hook skips that check with a warning —
 CI still enforces the full format and lint suite.
 
+## Local PostgreSQL
+
+Start the database and open its SQL shell from the repository root:
+
+```sh
+make run-postgres
+make postgres-shell
+```
+
+In `psql`, use `\conninfo` to inspect the connection and `\q` to exit.
+The Compose defaults are for local development:
+
+| Setting | Default |
+| --- | --- |
+| Database | `financial_streaming` |
+| User | `financial` |
+| Password | `financial_dev` |
+| Address from the host | `localhost:15432` |
+| Address from another Compose service | `postgres:5432` |
+
+For a host application or database GUI, the default connection URL is:
+
+```text
+postgresql://financial:financial_dev@localhost:15432/financial_streaming?sslmode=disable
+```
+
+Optionally copy `.env.example` to `.env` and edit the values before the first
+startup. Compose reads `.env` automatically, and Git ignores it. Database name,
+user, and password initialize a new database volume; changing these variables
+later does not update an existing database's credentials. `POSTGRES_PORT` only
+changes the port published on the host.
+
+PostgreSQL 18 stores its files in the persistent `postgres-data` named volume,
+mounted at `/var/lib/postgresql` as required by the official image. The server
+uses UTC, and its published port is restricted to the local host. To stop just
+the database while retaining its data, run `docker compose stop postgres`.
+See the [official PostgreSQL image documentation](https://hub.docker.com/_/postgres)
+for initialization and storage behavior.
+
+Application tables will be introduced with the materializer's database migrations.
+
 ## CI checks
 
 Pushes and pull requests run checks based on the changed paths:
