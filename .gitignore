@@ -1,6 +1,7 @@
 dataset/
 # Go build and test outputs
 /bin/
+/checkpoints/
 *.test
 coverage.out
 coverage.html
