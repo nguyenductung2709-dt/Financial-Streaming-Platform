@@ -22,15 +22,16 @@ First-window EMA initialization modes:
   zero-window  literal EMA[s, w_0] = 0; the recursion starts in window two.
 """
 
+import config
 from collections import defaultdict
 from decimal import Decimal, localcontext
 from typing import NamedTuple
 
-WindowMs = 300_000         # 5-minute tumbling windows anchored at 00:00 CEST (PDF 3.1)
-JShort, JLong = 38, 100    # smoothing factors (PDF 3.2, 3.3)
-DECIMAL_PREC = 50          # far tighter than double precision
+WindowMs = config.WINDOW_MS             # 5-minute tumbling windows (PDF 3.1)
+JShort, JLong = config.EMA_J_SHORT, config.EMA_J_LONG
+DECIMAL_PREC = config.DECIMAL_PREC
 # StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s), allowed lateness 0.
-OutOfOrdernessMs = 70_000
+OutOfOrdernessMs = config.OUT_OF_ORDERNESS_MS
 
 
 def is_late(tt_ms: int, max_tt_ms: int, out_of_orderness_ms: int) -> bool:
@@ -78,7 +79,7 @@ def update_close(state: CloseState | None, tt_ms: int, micros: int, order: int) 
     return state._replace(event_count=event_count)
 
 
-def replay(closes: dict[tuple[str, int], CloseState], ema_init: str = "prev-zero") -> list[WindowResult]:
+def replay(closes: dict[tuple[str, int], CloseState], ema_init: str = config.EMA_INIT) -> list[WindowResult]:
     """Replay the windows in (symbol, window_index) order into WindowResult rows.
 
     The previous EMA pair carries forward across windows with no events;

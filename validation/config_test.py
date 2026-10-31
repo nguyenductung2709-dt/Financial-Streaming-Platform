@@ -108,5 +108,27 @@ class HelperSmokeTest(unittest.TestCase):
             "299999")
 
 
+class EmaReplayFollowsConfigTest(unittest.TestCase):
+    def test_constants_and_init_default_follow_config(self):
+        self.assertEqual(module_follows_override(
+            "ema_replay", {"WINDOW_MS": 299_999}, "ema_replay.WindowMs"),
+            "299999")
+        self.assertEqual(module_follows_override(
+            "ema_replay", {"OUT_OF_ORDERNESS_MS": 1},
+            "ema_replay.OutOfOrdernessMs"), "1")
+        self.assertEqual(module_follows_override(
+            "ema_replay", {"EMA_J_SHORT": 37}, "ema_replay.JShort"), "37")
+        self.assertEqual(module_follows_override(
+            "ema_replay", {"EMA_J_LONG": 101},
+            "ema_replay.JLong"), "101")
+        self.assertEqual(module_follows_override(
+            "ema_replay", {"DECIMAL_PREC": 40}, "ema_replay.DECIMAL_PREC"),
+            "40")
+        self.assertEqual(module_follows_override(
+            "ema_replay", {"EMA_INIT": "first-close"},
+            "inspect.signature(ema_replay.replay).parameters['ema_init'].default"),
+            "first-close")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
