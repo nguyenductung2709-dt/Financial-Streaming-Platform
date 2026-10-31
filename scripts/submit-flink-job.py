@@ -15,8 +15,11 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
-REST_URL = "http://localhost:8081"
-JOB_NAME = "market-price-event-consumer"
+sys.path.insert(0, str(ROOT / "validation"))
+import config
+
+REST_URL = config.FLINK_REST_URL
+JOB_NAME = config.FLINK_JOB_NAME
 TERMINAL_STATES = {"FINISHED", "FAILED", "CANCELED", "SUSPENDED"}
 
 

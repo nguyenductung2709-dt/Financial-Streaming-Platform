@@ -49,10 +49,14 @@ def script_follows_override(script, overrides, expression):
 
     The script (a Path) is loaded via importlib.util.spec_from_file_location
     as `module` - the pattern scripts/*_test.py use - so `expression`
-    references it as `module` (e.g. "module.REST_URL")."""
+    references it as `module` (e.g. "module.REST_URL").  The script's own
+    directory goes on sys.path last, as when Python runs the script, so
+    its sibling imports (reset-flow.py's `from flow import flow_lock`)
+    resolve without shadowing validation/'s `config`."""
     lines = ["import sys", "import importlib.util",
              "from decimal import Decimal",
              f"sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})",
+             f"sys.path.append({str(Path(script).resolve().parent)!r})",
              "import config"]
     lines += [f"config.{name} = {value!r}" for name, value in overrides.items()]
     lines += [f"spec = importlib.util.spec_from_file_location"
@@ -162,6 +166,32 @@ class KafkaTopicsFollowsConfigTest(unittest.TestCase):
         self.assertEqual(module_follows_override(
             "kafka_topics", {"CONSUMER_GROUP_ID": "other-group"},
             "kafka_topics.CONSUMER_GROUP_ID"), "other-group")
+
+
+class FlowScriptsFollowsConfigTest(unittest.TestCase):
+    RESET = Path(__file__).resolve().parent.parent / "scripts" / "reset-flow.py"
+    SUBMIT = (Path(__file__).resolve().parent.parent / "scripts"
+              / "submit-flink-job.py")
+
+    def test_reset_flow_follows_config(self):
+        self.assertEqual(script_follows_override(
+            self.RESET, {"FLINK_REST_URL": "http://flink:1"}, "module.REST_URL"),
+            "http://flink:1")
+        self.assertEqual(script_follows_override(
+            self.RESET, {"FLINK_JOB_NAME": "other-job"}, "module.JOB_NAME"),
+            "other-job")
+        self.assertEqual(script_follows_override(
+            self.RESET, {"TOPIC_EVENTS": "evt"}, "module.TOPICS"),
+            "('evt', 'trade-events-dlq', 'ema-windows', 'trade-advisories')")
+
+    def test_submit_flink_job_follows_config(self):
+        self.assertEqual(script_follows_override(
+            self.SUBMIT, {"FLINK_REST_URL": "http://flink:2"},
+            "module.REST_URL"),
+            "http://flink:2")
+        self.assertEqual(script_follows_override(
+            self.SUBMIT, {"FLINK_JOB_NAME": "other-job"}, "module.JOB_NAME"),
+            "other-job")
 
 
 if __name__ == "__main__":

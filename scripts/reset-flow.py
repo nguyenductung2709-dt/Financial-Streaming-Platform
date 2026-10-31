@@ -13,8 +13,13 @@ import urllib.request
 from flow import flow_lock
 
 ROOT = Path(__file__).resolve().parent.parent
-REST_URL = "http://localhost:8081"
-TOPICS = ("trade-events", "trade-events-dlq", "ema-windows", "trade-advisories")
+sys.path.insert(0, str(ROOT / "validation"))
+import config
+
+REST_URL = config.FLINK_REST_URL
+JOB_NAME = config.FLINK_JOB_NAME
+TOPICS = (config.TOPIC_EVENTS, config.TOPIC_DLQ, config.TOPIC_EMA_WINDOWS,
+          config.TOPIC_TRADE_ADVISORIES)
 TERMINAL_STATES = {"FINISHED", "FAILED", "CANCELED", "SUSPENDED"}
 
 
@@ -44,7 +49,7 @@ def stop_jobs():
                 raise RuntimeError("Flink did not become available; no data was cleared")
             time.sleep(1)
     for job in jobs:
-        if job["name"] != "market-price-event-consumer" or job["state"] in TERMINAL_STATES:
+        if job["name"] != JOB_NAME or job["state"] in TERMINAL_STATES:
             continue
         job_id = job["jid"]
         if job["state"] != "CANCELLING":
