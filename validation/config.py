@@ -21,7 +21,9 @@ EMA_J_LONG = 100
 # Documented interpretation (PDF): the EMA of the previous window is 0;
 # the generator's --ema-init lists the alternatives.
 EMA_INIT = "prev-zero"
-# The processor sets no allowedLateness: windows die at the watermark.
+# StreamingProcessor sets no allowedLateness (0): windows die at the
+# watermark.  is_late honors a nonzero value (mirrors a processor WITH
+# allowedLateness: more events survive the drop rule).
 ALLOWED_LATENESS_MS = 0
 
 # --- Validation-tool knobs ---

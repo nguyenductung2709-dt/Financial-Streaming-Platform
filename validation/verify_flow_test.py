@@ -271,6 +271,9 @@ class VerifyFlowFollowsConfigTest(unittest.TestCase):
             "verify_flow", {"BROKERS": "broker:9092"},
             "verify_flow.build_parser().get_default('brokers')"), "broker:9092")
         self.assertEqual(module_follows_override(
+            "verify_flow", {"TOPIC_EVENTS": "evt-x"},
+            "verify_flow.build_parser().get_default('events_topic')"), "evt-x")
+        self.assertEqual(module_follows_override(
             "verify_flow", {"EMA_TOLERANCE": Decimal("1e-3")},
             "str(verify_flow.build_parser().get_default('tolerance'))"), "0.001")
         self.assertEqual(module_follows_override(

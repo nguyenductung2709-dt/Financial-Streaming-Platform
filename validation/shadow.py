@@ -18,8 +18,9 @@ Watermark model (PDF 3.1; the design's per-event idealization is an upper
     raises the max is never itself late: its window's last timestamp is
     at or after it).
   - Drop rule: is_late (shared with the CSV generator) - an event is
-    dropped iff its window's maxTimestamp is <= the watermark (note the
-    `<=`: exactly at the watermark is late, one ms above is kept).
+    dropped iff its window's maxTimestamp is <= the watermark plus any
+    allowed lateness (note the `<=`: exactly at the watermark is late,
+    one ms above is kept).
   - At-risk: the drop rule's victims.  A window in which the model
     drops at least one event may mismatch the keep-all shadow for
     watermark reasons (periodic watermarking can only drop fewer),

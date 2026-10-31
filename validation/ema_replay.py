@@ -8,9 +8,10 @@ documents/CS_E4780_Course_Project_2026.pdf.
 
 Also the processor's late-event rule (is_late), shared by the CSV
 generator and the stream shadow: services/streaming-processor uses
-forBoundedOutOfOrderness(70 s) with allowed lateness 0, so the watermark
-is `max trade time seen - OutOfOrdernessMs - 1 ms` and an event is
-dropped once its window's last timestamp has reached that watermark.
+forBoundedOutOfOrderness(70 s), so the watermark is
+`max trade time seen - OutOfOrdernessMs - 1 ms` and an event is
+dropped once its window's last timestamp has reached that watermark
+plus any AllowedLatenessMs (the processor sets none: 0).
 
 Arithmetic (must stay byte-for-byte identical to the CSV generator):
 EMA_i = (Close_i * 2 + EMA_{i-1} * (j-1)) / (j+1) as one division under a
@@ -34,11 +35,13 @@ DECIMAL_PREC = config.DECIMAL_PREC
 OutOfOrdernessMs = config.OUT_OF_ORDERNESS_MS
 
 
-def is_late(tt_ms: int, max_tt_ms: int, out_of_orderness_ms: int) -> bool:
+def is_late(tt_ms: int, max_tt_ms: int, out_of_orderness_ms: int,
+            allowed_lateness_ms: int = config.ALLOWED_LATENESS_MS) -> bool:
     """Whether Flink drops an event: the watermark (max trade time seen -
-    out_of_orderness - 1 ms) has reached its window's last timestamp."""
+    out_of_orderness - 1 ms, plus any allowed lateness) has reached its
+    window's last timestamp."""
     window_last_ms = (tt_ms // WindowMs + 1) * WindowMs - 1
-    return window_last_ms <= max_tt_ms - out_of_orderness_ms - 1
+    return window_last_ms <= max_tt_ms - out_of_orderness_ms - 1 - allowed_lateness_ms
 
 
 class CloseState(NamedTuple):

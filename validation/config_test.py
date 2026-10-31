@@ -133,6 +133,17 @@ class EmaReplayFollowsConfigTest(unittest.TestCase):
             "inspect.signature(ema_replay.replay).parameters['ema_init'].default"),
             "first-close")
 
+    def test_allowed_lateness_softens_the_drop_rule(self):
+        # window_last 299_999 is exactly at the 70 s watermark (max 370_000):
+        # dropped at lateness 0, kept once ALLOWED_LATENESS_MS moves the
+        # horizon past it.
+        self.assertEqual(module_follows_override(
+            "ema_replay", {"ALLOWED_LATENESS_MS": 5_000},
+            "ema_replay.is_late(100_000, 370_000, 70_000)"), "False")
+        self.assertEqual(module_follows_override(
+            "ema_replay", {},
+            "ema_replay.is_late(100_000, 370_000, 70_000)"), "True")
+
 
 class GeneratorFollowsConfigTest(unittest.TestCase):
     def test_constants_follow_config(self):
@@ -146,10 +157,24 @@ class GeneratorFollowsConfigTest(unittest.TestCase):
             "generate_validation_data", {"OUT_OF_ORDERNESS_MS": 123},
             "generate_validation_data.OUT_OF_ORDERNESS_MS"), "123")
         self.assertEqual(module_follows_override(
+            "generate_validation_data", {"WINDOW_MS": 299_999},
+            "generate_validation_data.WINDOW_MS"), "299999")
+        self.assertEqual(module_follows_override(
+            "generate_validation_data", {"EMA_J_SHORT": 37},
+            "generate_validation_data.J_SHORT"), "37")
+        self.assertEqual(module_follows_override(
+            "generate_validation_data", {"EMA_J_LONG": 101},
+            "generate_validation_data.J_LONG"), "101")
+        self.assertEqual(module_follows_override(
             "generate_validation_data", {"EMA_INIT": "zero-window"},
             "inspect.signature(generate_validation_data.run)"
             ".parameters['ema_init'].default"),
             "zero-window")
+        self.assertEqual(module_follows_override(
+            "generate_validation_data", {"EMA_INIT": "first-close"},
+            "inspect.signature(generate_validation_data.compute_outputs)"
+            ".parameters['ema_init'].default"),
+            "first-close")
 
 
 class KafkaTopicsFollowsConfigTest(unittest.TestCase):
@@ -167,6 +192,11 @@ class KafkaTopicsFollowsConfigTest(unittest.TestCase):
             "kafka_topics", {"CONSUMER_GROUP_ID": "other-group"},
             "kafka_topics.CONSUMER_GROUP_ID"), "other-group")
 
+    def test_group_id_is_wired_into_the_consumer_dict(self):
+        source = (Path(__file__).resolve().parent / "kafka_topics.py"
+                  ).read_text(encoding="utf-8")
+        self.assertRegex(source, r'"group\.id":\s*CONSUMER_GROUP_ID')
+
 
 class FlowScriptsFollowsConfigTest(unittest.TestCase):
     RESET = Path(__file__).resolve().parent.parent / "scripts" / "reset-flow.py"
@@ -181,8 +211,10 @@ class FlowScriptsFollowsConfigTest(unittest.TestCase):
             self.RESET, {"FLINK_JOB_NAME": "other-job"}, "module.JOB_NAME"),
             "other-job")
         self.assertEqual(script_follows_override(
-            self.RESET, {"TOPIC_EVENTS": "evt"}, "module.TOPICS"),
-            "('evt', 'trade-events-dlq', 'ema-windows', 'trade-advisories')")
+            self.RESET, {"TOPIC_EVENTS": "evt", "TOPIC_DLQ": "dlq",
+                         "TOPIC_EMA_WINDOWS": "ema", "TOPIC_TRADE_ADVISORIES":
+                         "adv"}, "module.TOPICS"),
+            "('evt', 'dlq', 'ema', 'adv')")
 
     def test_submit_flink_job_follows_config(self):
         self.assertEqual(script_follows_override(
