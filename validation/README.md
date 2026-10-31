@@ -20,16 +20,27 @@ the watermark (max trade time seen - 70 s - 1 ms) has passed the end of its
 cannot become a symbol's first window. Use `--out-of-orderness-seconds N` to
 change the delay or `--keep-late-events` to turn the rule off.
 
+One divergence: the generator's watermark advances with every event, Flink's
+only every 200 ms, so a late event arriving right after the event that
+closed its window may still be kept by Flink.
+`diagnostics.drops_pending_watermark_emission` counts these events and
+`drops_pending_watermark_emission.csv` extracts them, when any, for separate
+live tests.
+
 ## Outputs
 
 - `ema_windows.csv` - one row per (symbol, window with price events): the
-window's close (price, micros, source row), EMA(38)/EMA(100) and the previous
-emitted pair (micros, 9 decimals), the advisory, and diagnostics.
+  window's close (price, micros, source row), EMA(38)/EMA(100) and the previous
+  emitted pair (micros, 9 decimals), the advisory, and diagnostics.
 
 - `advisories.csv` - one row per BUY/SELL advisory.
 
+- `drops_pending_watermark_emission.csv` - written only when such events
+  exist: the drops whose outcome depends on Flink's periodic watermark
+  emission timing (see Late events), for separate live tests.
+
 - `summary.json` - input checksum, row accounting (skipped/rejected/accepted/
   dropped late),
-symbol and window statistics, advisory counts, diagnostics, and the recorded
-spec and interpretation notes.
+  symbol and window statistics, advisory counts, diagnostics, and the recorded
+  spec and interpretation notes.
 

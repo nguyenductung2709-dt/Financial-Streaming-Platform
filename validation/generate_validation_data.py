@@ -11,7 +11,11 @@ trade-events topic): preamble lines 1-11 and 13 are skipped (line 12 is the
 header); a row is a price event iff `Last` is non-empty, a nonnegative
 decimal with at most six fractional digits, and non-zero; trade time =
 `Trading date` (falling back to the system `Date` column) + `Trading time`
-parsed strictly as DD-MM-YYYY HH:MM:SS.sss CEST wall clock; prices are exact
+parsed like Go's time.Parse with layout "02-01-2006 15:04:05.000" in a fixed
+CEST zone: DD-MM-YYYY, one- or two-digit hour, two-digit minute and second,
+and "." or "," before exactly three millisecond digits; instants before
+0001-01-01T00:00:00Z UTC (0001-01-01 before 02:00 CEST) are rejected like the
+producer's protobuf range check; prices are exact
 integers in millionths (micros); rows the producer would reject are excluded
 and counted as would-DLQ.
 
@@ -22,9 +26,13 @@ window the watermark (max trade time seen - 70 s - 1 ms) has already passed is
 dropped by Flink.  The script applies the same rule in file order and only
 counts the dropped events (rows.dropped_late_by_watermark).
 --out-of-orderness-seconds changes the delay, --keep-late-events disables the
-rule.  The watermark here advances after every event while Flink emits it
-periodically, so an event right at the cutoff can be kept by Flink and dropped
-here.
+rule.  One divergence: the watermark here advances with every event while
+Flink emits it every 200 ms (auto-watermark interval), so a late event
+arriving right after the event that closed its window -- 07:04 -> 07:07 ->
+07:04:40 -- is dropped here but may be kept by Flink.
+diagnostics.drops_pending_watermark_emission counts these (a lower bound)
+and, when any, extracts them to drops_pending_watermark_emission.csv for
+separate testing.
 
 Interpretation decisions (recorded in summary.json):
   1. The EMA of the previous window is 0, so a symbol's first EMA is
@@ -71,6 +79,8 @@ PRICE_SCALE = 1_000_000    # prices are exact integers in millionths, like last_
 UINT64_MAX = 2**64 - 1
 # StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s), allowed lateness 0.
 OUT_OF_ORDERNESS_MS = 70_000
+# Rows extracted to drops_pending_watermark_emission.csv (the summary count is exact).
+EMISSION_CASES_CAP = 1_000
 DECIMAL_PREC = 50          # far tighter than double precision
 EMA_PLACES = 9             # decimals emitted for EMA values in micros
 J_SHORT, J_LONG = 38, 100  # smoothing factors (PDF 3.2, 3.3)
@@ -82,9 +92,11 @@ J_SHORT, J_LONG = 38, 100  # smoothing factors (PDF 3.2, 3.3)
 EMA_INIT_MODES = ("prev-zero", "first-close", "zero-window")
 
 REQUIRED_COLUMNS = ("ID", "SecType", "Last", "Trading time", "Trading date")
-# parseTradeTime in event.go uses the Go layout "02-01-2006 15:04:05.000".
+# parseTradeTime in event.go uses the Go layout "02-01-2006 15:04:05.000":
+# Go takes a one- or two-digit hour and either "." or "," before the exactly
+# three millisecond digits.
 DATE_RE = re.compile(r"\A(\d{2})-(\d{2})-(\d{4})\Z")
-TIME_RE = re.compile(r"\A(\d{2}):(\d{2}):(\d{2})\.(\d{3})\Z")
+TIME_RE = re.compile(r"\A(\d{1,2}):(\d{2}):(\d{2})[.,](\d{3})\Z")
 
 # closes[(symbol, window_index)] = [close_tt_ms, close_row, close_micros,
 #                                   arrival_micros, arrival_row, event_count]
@@ -125,11 +137,13 @@ def parse_price_micros(text):
 
 
 def parse_trade_dt(date_text, time_text):
-    """DD-MM-YYYY + HH:MM:SS.sss -> (day_ordinal, seconds_of_day, millis).
+    """DD-MM-YYYY + H(H):MM:SS[.,]sss -> (day_ordinal, seconds_of_day, millis).
 
-    Mirrors parseTradeTime in event.go (fixed CEST zone).  Window assignment
-    only depends on the wall clock, so any fixed offset gives identical
-    windows.
+    Mirrors parseTradeTime in event.go (fixed CEST zone): Go's time.Parse
+    accepts a one-digit hour and a comma before the milliseconds, and the
+    protobuf timestamp range starts at 0001-01-01T00:00:00Z (02:00 CEST).
+    Window assignment only depends on the wall clock, so any fixed offset
+    gives identical windows.
     """
     m, t = DATE_RE.match(date_text), TIME_RE.match(time_text)
     if m is None or t is None:
@@ -138,7 +152,10 @@ def parse_trade_dt(date_text, time_text):
     hh, mi, ss, ms = int(t[1]), int(t[2]), int(t[3]), int(t[4])
     if hh > 23 or mi > 59 or ss > 59:
         raise ValueError(f"trading time out of range {time_text!r}")
-    return day.toordinal(), hh * 3600 + mi * 60 + ss, ms
+    sod = hh * 3600 + mi * 60 + ss
+    if day == date.min and sod < 7200:  # before 02:00 CEST = before the protobuf range start
+        raise ValueError(f"trade time before 0001-01-01T00:00:00Z UTC {date_text!r} {time_text!r}")
+    return day.toordinal(), sod, ms
 
 
 def is_late(tt_ms, max_tt_ms, out_of_orderness_ms):
@@ -152,15 +169,20 @@ def scan_events(csv_path, limit_rows=None, out_of_orderness_ms=OUT_OF_ORDERNESS_
     """Single pass over the CSV, mirroring the producer's row handling.
 
     Price events later than the watermark are dropped like the Flink job does
-    (None keeps them all) and only counted.  Returns (closes, symbols, stats)
-    with per (symbol, window) close state (close by trade time, tie: later
-    row; plus last-arrival state for diagnostics), per symbol [sectype,
-    last_tt_ms, late_count], and counters.
+    (None keeps them all) and only counted.  Returns (closes, symbols, stats,
+    emission_cases) with per (symbol, window) close state (close by trade
+    time, tie: later row; plus last-arrival state for diagnostics), per symbol
+    [sectype, last_tt_ms, late_count], counters, and the (source_row, symbol,
+    trade_time_ms) of dropped events whose window the immediately preceding
+    event just closed -- Flink's periodic watermark emission (200 ms
+    auto-watermark interval) may not have fired yet, so it may keep them.
     """
     stats = Counter()
     closes, symbols = {}, {}
     columns = None
     max_tt_ms = float("-inf")  # the watermark follows the max trade time over all symbols
+    prev_row_max = float("-inf")  # the same max as of the previous event row (one-event lag)
+    emission_cases = []
     started = time.monotonic()
     with open(csv_path, newline="", encoding="utf-8", errors="replace") as f:
         reader = csv.reader(f)
@@ -180,14 +202,14 @@ def scan_events(csv_path, limit_rows=None, out_of_orderness_ms=OUT_OF_ORDERNESS_
             if columns is None:
                 raise ValueError("CSV header is missing at line 12")
 
+            if limit_rows is not None and stats["data_rows"] >= limit_rows:
+                stats["truncated"] = 1
+                break
             stats["data_rows"] += 1
             if stats["data_rows"] % 5_000_000 == 0:
                 print(f"  rows={stats['data_rows']:,} events={stats['price_events']:,} "
                       f"windows={len(closes):,} {time.monotonic() - started:.0f}s",
                       file=sys.stderr, flush=True)
-            if limit_rows is not None and stats["data_rows"] > limit_rows:
-                stats["truncated"] = 1
-                break
             if len(record) <= max_required:
                 raise ValueError(f"CSV line {line} is missing required fields")
 
@@ -223,8 +245,15 @@ def scan_events(csv_path, limit_rows=None, out_of_orderness_ms=OUT_OF_ORDERNESS_
 
             stats["price_events"] += 1
             tt_ms = ordinal * MS_PER_DAY + sod * 1000 + ms
+            lag_max, prev_row_max = prev_row_max, max_tt_ms  # one-event watermark lag
             if out_of_orderness_ms is not None and is_late(tt_ms, max_tt_ms, out_of_orderness_ms):
                 stats["dropped_late"] += 1
+                if not is_late(tt_ms, lag_max, out_of_orderness_ms):
+                    # Only the immediately preceding event closed this window;
+                    # Flink may not have emitted the watermark yet.
+                    stats["drops_pending_emission"] += 1
+                    if len(emission_cases) < EMISSION_CASES_CAP:
+                        emission_cases.append((line, symbol, tt_ms))
                 continue
             max_tt_ms = max(max_tt_ms, tt_ms)
             sym_state = symbols.get(symbol)
@@ -246,7 +275,7 @@ def scan_events(csv_path, limit_rows=None, out_of_orderness_ms=OUT_OF_ORDERNESS_
                 if tt_ms > w[TT_MS] or (tt_ms == w[TT_MS] and line > w[CLOSE_ROW]):
                     w[TT_MS], w[CLOSE_ROW], w[CLOSE_MICROS] = tt_ms, line, micros
     stats["scan_seconds"] = round(time.monotonic() - started, 1)
-    return closes, symbols, stats
+    return closes, symbols, stats, emission_cases
 
 
 def fmt_ema(value):
@@ -259,14 +288,19 @@ def micros_to_price(micros):
     return f"{micros // PRICE_SCALE}.{micros % PRICE_SCALE:06d}"
 
 
+def ms_to_wall_clock(ms):
+    """A millisecond timestamp as a CEST wall-clock string (millisecond precision)."""
+    ordinal, rem = divmod(ms, MS_PER_DAY)
+    hour, rem = divmod(rem, 3_600_000)
+    minute, second = divmod(rem, 60_000)
+    return (f"{date.fromordinal(ordinal).isoformat()}T{hour:02d}:{minute:02d}:"
+            f"{second // 1000:02d}.{second % 1000:03d}")
+
+
 def window_bounds(widx):
     """[start, end) of a window as CEST wall-clock strings."""
-    def fmt(ms):
-        ordinal, rem = divmod(ms, MS_PER_DAY)
-        hour, rem = divmod(rem, 3_600_000)
-        return f"{date.fromordinal(ordinal).isoformat()}T{hour:02d}:{rem // 60_000:02d}"
     start = widx * WINDOW_MS
-    return fmt(start), fmt(start + WINDOW_MS)
+    return ms_to_wall_clock(start)[:16], ms_to_wall_clock(start + WINDOW_MS)[:16]
 
 
 def compute_outputs(closes, symbols, out_dir, ema_init="prev-zero"):
@@ -353,13 +387,22 @@ def run(csv_path, out_dir, limit_rows=None, ema_init="prev-zero", compute_md5=Tr
         out_of_orderness_ms=OUT_OF_ORDERNESS_MS):
     print(f"Input CSV : {csv_path}")
     print(f"Output dir: {out_dir}")
-    closes, symbols, stats = scan_events(csv_path, limit_rows=limit_rows,
-                                         out_of_orderness_ms=out_of_orderness_ms)
+    closes, symbols, stats, emission_cases = scan_events(csv_path, limit_rows=limit_rows,
+                                                         out_of_orderness_ms=out_of_orderness_ms)
     if stats["dropped_late"]:
         print(f"Dropped {stats['dropped_late']:,} late events (watermark delay "
               f"{out_of_orderness_ms / 1000:g}s)")
     print(f"Computing EMAs and advisories (init={ema_init})...")
     out_stats, ema_path, adv_path = compute_outputs(closes, symbols, out_dir, ema_init)
+    pending_path = None
+    if emission_cases:
+        pending_path = out_dir / "drops_pending_watermark_emission.csv"
+        with open(pending_path, "w", newline="", encoding="utf-8") as fpend:
+            w_pend = csv.writer(fpend, lineterminator="\n")
+            w_pend.writerow(["source_row", "symbol", "trade_time", "window_start", "window_end"])
+            for row, symbol, event_tt_ms in emission_cases:
+                start, end = window_bounds(event_tt_ms // WINDOW_MS)
+                w_pend.writerow([row, symbol, ms_to_wall_clock(event_tt_ms), start, end])
 
     summary = {
         "spec": {
@@ -414,11 +457,14 @@ def run(csv_path, out_dir, limit_rows=None, ema_init="prev-zero", compute_md5=Tr
             "late_events": stats["late_events"],
             "symbols_with_late_events": sum(1 for s in symbols.values() if s[LATE]),
             "windows_where_arrival_close_differs": out_stats["arrival_close_differs"],
+            "drops_pending_watermark_emission": stats["drops_pending_emission"],
         },
         "outputs": {
             "ema_windows_csv": display_path(ema_path),
             "advisories_csv": display_path(adv_path),
             "ema_rows": out_stats["ema_rows"],
+            "drops_pending_watermark_emission_csv":
+                display_path(pending_path) if pending_path is not None else None,
         },
         "run": {"scan_seconds": stats["scan_seconds"], "python_version": sys.version.split()[0]},
     }
@@ -428,6 +474,11 @@ def run(csv_path, out_dir, limit_rows=None, ema_init="prev-zero", compute_md5=Tr
         f.write("\n")
     print(f"Wrote {ema_path} ({summary['outputs']['ema_rows']:,} rows)")
     print(f"Wrote {adv_path} ({summary['advisories']['buy'] + summary['advisories']['sell']:,} rows)")
+    if pending_path is not None:
+        cap_note = "" if stats["drops_pending_emission"] == len(emission_cases) \
+            else f" (first {len(emission_cases):,} extracted)"
+        print(f"Wrote {pending_path} "
+              f"({stats['drops_pending_emission']:,} events{cap_note})")
     print(f"Wrote {summary_path}")
     return summary
 

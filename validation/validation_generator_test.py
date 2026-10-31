@@ -114,10 +114,16 @@ class ParsePriceMicrosTest(unittest.TestCase):
 
 class ParseTradeDtTest(unittest.TestCase):
     def test_accepted(self):
-        for d, t in [("12-11-2021", "07:00:00.123"), ("29-02-2020", "23:59:59.999")]:
+        for d, t in [("12-11-2021", "07:00:00.123"), ("29-02-2020", "23:59:59.999"),
+                     # Go's time.Parse takes a one-digit hour and a comma
+                     # before the milliseconds (layout "15:04:05.000").
+                     ("12-11-2021", "7:00:00.000"), ("12-11-2021", "07:00:00,123"),
+                     ("12-11-2021", "7:00:00,123"),
+                     # 02:00 CEST = 0001-01-01T00:00:00Z, the protobuf range start.
+                     ("01-01-0001", "02:00:00.000")]:
             with self.subTest(date=d, time=t):
                 ordinal, sod, ms = gvd.parse_trade_dt(d, t)
-                dt = datetime.strptime(d + " " + t, "%d-%m-%Y %H:%M:%S.%f")
+                dt = datetime.strptime(d + " " + t.replace(",", "."), "%d-%m-%Y %H:%M:%S.%f")
                 self.assertEqual(date.fromordinal(ordinal), dt.date())
                 self.assertEqual(sod, dt.hour * 3600 + dt.minute * 60 + dt.second)
                 self.assertEqual(ms, dt.microsecond // 1000)
@@ -128,7 +134,16 @@ class ParseTradeDtTest(unittest.TestCase):
                      ("29-02-2021", "07:00:00.000"), ("12-11-2021", "24:00:00.000"),
                      ("12-11-2021", "07:60:00.000"), ("12-11-2021", "07:00:60.000"),
                      ("12-11-2021", "07:00:00"), ("12-11-2021", "07:00:00.1234"),
-                     ("12-11-2021", "7:00:00.000"), ("1-11-2021", "07:00:00.000")]:
+                     ("12-11-2021", "07:00:00.12"), ("12-11-2021", "07:00:00."),
+                     ("12-11-2021", "07:00:00,"),
+                     # Go's layout needs two digits for minute and second.
+                     ("12-11-2021", "07:0:00.000"), ("12-11-2021", "07:00:0.000"),
+                     ("1-11-2021", "07:00:00.000"), ("12-1-2021", "07:00:00.000"),
+                     ("12-11-21", "07:00:00.000"),
+                     # Before 0001-01-01T00:00:00Z UTC: the producer's
+                     # timestamppb.CheckValid sends these to the DLQ.
+                     ("01-01-0000", "07:00:00.000"), ("01-01-0001", "00:30:00.000"),
+                     ("01-01-0001", "01:59:59.999")]:
             with self.subTest(date=d, time=t):
                 with self.assertRaises(ValueError):
                     gvd.parse_trade_dt(d, t)
@@ -139,6 +154,11 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(gvd.micros_to_price(57_117_900), "57.117900")
         self.assertEqual(gvd.micros_to_price(1), "0.000001")
         self.assertEqual(gvd.micros_to_price(0), "0.000000")
+
+    def test_ms_to_wall_clock(self):
+        self.assertEqual(gvd.ms_to_wall_clock(tt(8, 5, 30, 123)), "2021-11-12T08:05:30.123")
+        self.assertEqual(gvd.ms_to_wall_clock(tt(0, 0, 0, 0, day=date(2021, 11, 13))),
+                         "2021-11-13T00:00:00.000")
 
     def test_window_bounds(self):
         base = date(2021, 11, 12).toordinal() * 288
@@ -302,6 +322,10 @@ class LateEventDropTest(SyntheticCsvTestCase):
                          ("2", "20000000", "16"))
         self.assertEqual(summary["rows"]["price_events_accepted"], 5)
         self.assertEqual(summary["rows"]["dropped_late_by_watermark"], 1)
+        # The closing event is the immediately preceding one and only 1 ms of
+        # watermark separates late from on-time: Flink emits watermarks every
+        # 200 ms, so it may keep this event when no emission fired in between.
+        self.assertEqual(summary["diagnostics"]["drops_pending_watermark_emission"], 1)
 
     def test_stale_tail_event_does_not_become_the_first_window(self):
         summary = self.run_csv(stale_tail_rows())
@@ -318,6 +342,10 @@ class LateEventDropTest(SyntheticCsvTestCase):
                          {"EEE.FR"})
         self.assertEqual(summary["symbols"]["with_price_events"], 1)
         self.assertEqual(summary["rows"]["dropped_late_by_watermark"], 1)
+        # Emission-dependent as well: before the very first periodic emission
+        # the window operator's watermark is still Long.MIN_VALUE, so Flink
+        # may keep this event.
+        self.assertEqual(summary["diagnostics"]["drops_pending_watermark_emission"], 1)
 
     def test_disabled_keeps_the_stale_event_as_first_window(self):
         summary = self.run_csv(stale_tail_rows(), out_of_orderness_ms=None)
@@ -364,6 +392,95 @@ class LateEventDropCliTest(SyntheticCsvTestCase):
     def test_keep_late_events_conflicts_with_out_of_orderness_seconds(self):
         self.assertIn("not allowed with argument",
                       self.parse_error("--keep-late-events", "--out-of-orderness-seconds", "70"))
+
+
+class LimitRowsTest(SyntheticCsvTestCase):
+    """--limit-rows stops before the first unprocessed row; data_rows counts
+    only the rows actually processed (the triggering row is excluded)."""
+
+    ROWS = [data_row("LIM.NL", "E", "08:01:00.000", f"{price}.000000")
+            for price in range(1, 5)]
+
+    def test_limit_counts_only_processed_rows(self):
+        summary = self.run_csv(self.ROWS, limit_rows=1)
+        self.assertEqual(summary["rows"]["data_rows"], 1)
+        self.assertTrue(summary["input"]["truncated_by_limit"])
+        self.assertEqual([r["close_micros"] for r in read_csv(self.out_dir / "ema_windows.csv")],
+                         ["1000000"])  # only the first row was processed
+
+    def test_limit_zero_processes_nothing(self):
+        summary = self.run_csv(self.ROWS, limit_rows=0)
+        self.assertEqual(summary["rows"]["data_rows"], 0)
+        self.assertTrue(summary["input"]["truncated_by_limit"])
+        self.assertEqual(read_csv(self.out_dir / "ema_windows.csv"), [])
+
+    def test_limit_covering_the_whole_file_truncates_nothing(self):
+        for limit in (len(self.ROWS), len(self.ROWS) + 3):
+            with self.subTest(limit=limit):
+                out_dir = self.out_dir / f"l{limit}"
+                summary = gvd.run(csv_path=self.write_csv(self.ROWS), out_dir=out_dir,
+                                  compute_md5=False, limit_rows=limit)
+                self.assertEqual(summary["rows"]["data_rows"], len(self.ROWS))
+                self.assertFalse(summary["input"]["truncated_by_limit"])
+
+
+class WatermarkEmissionTimingTest(SyntheticCsvTestCase):
+    """The generator's watermark advances with every event; Flink emits it on
+    a processing-time timer (200 ms auto-watermark interval by default), so a
+    dropped event whose window the immediately preceding event just closed may
+    be kept by the live job.  Those events are counted (a lower bound: one
+    emission can lag more than one event) and extracted for separate tests."""
+
+    PENDING = "drops_pending_watermark_emission.csv"
+
+    def test_late_event_right_after_its_window_closes_is_extracted(self):
+        summary = self.run_csv([
+            data_row("AAA.NL", "E", "07:04:00.000", "10.000000"),
+            data_row("AAA.NL", "E", "07:07:00.000", "11.000000"),
+            data_row("BBB.NL", "E", "07:04:40.000", "12.000000"),
+        ])
+        self.assertEqual(summary["rows"]["dropped_late_by_watermark"], 1)
+        self.assertEqual(summary["diagnostics"]["drops_pending_watermark_emission"], 1)
+        cases = read_csv(self.out_dir / self.PENDING)
+        self.assertEqual(len(cases), 1)
+        self.assertEqual((cases[0]["source_row"], cases[0]["symbol"]), ("16", "BBB.NL"))
+        self.assertEqual(cases[0]["trade_time"], "2021-11-12T07:04:40.000")
+        self.assertEqual((cases[0]["window_start"], cases[0]["window_end"]),
+                         ("2021-11-12T07:00", "2021-11-12T07:05"))
+        pending_csv = summary["outputs"]["drops_pending_watermark_emission_csv"]
+        self.assertTrue(pending_csv.endswith(self.PENDING))
+
+    def test_stale_tail_is_not_emission_dependent(self):
+        # Its window closed long before the previous event: the drop cannot
+        # be an emission-timing fluke, so it is not extracted.
+        summary = self.run_csv(stale_tail_rows())
+        self.assertEqual(summary["rows"]["dropped_late_by_watermark"], 1)
+        self.assertEqual(summary["diagnostics"]["drops_pending_watermark_emission"], 0)
+        self.assertFalse((self.out_dir / self.PENDING).exists())
+        self.assertIsNone(summary["outputs"]["drops_pending_watermark_emission_csv"])
+
+    def test_event_two_rows_after_the_cutoff_is_not_counted(self):
+        # 07:07 closed the window, one further event follows, then 07:04:40:
+        # Flink may still keep it within its 200 ms emission interval, but the
+        # per-event model cannot say - the diagnostic is a lower bound.
+        summary = self.run_csv([
+            data_row("AAA.NL", "E", "07:04:00.000", "10.000000"),
+            data_row("AAA.NL", "E", "07:07:00.000", "11.000000"),
+            data_row("AAA.NL", "E", "07:07:30.000", "13.000000"),
+            data_row("BBB.NL", "E", "07:04:40.000", "12.000000"),
+        ])
+        self.assertEqual(summary["rows"]["dropped_late_by_watermark"], 1)
+        self.assertEqual(summary["diagnostics"]["drops_pending_watermark_emission"], 0)
+
+    def test_keep_late_events_disables_the_diagnostic(self):
+        summary = self.run_csv([
+            data_row("AAA.NL", "E", "07:04:00.000", "10.000000"),
+            data_row("AAA.NL", "E", "07:07:00.000", "11.000000"),
+            data_row("BBB.NL", "E", "07:04:40.000", "12.000000"),
+        ], out_of_orderness_ms=None)
+        self.assertEqual(summary["rows"]["dropped_late_by_watermark"], 0)
+        self.assertEqual(summary["diagnostics"]["drops_pending_watermark_emission"], 0)
+        self.assertFalse((self.out_dir / self.PENDING).exists())
 
 
 class EmaInitModesTest(unittest.TestCase):
