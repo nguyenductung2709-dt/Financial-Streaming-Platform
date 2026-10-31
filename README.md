@@ -61,7 +61,8 @@ the database while retaining its data, run `docker compose stop postgres`.
 See the [official PostgreSQL image documentation](https://hub.docker.com/_/postgres)
 for initialization and storage behavior.
 
-Application tables will be introduced with the materializer's database migrations.
+Apply the [materializer's initial migration](services/materializer/README.md)
+to create the symbols, EMA windows, and trade advisories tables.
 
 ## CI checks
 
