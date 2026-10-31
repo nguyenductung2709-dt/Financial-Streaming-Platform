@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Single editable home for the validation's tunable constants.
+
+Every other module imports its constants from here and never
+re-hardcodes a value; config_test.py pins both the values and the
+wiring.  This module imports nothing from the package - the flow
+scripts load it standalone.  Sections mirror the design:
+docs/superpowers/specs/2026-10-31-validation-config-design.md.
+"""
+
+from decimal import Decimal
+
+# --- Pipeline spec mirrors (change in pairs with the Scala side) ---
+# StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s).
+OUT_OF_ORDERNESS_MS = 70_000
+# StreamingProcessor: TumblingEventTimeWindows.of(Duration.ofMinutes(5)).
+WINDOW_MS = 300_000
+# EmaProcessFunction: next(..., period = 38) / next(..., period = 100).
+EMA_J_SHORT = 38
+EMA_J_LONG = 100
+# Documented interpretation (PDF): the EMA of the previous window is 0;
+# the generator's --ema-init lists the alternatives.
+EMA_INIT = "prev-zero"
+# The processor sets no allowedLateness: windows die at the watermark.
+ALLOWED_LATENESS_MS = 0
+
+# --- Validation-tool knobs ---
+# EMA comparison tolerance in price units (= 1e-3 micros).
+EMA_TOLERANCE = Decimal("1e-9")
+# Per-mismatch-class cap of windows listed in the JSON report.
+MAX_REPORT_MISMATCHES = 100
+# Unexplained windows printed to the console.
+SUMMARY_EXAMPLES = 10
+# Decimal-context digits for the EMA replay (far tighter than double).
+DECIMAL_PREC = 50
+# Decimals emitted for EMA values in micros.
+EMA_PLACES = 9
+
+# --- Infra/connection ---
+BROKERS = "localhost:19092"        # compose.yaml redpanda external port
+TOPIC_EVENTS = "trade-events"     # compose.yaml / producer / processor
+TOPIC_DLQ = "trade-events-dlq"
+TOPIC_EMA_WINDOWS = "ema-windows"
+TOPIC_TRADE_ADVISORIES = "trade-advisories"
+FLINK_REST_URL = "http://localhost:8081"  # compose.yaml jobmanager REST
+FLINK_JOB_NAME = "market-price-event-consumer"
+KAFKA_POLL_TIMEOUT_S = 1.0        # kafka_topics.consume_all poll
+WATERMARK_ATTEMPTS = 5            # transient watermark-query retries
+WATERMARK_BACKOFF_S = 0.5
+CONSUMER_GROUP_ID = "full-flow-validation"  # placeholder; assignment is manual
+DEFAULT_REPORT_PATH = "validation/out/flow-report.json"
