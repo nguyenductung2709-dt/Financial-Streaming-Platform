@@ -9,7 +9,7 @@ FLINK_START_TIMEOUT ?= 120
 	build-data-producer test-data-producer run-data-producer \
 	build-streaming-processor test-streaming-processor \
 	formatall format-data-producer format-streaming-processor lint-streaming-processor \
-	generate-protobuf setup-hooks
+	generate-protobuf setup-hooks run-postgres postgres-shell
 
 help: ## Show command usage; also displayed by plain make
 	@printf 'Run from the repository root: make <target>\n\nCommands:\n\n'
@@ -25,6 +25,12 @@ help: ## Show command usage; also displayed by plain make
 		'  Processor: Java 17 and sbt.' \
 		'  Code generation: protoc and protoc-gen-go (see schemas/market/v1/README.md).' \
 		'  Publishing: a running broker, existing topics, and an input CSV.'
+
+run-postgres: ## Start PostgreSQL and wait until it accepts connections
+	docker compose up -d --wait --wait-timeout 60 postgres
+
+postgres-shell: ## Open psql in the running PostgreSQL container; exit with \q
+	docker compose exec postgres sh -c 'exec psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
 
 build-data-producer: ## Compile the Go producer to bin/data-producer
 	mkdir -p bin
