@@ -16,6 +16,7 @@ directory.
 
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -247,6 +248,44 @@ class MainTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("usage:", err.getvalue().lower())
         self.assertIn("--tolerance", err.getvalue())
+
+
+def module_follows_override(module_name, overrides, expression):
+    """`expression` evaluated against `module_name` in a fresh interpreter
+    (copied from config_test.py; see there for the rationale)."""
+    lines = ["import sys", "import inspect", "from decimal import Decimal",
+             f"sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})",
+             "import config"]
+    lines += [f"config.{name} = {value!r}" for name, value in overrides.items()]
+    lines += [f"import {module_name}", f"print({expression})"]
+    result = subprocess.run([sys.executable, "-c", "\n".join(lines)],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise AssertionError(f"override subprocess failed:\n{result.stderr}")
+    return result.stdout.strip()
+
+
+class VerifyFlowFollowsConfigTest(unittest.TestCase):
+    def test_cli_defaults_follow_config(self):
+        self.assertEqual(module_follows_override(
+            "verify_flow", {"BROKERS": "broker:9092"},
+            "verify_flow.build_parser().get_default('brokers')"), "broker:9092")
+        self.assertEqual(module_follows_override(
+            "verify_flow", {"EMA_TOLERANCE": Decimal("1e-3")},
+            "str(verify_flow.build_parser().get_default('tolerance'))"), "0.001")
+        self.assertEqual(module_follows_override(
+            "verify_flow", {"TOPIC_EMA_WINDOWS": "ema-x"},
+            "verify_flow.build_parser().get_default('ema_topic')"), "ema-x")
+        self.assertEqual(module_follows_override(
+            "verify_flow", {"TOPIC_TRADE_ADVISORIES": "adv-x"},
+            "verify_flow.build_parser().get_default('advisory_topic')"),
+            "adv-x")
+        self.assertEqual(module_follows_override(
+            "verify_flow", {"DEFAULT_REPORT_PATH": "r.json"},
+            "verify_flow.build_parser().get_default('report')"), "r.json")
+        self.assertEqual(module_follows_override(
+            "verify_flow", {"SUMMARY_EXAMPLES": 7},
+            "verify_flow.SUMMARY_EXAMPLES"), "7")
 
 
 if __name__ == "__main__":

@@ -18,12 +18,13 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+import config
 import bindings
 import compare as cmp
 import kafka_topics
 import shadow as sh
 
-SUMMARY_EXAMPLES = 10  # unexplained windows printed to the console
+SUMMARY_EXAMPLES = config.SUMMARY_EXAMPLES  # unexplained windows printed to the console
 
 
 def _decode(msg_type, value: bytes):
@@ -104,22 +105,27 @@ def _tolerance_arg(text: str) -> Decimal:
         raise ValueError(f"invalid tolerance: {text!r}")
 
 
-def main(argv=None) -> int:
-    """Parse the CLI args, run the validation, return 0 iff it passed."""
+def build_parser() -> argparse.ArgumentParser:
+    """The flow-validation CLI, defaults sourced from config."""
     parser = argparse.ArgumentParser(
         description="Validate a finished flow: shadow-replay trade-events"
                     " and compare against ema-windows/trade-advisories.")
-    parser.add_argument("--brokers", default="localhost:19092",
+    parser.add_argument("--brokers", default=config.BROKERS,
                         help="Kafka bootstrap brokers")
-    parser.add_argument("--events-topic", default="trade-events")
-    parser.add_argument("--ema-topic", default="ema-windows")
-    parser.add_argument("--advisory-topic", default="trade-advisories")
-    parser.add_argument("--report", default="validation/out/flow-report.json",
+    parser.add_argument("--events-topic", default=config.TOPIC_EVENTS)
+    parser.add_argument("--ema-topic", default=config.TOPIC_EMA_WINDOWS)
+    parser.add_argument("--advisory-topic", default=config.TOPIC_TRADE_ADVISORIES)
+    parser.add_argument("--report", default=config.DEFAULT_REPORT_PATH,
                         help="path of the JSON report to write")
     parser.add_argument("--tolerance", type=_tolerance_arg,
-                        default=Decimal("1e-9"),
+                        default=config.EMA_TOLERANCE,
                         help="EMA comparison tolerance in price units")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv=None) -> int:
+    """Parse the CLI args, run the validation, return 0 iff it passed."""
+    args = build_parser().parse_args(argv)
     topics = {"events": args.events_topic, "ema": args.ema_topic,
               "advisories": args.advisory_topic}
     result = run(args.brokers, topics, Path(args.report), args.tolerance)
