@@ -7,15 +7,19 @@ actual `ema-windows`/`trade-advisories` topics.  Spec:
 docs/superpowers/plans/2026-10-30-full-flow-validation.md.
 
 Watermark model (PDF 3.1; the design's per-event idealization is an upper
-bound on Flink's periodic watermarking):
+  bound on Flink's periodic watermarking):
   - The watermark is GLOBAL across symbols (single partition, parallelism
-    1): max trade time seen so far over all events minus OUT_OF_ORDERNESS.
+    1): max trade time seen so far over all events minus OutOfOrdernessMs
+    and Flink's extra 1 ms (BoundedOutOfOrdernessWatermarks emits
+    `maxTimestamp - delay - 1`).
   - Watermarks are generated at the source, before the window operator:
     the running max is updated from every event BEFORE its drop test, so
-    an event the model drops still advances the watermark.
-  - Drop rule: an event is dropped iff its window's maxTimestamp
-    `(tt_ms // WindowMs + 1) * WindowMs - 1` is <= running max - 70_000
-    (note the `<=`: exactly at the watermark is late).
+    an event the model drops still advances the watermark (an event that
+    raises the max is never itself late: its window's last timestamp is
+    at or after it).
+  - Drop rule: is_late (shared with the CSV generator) - an event is
+    dropped iff its window's maxTimestamp is <= the watermark (note the
+    `<=`: exactly at the watermark is late, one ms above is kept).
   - At-risk: the drop rule's victims.  A window in which the model
     drops at least one event may mismatch the keep-all shadow for
     watermark reasons (periodic watermarking can only drop fewer),
@@ -35,13 +39,13 @@ from typing import Iterable, NamedTuple
 
 from ema_replay import (
     CloseState,
+    OutOfOrdernessMs,
     WindowMs,
     WindowResult,
+    is_late,
     replay,
     update_close,
 )
-
-OutOfOrdernessMs = 70_000  # event-time lateness bound (watermark lag)
 
 
 class ShadowEvent(NamedTuple):
@@ -72,18 +76,15 @@ class ShadowOutput(NamedTuple):
     final_max_tt_ms: int | None
 
 
-def _window_max_tt(widx: int) -> int:
-    """A window's maxTimestamp: the last event time it can accept."""
-    return (widx + 1) * WindowMs - 1
-
-
 def shadow_replay(events: Iterable[ShadowEvent]) -> ShadowOutput:
     """One pass in arrival order -> keep-all and drop-model replays + at-risk.
 
     The running max (over ALL events, watermark generation at the source)
-    is updated before each event's drop test; keep-all accumulates every
-    event, the drop model only survivors; at-risk tracks the windows
-    the drop test rejected events for.
+    is updated before each event's drop test, so an event the model drops
+    still advances the watermark (an event that raises the max is never
+    itself late: its window's last timestamp is at or after it);
+    keep-all accumulates every event, the drop model only survivors;
+    at-risk tracks the windows the drop test rejected events for.
     """
     keep_closes: dict[tuple[str, int], CloseState] = {}
     drop_closes: dict[tuple[str, int], CloseState] = {}
@@ -97,7 +98,7 @@ def shadow_replay(events: Iterable[ShadowEvent]) -> ShadowOutput:
         key = (ev.symbol, ev.tt_ms // WindowMs)
         keep_closes[key] = update_close(
             keep_closes.get(key), ev.tt_ms, ev.micros, ev.order)
-        if _window_max_tt(key[1]) > max_tt - OutOfOrdernessMs:
+        if not is_late(ev.tt_ms, max_tt, OutOfOrdernessMs):
             drop_closes[key] = update_close(
                 drop_closes.get(key), ev.tt_ms, ev.micros, ev.order)
         else:

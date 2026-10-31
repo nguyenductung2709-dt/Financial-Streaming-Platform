@@ -6,10 +6,15 @@ Keep-all vs drop-model replay, the out-of-orderness drop rule (with its
 cross-checks against an independent exact-rational model
 (fractions.Fraction), mirroring ema_replay_test.py.
 
-Timelines are chosen so window maxTimestamps land exactly on
-`max_tt_so_far - 70_000` boundaries: (w + 1) * 300_000 - 1 + 70_000 =
-(w + 1) * 300_000 + 69_999, so a max of 369_999 makes window 0's
-maxTimestamp (299_999) exactly equal to the watermark (299_999).
+The drop rule is ema_replay.is_late, shared with the CSV generator: the
+watermark is `max_tt_so_far - 70_000 - 1` (Flink's
+BoundedOutOfOrdernessWatermarks emits `maxTimestamp - delay - 1`), and a
+window dies for an event when its maxTimestamp reaches that watermark.
+Timelines are chosen so window maxTimestamps land exactly on watermark
+boundaries: (w + 1) * 300_000 - 1 + 70_001 = (w + 1) * 300_000 + 70_000,
+so a max of 370_000 makes window 0's maxTimestamp (299_999) exactly
+equal to the watermark (299_999), and a max of 369_999 sits it one ms
+above.
 """
 
 import random
@@ -78,7 +83,7 @@ class LateEventTest(unittest.TestCase):
             make_event(SYM, 150_000, 9_000_000, 2),      # w0, late
         ]
         result = sh.shadow_replay(events)
-        # drop rule: w0 maxTimestamp 299_999 <= 1_000_000 - 70_000 = 930_000
+        # drop rule: w0 maxTimestamp 299_999 <= watermark 1_000_000 - 70_000 - 1
         self.assertEqual(keys(result.keep_all), {(SYM, 0), (SYM, 3)})
         self.assertEqual(keys(result.drop_model), {(SYM, 3)})
         self.assertEqual(result.keep_all[(SYM, 0)].close_micros, 9_000_000)
@@ -95,9 +100,9 @@ class BoundaryTest(unittest.TestCase):
     """Window maxTimestamp exactly at the watermark is dropped (<=)."""
 
     def test_exact_equality_is_dropped(self):
-        # max 369_999 -> watermark 299_999; w0 maxTimestamp is exactly 299_999
+        # max 370_000 -> watermark 299_999; w0 maxTimestamp is exactly 299_999
         events = [
-            make_event(SYM, 369_999, 10_000_000, 1),  # w1
+            make_event(SYM, 370_000, 10_000_000, 1),  # w1
             make_event(SYM, 100_000, 9_000_000, 2),   # w0, maxTimestamp == watermark
         ]
         result = sh.shadow_replay(events)
@@ -105,9 +110,9 @@ class BoundaryTest(unittest.TestCase):
         self.assertEqual(keys(result.drop_model), {(SYM, 1)})
 
     def test_one_ms_above_is_kept(self):
-        # max 369_998 -> watermark 299_998; w0 maxTimestamp 299_999 is above
+        # max 369_999 -> watermark 299_998; w0 maxTimestamp 299_999 is above
         events = [
-            make_event(SYM, 369_998, 10_000_000, 1),
+            make_event(SYM, 369_999, 10_000_000, 1),
             make_event(SYM, 100_000, 9_000_000, 2),
         ]
         result = sh.shadow_replay(events)
@@ -122,18 +127,18 @@ class WatermarkAdvanceTest(unittest.TestCase):
     The running max comes from ALL events (watermarks are generated at
     the source, before the window operator) and is updated before each
     event's drop test, so a chain of drops lands on the formula
-    `wmax <= max_so_far - 70_000` against the all-events max.
+    `wmax <= max_so_far - 70_000 - 1` against the all-events max.
     """
 
     def test_dropped_events_advance_watermark_for_subsequent_decisions(self):
         events = [
             make_event(SYM, 1_000_000, 50_000_000, 1),  # w3 keep; max -> 1_000_000
-            make_event(SYM, 150_000, 1_000_000, 2),     # w0 drop (299_999 <= 930_000)
+            make_event(SYM, 150_000, 1_000_000, 2),     # w0 drop (299_999 <= 929_999)
             make_event(SYM, 280_000, 2_000_000, 3),     # w0 drop (same window, same max)
             make_event(SYM, 2_000_000, 60_000_000, 4),  # w6 keep; max -> 2_000_000
-            make_event(SYM, 1_530_000, 3_000_000, 5),   # w5 drop (1_799_999 <= 1_930_000)
+            make_event(SYM, 1_530_000, 3_000_000, 5),   # w5 drop (1_799_999 <= 1_929_999)
             make_event(SYM, 1_700_000, 4_000_000, 6),   # w5 drop
-            make_event(SYM, 1_000_100, 5_000_000, 7),   # w3 drop (1_199_999 <= 1_930_000)
+            make_event(SYM, 1_000_100, 5_000_000, 7),   # w3 drop (1_199_999 <= 1_929_999)
         ]
         result = sh.shadow_replay(events)
         self.assertEqual(keys(result.keep_all),
@@ -162,7 +167,7 @@ class EmptyWindowCarryForwardTest(unittest.TestCase):
         events = [
             make_event(SYM, 10_000, 15_000_000, 1),    # w0 keep
             make_event(SYM, 700_000, 25_000_000, 2),   # w2 keep; max -> 700_000
-            make_event(SYM, 320_000, 99_000_000, 3),   # w1 drop (599_999 <= 630_000)
+            make_event(SYM, 320_000, 99_000_000, 3),   # w1 drop (599_999 <= 629_999)
             make_event(SYM, 760_000, 5_000_000, 4),     # w2 keep
             make_event(SYM, 1_020_000, 7_000_000, 5),  # w3 keep; max -> 1_020_000
         ]
@@ -194,7 +199,7 @@ class AtRiskSetTest(unittest.TestCase):
             make_event("BB.DE", 50_000, 11_000_000, 1),    # T w0 keep
             make_event(SYM, 100_000, 15_000_000, 2),      # S w0 keep
             make_event(SYM, 1_000_000, 25_000_000, 3),    # S w3 keep; max -> 1_000_000
-            make_event(SYM, 120_000, 5_000_000, 4),       # S w0 drop (299_999 <= 930_000)
+            make_event(SYM, 120_000, 5_000_000, 4),       # S w0 drop (299_999 <= 929_999)
             make_event(SYM, 2_000_000, 9_000_000, 5),      # S w6 keep; max -> 2_000_000
             make_event("BB.DE", 2_050_000, 13_000_000, 6),  # T w6 keep; max -> 2_050_000
         ]
@@ -248,9 +253,10 @@ class EmaCrossCheckTest(unittest.TestCase):
 class RandomizedAgainstSpecFormulaTest(unittest.TestCase):
     """A pseudo-random multi-symbol stream vs a literal spec transcription.
 
-    Reference: update max from ALL events first, then drop iff
-    `(tt // WindowMs + 1) * WindowMs - 1 <= max_so_far - 70_000`; at-risk
-    is the set of windows the drop test rejected events for.
+    Reference: update max from ALL events first, then drop iff the
+    window's maxTimestamp `(tt // WindowMs + 1) * WindowMs - 1` is <=
+    the watermark `max_so_far - 70_000 - 1`; at-risk is the set of
+    windows the drop test rejected events for.
     """
 
     def test_matches_reference_decisions_and_counts(self):
@@ -283,7 +289,7 @@ class RandomizedAgainstSpecFormulaTest(unittest.TestCase):
             widx = ev.tt_ms // er.WindowMs
             fold(ref_keep, (ev.symbol, widx), ev)
             wmax = (widx + 1) * er.WindowMs - 1
-            if wmax > max_tt - 70_000:
+            if wmax > max_tt - 70_001:
                 fold(ref_drop, (ev.symbol, widx), ev)
             else:
                 key = (ev.symbol, widx)

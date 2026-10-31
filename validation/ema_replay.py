@@ -6,6 +6,12 @@ recursion and the BUY/SELL crossover rules (PDF 3.1-3.3), independent of
 how the close states were produced (CSV scan or event stream).  Spec:
 documents/CS_E4780_Course_Project_2026.pdf.
 
+Also the processor's late-event rule (is_late), shared by the CSV
+generator and the stream shadow: services/streaming-processor uses
+forBoundedOutOfOrderness(70 s) with allowed lateness 0, so the watermark
+is `max trade time seen - OutOfOrdernessMs - 1 ms` and an event is
+dropped once its window's last timestamp has reached that watermark.
+
 Arithmetic (must stay byte-for-byte identical to the CSV generator):
 EMA_i = (Close_i * 2 + EMA_{i-1} * (j-1)) / (j+1) as one division under a
 50-digit decimal context; advisories compare the exact Decimals.
@@ -23,6 +29,15 @@ from typing import NamedTuple
 WindowMs = 300_000         # 5-minute tumbling windows anchored at 00:00 CEST (PDF 3.1)
 JShort, JLong = 38, 100    # smoothing factors (PDF 3.2, 3.3)
 DECIMAL_PREC = 50          # far tighter than double precision
+# StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s), allowed lateness 0.
+OutOfOrdernessMs = 70_000
+
+
+def is_late(tt_ms: int, max_tt_ms: int, out_of_orderness_ms: int) -> bool:
+    """Whether Flink drops an event: the watermark (max trade time seen -
+    out_of_orderness - 1 ms) has reached its window's last timestamp."""
+    window_last_ms = (tt_ms // WindowMs + 1) * WindowMs - 1
+    return window_last_ms <= max_tt_ms - out_of_orderness_ms - 1
 
 
 class CloseState(NamedTuple):

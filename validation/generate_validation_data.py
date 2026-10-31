@@ -70,7 +70,7 @@ from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 from pathlib import Path
 
 import ema_replay
-from ema_replay import update_close
+from ema_replay import is_late, update_close
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CSV = REPO_ROOT / "dataset" / "debs2022-gc-trading-day-12-11-21.csv"
@@ -81,7 +81,7 @@ MS_PER_DAY = 86_400_000
 PRICE_SCALE = 1_000_000    # prices are exact integers in millionths, like last_price_micros
 UINT64_MAX = 2**64 - 1
 # StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s), allowed lateness 0.
-OUT_OF_ORDERNESS_MS = 70_000
+OUT_OF_ORDERNESS_MS = ema_replay.OutOfOrdernessMs
 # Rows extracted to drops_pending_watermark_emission.csv (the summary count is exact).
 EMISSION_CASES_CAP = 1_000
 DECIMAL_PREC = 50          # far tighter than double precision
@@ -159,13 +159,6 @@ def parse_trade_dt(date_text, time_text):
     if day == date.min and sod < 7200:  # before 02:00 CEST = before the protobuf range start
         raise ValueError(f"trade time before 0001-01-01T00:00:00Z UTC {date_text!r} {time_text!r}")
     return day.toordinal(), sod, ms
-
-
-def is_late(tt_ms, max_tt_ms, out_of_orderness_ms):
-    """Whether Flink drops an event: the watermark (max trade time seen -
-    out_of_orderness - 1 ms) has reached its window's last timestamp."""
-    window_last_ms = (tt_ms // WINDOW_MS + 1) * WINDOW_MS - 1
-    return window_last_ms <= max_tt_ms - out_of_orderness_ms - 1
 
 
 def scan_events(csv_path, limit_rows=None, out_of_orderness_ms=OUT_OF_ORDERNESS_MS):
