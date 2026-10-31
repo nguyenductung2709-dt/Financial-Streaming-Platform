@@ -69,6 +69,7 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 from pathlib import Path
 
+import config
 import ema_replay
 from ema_replay import is_late, update_close
 
@@ -76,17 +77,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CSV = REPO_ROOT / "dataset" / "debs2022-gc-trading-day-12-11-21.csv"
 DEFAULT_OUT = REPO_ROOT / "validation" / "out"
 
-WINDOW_MS = ema_replay.WindowMs  # 5-minute tumbling windows anchored at 00:00 CEST (PDF 3.1)
+WINDOW_MS = config.WINDOW_MS  # 5-minute tumbling windows anchored at 00:00 CEST (PDF 3.1)
 MS_PER_DAY = 86_400_000
 PRICE_SCALE = 1_000_000    # prices are exact integers in millionths, like last_price_micros
 UINT64_MAX = 2**64 - 1
 # StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s), allowed lateness 0.
-OUT_OF_ORDERNESS_MS = ema_replay.OutOfOrdernessMs
+OUT_OF_ORDERNESS_MS = config.OUT_OF_ORDERNESS_MS
 # Rows extracted to drops_pending_watermark_emission.csv (the summary count is exact).
 EMISSION_CASES_CAP = 1_000
-DECIMAL_PREC = 50          # far tighter than double precision
-EMA_PLACES = 9             # decimals emitted for EMA values in micros
-J_SHORT, J_LONG = ema_replay.JShort, ema_replay.JLong  # smoothing factors (PDF 3.2, 3.3)
+DECIMAL_PREC = config.DECIMAL_PREC  # far tighter than double precision
+EMA_PLACES = config.EMA_PLACES      # decimals emitted for EMA values in micros
+J_SHORT, J_LONG = config.EMA_J_SHORT, config.EMA_J_LONG  # smoothing factors (PDF 3.2, 3.3)
 
 # First-window EMA initialization:
 #   prev-zero    default; the PDF's "the EMA of the previous window is zero".
@@ -295,7 +296,7 @@ def window_bounds(widx):
     return ms_to_wall_clock(start)[:16], ms_to_wall_clock(start + WINDOW_MS)[:16]
 
 
-def compute_outputs(closes, arrivals, symbols, out_dir, ema_init="prev-zero"):
+def compute_outputs(closes, arrivals, symbols, out_dir, ema_init=config.EMA_INIT):
     """Replay the windows via the shared module and write ema_windows.csv / advisories.csv."""
     out_dir.mkdir(parents=True, exist_ok=True)
     ema_path, adv_path = out_dir / "ema_windows.csv", out_dir / "advisories.csv"
@@ -356,7 +357,7 @@ def display_path(path):
         return str(path)
 
 
-def run(csv_path, out_dir, limit_rows=None, ema_init="prev-zero", compute_md5=True,
+def run(csv_path, out_dir, limit_rows=None, ema_init=config.EMA_INIT, compute_md5=True,
         out_of_orderness_ms=OUT_OF_ORDERNESS_MS):
     print(f"Input CSV : {csv_path}")
     print(f"Output dir: {out_dir}")
@@ -470,7 +471,7 @@ def main(argv=None):
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output directory")
     parser.add_argument("--limit-rows", type=int, default=None,
                         help="stop after N data rows (smoke tests only)")
-    parser.add_argument("--ema-init", choices=EMA_INIT_MODES, default="prev-zero",
+    parser.add_argument("--ema-init", choices=EMA_INIT_MODES, default=config.EMA_INIT,
                         help="first-window EMA initialization mode")
     parser.add_argument("--no-md5", action="store_true", help="skip the CSV md5 checksum")
     late = parser.add_mutually_exclusive_group()

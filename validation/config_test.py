@@ -130,5 +130,23 @@ class EmaReplayFollowsConfigTest(unittest.TestCase):
             "first-close")
 
 
+class GeneratorFollowsConfigTest(unittest.TestCase):
+    def test_constants_follow_config(self):
+        self.assertEqual(module_follows_override(
+            "generate_validation_data", {"EMA_PLACES": 7},
+            "generate_validation_data.EMA_PLACES"), "7")
+        self.assertEqual(module_follows_override(
+            "generate_validation_data", {"DECIMAL_PREC": 40},
+            "generate_validation_data.DECIMAL_PREC"), "40")
+        self.assertEqual(module_follows_override(
+            "generate_validation_data", {"OUT_OF_ORDERNESS_MS": 123},
+            "generate_validation_data.OUT_OF_ORDERNESS_MS"), "123")
+        self.assertEqual(module_follows_override(
+            "generate_validation_data", {"EMA_INIT": "zero-window"},
+            "inspect.signature(generate_validation_data.run)"
+            ".parameters['ema_init'].default"),
+            "zero-window")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
