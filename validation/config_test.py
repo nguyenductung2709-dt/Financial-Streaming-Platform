@@ -148,5 +148,21 @@ class GeneratorFollowsConfigTest(unittest.TestCase):
             "zero-window")
 
 
+class KafkaTopicsFollowsConfigTest(unittest.TestCase):
+    def test_consumer_knobs_follow_config(self):
+        self.assertEqual(module_follows_override(
+            "kafka_topics", {"KAFKA_POLL_TIMEOUT_S": 2.5},
+            "kafka_topics.POLL_TIMEOUT_S"), "2.5")
+        self.assertEqual(module_follows_override(
+            "kafka_topics", {"WATERMARK_ATTEMPTS": 9},
+            "kafka_topics.WATERMARK_ATTEMPTS"), "9")
+        self.assertEqual(module_follows_override(
+            "kafka_topics", {"WATERMARK_BACKOFF_S": 0.25},
+            "kafka_topics.WATERMARK_BACKOFF_S"), "0.25")
+        self.assertEqual(module_follows_override(
+            "kafka_topics", {"CONSUMER_GROUP_ID": "other-group"},
+            "kafka_topics.CONSUMER_GROUP_ID"), "other-group")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

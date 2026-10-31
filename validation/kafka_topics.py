@@ -21,9 +21,12 @@ fake.
 
 import time
 
-POLL_TIMEOUT_S = 1.0
-WATERMARK_ATTEMPTS = 5
-WATERMARK_BACKOFF_S = 0.5
+import config
+
+POLL_TIMEOUT_S = config.KAFKA_POLL_TIMEOUT_S
+WATERMARK_ATTEMPTS = config.WATERMARK_ATTEMPTS
+WATERMARK_BACKOFF_S = config.WATERMARK_BACKOFF_S
+CONSUMER_GROUP_ID = config.CONSUMER_GROUP_ID
 
 
 class _RealConsumer:
@@ -40,7 +43,7 @@ class _RealConsumer:
             "bootstrap.servers": brokers,
             "enable.auto.commit": False,
             "enable.partition.eof": False,
-            "group.id": "full-flow-validation",
+            "group.id": CONSUMER_GROUP_ID,
         })
 
     def list_topics(self, topic):
