@@ -5,6 +5,9 @@ import financial.streaming.model.{EmaResult, WindowClose}
 import java.math.BigDecimal
 import market.v1.Events.{PriceEvent, SecurityType}
 import org.apache.flink.api.common.typeinfo.Types
+import org.apache.flink.api.common.state.ValueStateDescriptor
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction
+import org.apache.flink.util.Collector
 import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot
 import org.apache.flink.api.common.typeutils.base.TypeSerializerSingleton
 import org.apache.flink.api.java.functions.KeySelector
@@ -17,9 +20,11 @@ import scala.jdk.CollectionConverters._
 class EmaProcessFunctionSuite extends munit.FunSuite {
   private type Harness = KeyedOneInputStreamOperatorTestHarness[String, WindowClose, EmaResult]
 
-  private def harness(): Harness = {
+  private def harness(
+      function: KeyedProcessFunction[String, WindowClose, EmaResult] = new EmaProcessFunction
+  ): Harness = {
     val h = new Harness(
-      new KeyedProcessOperator[String, WindowClose, EmaResult](new EmaProcessFunction),
+      new KeyedProcessOperator[String, WindowClose, EmaResult](function),
       new KeySelector[WindowClose, String] {
         override def getKey(window: WindowClose): String = window.symbol
       },
@@ -161,6 +166,70 @@ class EmaProcessFunctionSuite extends munit.FunSuite {
       assertDecimal(next.ema38, "5.897435897435897435897435897435897")
       assertDecimal(next.ema100, "2.301539064797568865797470836192530")
     }
+  }
+
+  test("replayed completed windows after restore do not update either symbol twice") {
+    val original = harness()
+    try {
+      original.open()
+      val firstA = window("RUI.FR", 0L, 39000000L)
+      val secondA = window("RUI.FR", 300000L, 78000000L)
+      val firstB = window("RUI.ETR", 0L, 78000000L)
+      emit(original, firstA)
+      emit(original, secondA)
+      emit(original, firstB)
+      val checkpoint = original.snapshot(2L, 2L)
+      try {
+        val nextA = window("RUI.FR", 600000L, 19500000L)
+        val nextB = window("RUI.ETR", 300000L, 39000000L)
+        val expectedA = emit(original, nextA)
+        val expectedB = emit(original, nextB)
+        val restored = harness()
+        try {
+          restored.initializeState(checkpoint)
+          restored.open()
+          List(firstA, secondA, firstB).foreach(w => restored.processElement(new StreamRecord(w)))
+          assert(restored.extractOutputValues().isEmpty)
+          assertEquals(emit(restored, nextA), expectedA)
+          assertEquals(emit(restored, nextB), expectedB)
+        } finally restored.close()
+      } finally checkpoint.discardState()
+    } finally original.close()
+  }
+
+  test("legacy EMA checkpoints without window progress fail explicitly") {
+    val legacy = new KeyedProcessFunction[String, WindowClose, EmaResult] {
+      override def processElement(
+          value: WindowClose,
+          context: KeyedProcessFunction[String, WindowClose, EmaResult]#Context,
+          out: Collector[EmaResult]
+      ): Unit = {
+        getRuntimeContext
+          .getState(new ValueStateDescriptor[BigDecimal]("ema-38-v1", Types.BIG_DEC))
+          .update(BigDecimal.ONE)
+        getRuntimeContext
+          .getState(new ValueStateDescriptor[BigDecimal]("ema-100-v1", Types.BIG_DEC))
+          .update(BigDecimal.ONE)
+      }
+    }
+    val old = harness(legacy)
+    try {
+      old.open()
+      val input = window("RUI.FR", 0L, 39000000L)
+      old.processElement(new StreamRecord(input))
+      val checkpoint = old.snapshot(3L, 3L)
+      try {
+        val restored = harness()
+        try {
+          restored.initializeState(checkpoint)
+          restored.open()
+          val error = intercept[IllegalStateException] {
+            restored.processElement(new StreamRecord(input))
+          }
+          assert(error.getMessage.contains("lacks EMA window progress"))
+        } finally restored.close()
+      } finally checkpoint.discardState()
+    } finally old.close()
   }
 
   // Output objects stay in memory in these tests; managed state still uses real Flink serializers.

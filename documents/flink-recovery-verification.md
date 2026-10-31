@@ -42,7 +42,8 @@ a full-week endurance test. Inputs were split around a completed checkpoint;
 in-flight failure scenarios and broker failures need separate experiments.
 Zero duplicates in these runs does not change the at-least-once guarantee.
 The base configuration does not provide JobManager HA. The optional HA override
-is verified below. Exactly-once Kafka transactions, producer resume, and state
+is verified below. These earlier experiments did not exercise producer resume;
+that is covered separately below. Exactly-once Kafka transactions and state
 migration across incompatible job versions are not implemented.
 
 ## Optional ZooKeeper HA verification
@@ -75,3 +76,51 @@ JVM process exit exercises the restart policy without that operator-stop flag.
 This verifies process-exit recovery, not hard SIGKILL/OOM behavior, loss of the
 ZooKeeper server, disk failure, or multi-machine failover. The local single-server
 ZooKeeper deployment is not a redundant coordination quorum.
+
+## Producer crash, resume, and combined restore
+
+Verified on 31 October 2026 with `make verify-producer-recovery`, using the same
+180-window/six-advisory reference described above. This command generates its
+own CSV fixtures and uses the actual Go producer, Redpanda, and Flink pipeline.
+The open-window case adds more trades inside the first window so a producer
+checkpoint can be saved before any window closes.
+
+Each crash case pauses its own producer, confirms acknowledged input is ahead
+of its saved progress, and sends SIGKILL. Resume therefore must publish some
+identical rows again. The combined case also cancels its test Flink job after
+a completed checkpoint, queues the resumed producer's input, and restores that
+checkpoint. It does not restart the shared cluster or existing application job.
+
+| Scenario | Input records | Unique inputs | Replayed inputs | EMA windows | Advisories | Mismatches |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Uninterrupted baseline | 361 | 361 | 0 | 180 | 6 | 0 |
+| Producer crash with open windows | 853 | 757 | 96 | 180 | 6 | 0 |
+| Producer crash after windows close | 412 | 361 | 51 | 180 | 6 | 0 |
+| Producer replay plus Flink restore | 430 | 361 | 69 | 180 | 6 | 0 |
+
+There were no missing, extra, conflicting duplicate, or numerically incorrect
+outputs. No output duplicates occurred in this run. The test permits identical
+output duplicates and reports them, since the sinks remain at-least-once.
+Replay counts depend on crash timing and are not fixed assertions.
+
+### Bug found and fixed
+
+Before the fix, the combined case produced 134 incorrect unique EMA windows
+and incorrect advisories. Watermark progress can restart after restore, letting
+replayed input recreate windows already applied to EMA state. The EMA operator
+now checkpoints a per-symbol last applied window end and ignores completed
+windows at or before that boundary. Unit tests verify this boundary survives
+restore and keeps symbol state independent.
+
+Legacy checkpoints containing EMA values without `ema-last-window-end-v1` fail
+explicitly when that symbol is processed. Use a fresh replay or migrate those
+checkpoints; silently restoring them cannot provide this protection.
+
+The successful run's fixtures, command logs, decoded records, and report are in
+the local ignored `bin/producer-recovery-20261031-133149/` directory. Test jobs
+were canceled; isolated `verify-producer-*` topics remain for inspection. The
+pre-existing application job stayed running.
+
+These controlled tests cover producer SIGKILL and checkpoint restore together.
+They do not prove end-to-end exactly-once delivery, broker failure recovery,
+or correctness under every possible late-event pattern or failure timing.

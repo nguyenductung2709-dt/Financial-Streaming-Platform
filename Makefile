@@ -8,7 +8,7 @@ export COMPOSE_FILE := compose.yaml:compose.ha.yaml
 endif
 FLINK_RESTORE_PATH ?=
 
-.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow restore-streaming-processor test-flink-scripts
+.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow restore-streaming-processor test-flink-scripts verify-producer-recovery
 
 .PHONY: help \
 	build-data-producer test-data-producer run-data-producer \
@@ -64,7 +64,7 @@ restore-streaming-processor: ## Restore the processor; requires FLINK_RESTORE_PA
 	fi
 	$(MAKE) run-streaming-processor
 
-test-flink-scripts: ## Test Flink submission and restore commands without Docker
+test-flink-scripts: ## Test Flink launcher and recovery verification logic without Docker
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
 # Example: make run-flow PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
@@ -102,3 +102,6 @@ generate-protobuf: ## Regenerate gen/ bindings after schema changes; commit them
 
 setup-hooks: ## Run once after cloning to set this checkout's Git hooks path to .githooks
 	git config core.hooksPath .githooks
+
+verify-producer-recovery: build-data-producer build-streaming-processor ## Live producer SIGKILL/resume correctness test; requires running broker and one free Flink slot
+	python3 scripts/verify-producer-recovery.py

@@ -279,3 +279,21 @@ active-job check.
 
 See [the recovery verification report](../../documents/flink-recovery-verification.md)
 for measured restart/restore results.
+
+## Producer replay protection
+
+The EMA operator checkpoints the last applied window end for each symbol along
+with its EMA values. It ignores completed windows at or before that boundary.
+This prevents a producer resume from applying an old closing price again if
+Flink restores and its watermark progress restarts. Open windows still select
+the latest trade normally. This does not deduplicate topic records or change the
+at-least-once sink guarantee.
+
+Checkpoints made before `ema-last-window-end-v1` was added do not contain this
+progress. Restoring legacy EMA state fails when that symbol is processed; start
+a fresh replay for this development version or migrate the state explicitly.
+Keep the existing job running until ready to switch versions.
+
+Run `make verify-producer-recovery` to verify producer SIGKILL/resume plus Flink
+restore against independent arithmetic. It needs a running cluster with one
+free task slot. See [the recovery results](../../documents/flink-recovery-verification.md).
