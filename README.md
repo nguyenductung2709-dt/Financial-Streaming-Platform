@@ -22,6 +22,54 @@ Already formatted staged files can still have unstaged edits.
 If a toolchain is missing, the hook skips that check with a warning —
 CI still enforces the full format and lint suite.
 
+## Run the complete local flow
+
+Copy `.env.example` to `.env` once, and check the `POSTGRES_*` and
+`MATERIALIZER_*` settings. Put the CSV dataset under `dataset/`, then run:
+
+```sh
+make run-flow
+```
+
+This builds the Go producer and materializer, starts PostgreSQL, Redpanda, the
+Redpanda console, and Flink, creates the topics, initializes missing materializer
+tables, submits the processor, and runs the producer and materializer together.
+Existing tables and stored results are preserved on startup. A partially created
+materializer schema causes startup to stop for manual repair.
+
+For a limited producer run:
+
+```sh
+make run-flow PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
+```
+
+The materializer keeps running after the producer finishes so it can consume
+remaining and future results. Ctrl+C stops the managed producer and materializer.
+Containers and the Flink job remain running. Before a fresh run, use:
+
+```sh
+make reset-flow
+make run-flow
+```
+
+`reset-flow` stops a flow started by `run-flow`, cancels the processor job, empties
+all four project topics, removes the configured materializer group's offsets,
+and clears `symbols`, `ema_windows`, and `trade_advisories` in the configured
+database. This permanently removes those records. Containers, schema, topic
+settings, and checkpoint files are preserved. Stop separately launched producer
+or materializer processes before resetting.
+
+Both commands load `.env`; explicit `MATERIALIZER_*` environment or Make
+command-line overrides take precedence. The complete flow uses local Compose
+infrastructure, so keep the materializer URL and broker addresses pointed at
+those services.
+
+Run the flow lifecycle tests with:
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_flow.py' -v
+```
+
 ## Local PostgreSQL
 
 Start the database and open its SQL shell from the repository root:

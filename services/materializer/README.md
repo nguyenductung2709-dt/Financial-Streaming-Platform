@@ -7,40 +7,49 @@ executable are implemented.
 
 ## Run the materializer
 
-Copy `.env.example` to `.env` once if needed and edit its `MATERIALIZER_*`
-settings. Start the local services and create the topics from the repository root:
+To start the complete producer → Flink → materializer → PostgreSQL flow, use
+`make run-flow` from the repository root. It starts the local infrastructure and
+creates the initial tables if missing. `make reset-flow` stops the managed flow
+and clears its topic records, materializer group offsets, and database results.
+See the [full flow instructions](../../README.md#run-the-complete-local-flow).
+
+To run just the materializer, follow these steps.
+
+From the repository root, copy `.env.example` to `.env` once if you do not
+already have one. Edit its `MATERIALIZER_*` settings, then start the local
+services and create the topics:
 
 ```sh
 docker compose up -d --wait postgres redpanda-0
 docker compose run --rm create-topic
 ```
 
-Apply the initial migration below once before the first run, then build and run
-in a separate terminal:
+Apply the initial migration below once before the first run, then start the
+materializer in its own terminal:
 
 ```sh
-go build -o bin/materializer ./services/materializer
-set -a
-. ./.env
-set +a
-./bin/materializer
+make run-materializer
 ```
 
-The executable reads exported environment variables and does not load `.env`
-itself. `MATERIALIZER_DATABASE_URL` is required; the broker and group have the
-following defaults:
+The Makefile requires `.env` and loads the materializer settings from it.
+Nonempty `MATERIALIZER_*` variables already set in your environment, or passed
+as Make command-line variables, take precedence over `.env`.
 
-| Environment variable | Value |
+| Environment variable | `.env.example` value |
 | --- | --- |
-| `MATERIALIZER_DATABASE_URL` | Required; see `.env.example` for the local PostgreSQL URL |
+| `MATERIALIZER_DATABASE_URL` | `postgresql://financial:financial_dev@localhost:15432/financial_streaming?sslmode=disable` |
 | `MATERIALIZER_BROKERS` | `localhost:19092`; accepts comma-separated addresses |
 | `MATERIALIZER_GROUP_ID` | `materializer` |
 
-Override an exported setting for one run with:
+To customize these settings, edit `.env`, or override a setting for one run:
 
 ```sh
-MATERIALIZER_GROUP_ID=materializer-dev ./bin/materializer
+make run-materializer MATERIALIZER_GROUP_ID=materializer-dev
 ```
+
+`make build-materializer` builds `bin/materializer`. When running that binary
+directly, export `MATERIALIZER_DATABASE_URL` yourself; the binary reads environment
+variables and does not load `.env`. Its broker and group defaults are the same.
 
 Update `MATERIALIZER_DATABASE_URL` if you change PostgreSQL's credentials, port,
 or database name. The database URL is never included in startup logs.
@@ -49,6 +58,12 @@ Ctrl+C or SIGTERM cancels processing, closes the consumer, then closes the
 database pool. A canceled batch may replay on the next run. Configuration,
 startup, or processing failures exit with a nonzero status; restart after
 resolving the error. The executable does not apply migrations automatically.
+The `-init-db` command initializes missing tables and exits; `-reset-db`
+initializes them if needed, truncates the three read-model tables, and exits.
+The full-flow scripts use these explicit commands with the same database URL
+as the running service. Existing tables are preserved by initialization, and
+partial schemas require manual repair. Neither command is a migration version
+tracker.
 
 ## Tables
 

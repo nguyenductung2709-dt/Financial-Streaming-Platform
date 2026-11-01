@@ -3,10 +3,24 @@ FLINK_ARGS ?= --starting-offsets earliest
 PRODUCER_ARGS ?= -rate=1000
 FLINK_START_TIMEOUT ?= 120
 
+# Load the same settings for the standalone materializer and the complete flow.
+define materializer-env
+set -e; \
+if [ ! -f .env ]; then echo 'Create .env first: cp .env.example .env' >&2; exit 1; fi; \
+materializer_database_url="$${MATERIALIZER_DATABASE_URL:-}"; \
+materializer_brokers="$${MATERIALIZER_BROKERS:-}"; \
+materializer_group_id="$${MATERIALIZER_GROUP_ID:-}"; \
+. ./.env; \
+export MATERIALIZER_DATABASE_URL="$${materializer_database_url:-$${MATERIALIZER_DATABASE_URL-}}"; \
+export MATERIALIZER_BROKERS="$${materializer_brokers:-$${MATERIALIZER_BROKERS-}}"; \
+export MATERIALIZER_GROUP_ID="$${materializer_group_id:-$${MATERIALIZER_GROUP_ID-}}";
+endef
+
 .PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow
 
 .PHONY: help \
 	build-data-producer test-data-producer run-data-producer \
+	build-materializer run-materializer \
 	build-streaming-processor test-streaming-processor \
 	formatall format-data-producer format-streaming-processor lint-streaming-processor \
 	generate-protobuf setup-hooks run-postgres postgres-shell
@@ -42,6 +56,13 @@ test-data-producer: ## Run uncached Go tests with race detection, a 2m timeout, 
 run-data-producer: build-data-producer ## Build and publish CSV events; use ARGS="..." for producer flags
 	./bin/data-producer $(ARGS)
 
+build-materializer: ## Compile the Go materializer to bin/materializer
+	mkdir -p bin
+	go build -o bin/materializer ./services/materializer
+
+run-materializer: build-materializer ## Build and run using .env; copy .env.example once to configure
+	@$(materializer-env) exec ./bin/materializer
+
 build-streaming-processor: ## Assemble and verify the deployment JAR, then copy it to bin/streaming-processor.jar
 	cd services/streaming-processor && sbt verifyAssembly
 	mkdir -p bin
@@ -57,17 +78,16 @@ run-streaming-processor: build-streaming-processor ## Build the processor, start
 	python3 scripts/submit-flink-job.py --timeout $(FLINK_START_TIMEOUT) -- $(FLINK_ARGS)
 
 # Example: make run-flow PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
-run-flow: build-data-producer ## Start the processor and publish CSV events; use PRODUCER_ARGS="..." for producer flags
+run-flow: build-data-producer build-materializer ## Start all local services, initialize PostgreSQL, and run the producer and materializer; use PRODUCER_ARGS="..."
 	@if [ -n "$(filter --bounded,$(FLINK_ARGS))" ]; then \
 		echo "run-flow needs a continuous Flink job; remove --bounded from FLINK_ARGS." >&2; \
 		exit 1; \
 	fi
-	$(MAKE) run-streaming-processor
-	./bin/data-producer $(PRODUCER_ARGS)
+	@$(materializer-env) exec python3 scripts/flow.py -- $(PRODUCER_ARGS)
 
-# Stop the producer with Ctrl+C first. This permanently clears project topic records.
-reset-flow: ## Cancel processor jobs and permanently clear trade-events, ema-windows, trade-advisories, and trade-events-dlq; stop the producer first
-	python3 scripts/reset-flow.py
+# This permanently clears project topic records and materialized database results.
+reset-flow: build-materializer ## Stop the managed flow, cancel Flink, and clear project topics, consumer offsets, and PostgreSQL results
+	@$(materializer-env) exec python3 scripts/reset-flow.py
 
 formatall: format-data-producer format-streaming-processor ## Format Go sources, Scala sources, and sbt build files
 
