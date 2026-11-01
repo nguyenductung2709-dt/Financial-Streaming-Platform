@@ -14,6 +14,7 @@ printed; the console caps unexplained examples at 10; main() returns
 directory.
 """
 
+import csv
 import io
 import json
 import subprocess
@@ -21,7 +22,8 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from decimal import Decimal
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, localcontext
 from pathlib import Path
 from unittest import mock
 
@@ -30,6 +32,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bindings  # noqa: E402
 import ema_replay as er  # noqa: E402
+import generate_validation_data as gvd  # noqa: E402
 import shadow as sh  # noqa: E402
 import verify_flow as vf  # noqa: E402
 
@@ -135,10 +138,12 @@ class RunHappyPathTest(unittest.TestCase):
                 result = vf.run(BROKERS, TOPICS, report_path, TOLERANCE,
                                 consume=consume)
             self.assertTrue(result.passed)
-            self.assertEqual(result.total_windows, 3)
-            self.assertEqual(result.matched, 3)
-            self.assertEqual(result.unexplained, [])
+            self.assertIsNone(result.reference)
+            self.assertEqual(result.compare.total_windows, 3)
+            self.assertEqual(result.compare.matched, 3)
+            self.assertEqual(result.compare.unexplained, [])
             report = json.loads(report_path.read_text())
+            self.assertNotIn("reference", report)
             self.assertEqual(report["topics"], TOPICS)
             self.assertEqual(report["tolerance"], str(TOLERANCE))
             self.assertEqual(report["total_events"], 3)
@@ -170,8 +175,8 @@ class RunMismatchTest(unittest.TestCase):
                 result = vf.run(BROKERS, TOPICS, report_path, TOLERANCE,
                                 consume=consume)
             self.assertFalse(result.passed)
-            self.assertEqual(result.matched, 0)
-            self.assertEqual(len(result.unexplained), 1)
+            self.assertEqual(result.compare.matched, 0)
+            self.assertEqual(len(result.compare.unexplained), 1)
             report = json.loads(report_path.read_text())
             self.assertFalse(report["passed"])
             self.assertEqual(report["unexplained"]["count"], 1)
@@ -195,7 +200,7 @@ class RunMismatchTest(unittest.TestCase):
                 result = vf.run(BROKERS, TOPICS, Path(tmp) / "r.json",
                                 TOLERANCE, consume=consume)
             self.assertFalse(result.passed)
-            self.assertEqual(len(result.unexplained), 11)
+            self.assertEqual(len(result.compare.unexplained), 11)
             report = json.loads((Path(tmp) / "r.json").read_text())
             self.assertEqual(report["unexplained"]["count"], 11)
         self.assertEqual(
@@ -203,10 +208,105 @@ class RunMismatchTest(unittest.TestCase):
                 "closing_price_micros 15000001 != 15000000"), 10)
 
 
+def write_reference(directory, shadow_out, table="drop_model",
+                    out_of_orderness_ms=er.OutOfOrdernessMs):
+    """A generator-format reference (ema_windows.csv + summary.json) of one shadow table.
+
+    reference_test.py pins the real generator's output against the loader;
+    here only the columns the loader reads are written.
+    """
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    cest = timezone(timedelta(hours=2))
+    with open(directory / "ema_windows.csv", "w", newline="") as ema_file:
+        writer = csv.writer(ema_file, lineterminator="\n")
+        writer.writerow(["symbol", "window_start", "event_count", "close_micros",
+                         "ema38_micros", "ema100_micros", "prev_ema38_micros",
+                         "prev_ema100_micros", "advisory"])
+        with localcontext() as ctx:
+            ctx.prec = 50
+            for (symbol, widx), row in sorted(getattr(shadow_out, table).items()):
+                start = datetime.fromtimestamp(widx * er.WindowMs / 1000, tz=cest)
+                writer.writerow([symbol, start.strftime("%Y-%m-%dT%H:%M"),
+                                 row.event_count, row.close_micros,
+                                 gvd.fmt_ema(row.ema38_micros), gvd.fmt_ema(row.ema100_micros),
+                                 gvd.fmt_ema(row.prev_ema38_micros),
+                                 gvd.fmt_ema(row.prev_ema100_micros), row.advisory])
+    (directory / "summary.json").write_text(json.dumps(
+        {"spec": {"ema_init": "prev-zero", "out_of_orderness_ms": out_of_orderness_ms}}))
+
+
+class RunWithReferenceTest(unittest.TestCase):
+    SPECS = RunHappyPathTest.SPECS
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.event_records, self.shadow_out = make_stream(self.SPECS)
+        ema_records, advisory_records = actual_topic_records(self.shadow_out)
+        self.consume = fake_consume(self.event_records, ema_records, advisory_records)
+
+    def run_flow(self, reference_dir):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            result = vf.run(BROKERS, TOPICS, self.dir / "report.json", TOLERANCE,
+                            consume=self.consume, reference_dir=reference_dir)
+        return result, out.getvalue(), json.loads((self.dir / "report.json").read_text())
+
+    def test_faithful_reference_passes_and_is_reported(self):
+        write_reference(self.dir / "ref", self.shadow_out)
+        result, text, report = self.run_flow(self.dir / "ref")
+        self.assertTrue(result.passed)
+        self.assertTrue(result.reference.passed)
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["reference"]["side"], "drop_model")
+        # The third event arrives after the 700 s event moved the watermark past its
+        # window, so the drop model (the generator's rule) holds 2 of the 3 windows.
+        self.assertEqual(report["reference"]["matched"], 2)
+        self.assertEqual(report["reference"]["dir"], str(self.dir / "ref"))
+        self.assertIn("reference (drop_model): 2 of 2 windows match", text)
+        self.assertIn("passed: True", text)
+
+    def test_reference_mismatch_fails_the_flow_though_the_processor_matches(self):
+        # The CSV said the first close was a micro higher than what was published.
+        _, csv_side = make_stream([(SYM, 10_000, 15_000_001, 1)] + list(self.SPECS[1:]))
+        write_reference(self.dir / "ref", csv_side)
+        result, text, report = self.run_flow(self.dir / "ref")
+        self.assertTrue(result.compare.passed)
+        self.assertFalse(result.reference.passed)
+        self.assertFalse(result.passed)
+        self.assertFalse(report["passed"])
+        self.assertGreaterEqual(report["reference"]["mismatches"]["count"], 1)
+        self.assertIn("close_micros", text)
+        self.assertIn("passed: False", text)
+
+    def test_unusable_reference_fails_before_any_topic_is_read(self):
+        with self.assertRaisesRegex(FileNotFoundError, "generate-reference"):
+            self.run_flow(self.dir / "nowhere")
+        self.assertEqual(self.consume.calls, [])
+
+
 class MainTest(unittest.TestCase):
     ARGS = ["--brokers", BROKERS, "--events-topic", "trade-events",
             "--ema-topic", "ema-windows", "--advisory-topic",
             "trade-advisories"]
+
+    def test_reference_dir_flag_decides_the_exit_code(self):
+        event_records, shadow_out = make_stream([(SYM, 10_000, 15_000_000, 1)])
+        ema_records, advisory_records = actual_topic_records(shadow_out)
+        consume = fake_consume(event_records, ema_records, advisory_records)
+        _, other = make_stream([(SYM, 10_000, 16_000_000, 1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            codes = {}
+            for name, table_source in (("good", shadow_out), ("bad", other)):
+                write_reference(Path(tmp) / name, table_source)
+                with mock.patch("kafka_topics.consume_all", consume):
+                    with redirect_stdout(io.StringIO()):
+                        codes[name] = vf.main(self.ARGS + [
+                            "--report", str(Path(tmp) / f"{name}.json"),
+                            "--reference-dir", str(Path(tmp) / name)])
+            self.assertEqual(codes, {"good": 0, "bad": 1})
 
     def test_returns_0_and_creates_missing_report_parent(self):
         event_records, shadow_out = make_stream([(SYM, 10_000, 15_000_000, 1)])
