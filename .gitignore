@@ -1,4 +1,10 @@
 dataset/
+
+# Validation dataset outputs (regenerate with validation/generate_validation_data.py)
+validation/out/
+
+# Python byte-code caches
+__pycache__/
 # Local environment configuration
 .env
 .env.*
