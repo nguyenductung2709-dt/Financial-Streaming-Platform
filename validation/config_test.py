@@ -96,6 +96,10 @@ class ConfigValuesTest(unittest.TestCase):
         self.assertEqual(config.KAFKA_POLL_TIMEOUT_S, 1.0)
         self.assertEqual(config.WATERMARK_ATTEMPTS, 5)
         self.assertEqual(config.WATERMARK_BACKOFF_S, 0.5)
+        self.assertEqual(config.DRAIN_TIMEOUT_S, 600.0)
+        self.assertEqual(config.DRAIN_POLL_S, 1.0)
+        self.assertEqual(config.MATERIALIZER_STOP_TIMEOUT_S, 30.0)
+        self.assertEqual(config.OFFSET_QUERY_TIMEOUT_S, 10.0)
         self.assertEqual(config.CONSUMER_GROUP_ID, "full-flow-validation")
         self.assertEqual(config.DEFAULT_REPORT_PATH, "validation/out/flow-report.json")
 
@@ -207,6 +211,8 @@ class FlowScriptsFollowsConfigTest(unittest.TestCase):
     RESET = Path(__file__).resolve().parent.parent / "scripts" / "reset-flow.py"
     SUBMIT = (Path(__file__).resolve().parent.parent / "scripts"
               / "submit-flink-job.py")
+    DRAIN = (Path(__file__).resolve().parent.parent / "scripts"
+             / "drain-materializer.py")
 
     def test_reset_flow_follows_config(self):
         self.assertEqual(script_follows_override(
@@ -220,6 +226,15 @@ class FlowScriptsFollowsConfigTest(unittest.TestCase):
                          "TOPIC_EMA_WINDOWS": "ema", "TOPIC_TRADE_ADVISORIES":
                          "adv"}, "module.TOPICS"),
             "('evt', 'dlq', 'ema', 'adv')")
+
+    def test_drain_materializer_follows_config(self):
+        for name in ("DRAIN_TIMEOUT_S", "DRAIN_POLL_S", "MATERIALIZER_STOP_TIMEOUT_S",
+                     "OFFSET_QUERY_TIMEOUT_S"):
+            self.assertEqual(script_follows_override(
+                self.DRAIN, {name: 7.5}, f"module.{name}"), "7.5", name)
+        self.assertEqual(script_follows_override(
+            self.DRAIN, {"TOPIC_EMA_WINDOWS": "ema", "TOPIC_TRADE_ADVISORIES": "adv"},
+            "module.TOPICS"), "('ema', 'adv')")
 
     def test_submit_flink_job_follows_config(self):
         self.assertEqual(script_follows_override(

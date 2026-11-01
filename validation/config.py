@@ -58,3 +58,9 @@ WATERMARK_ATTEMPTS = 5            # transient watermark-query retries
 WATERMARK_BACKOFF_S = 0.5
 CONSUMER_GROUP_ID = "full-flow-validation"  # placeholder; assignment is manual
 DEFAULT_REPORT_PATH = "validation/out/flow-report.json"
+# scripts/drain-materializer.py: run the materializer until its group has
+# committed every record of the result topics, then stop it.
+DRAIN_TIMEOUT_S = 600.0           # longest wait for the materializer to catch up
+DRAIN_POLL_S = 1.0                # committed-offset check interval
+MATERIALIZER_STOP_TIMEOUT_S = 30.0  # SIGTERM until exit, before SIGKILL
+OFFSET_QUERY_TIMEOUT_S = 10.0     # one watermark/committed-offset query
