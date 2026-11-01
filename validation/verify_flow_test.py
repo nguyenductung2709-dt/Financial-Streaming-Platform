@@ -31,10 +31,12 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bindings  # noqa: E402
+import db_check  # noqa: E402
 import ema_replay as er  # noqa: E402
 import generate_validation_data as gvd  # noqa: E402
 import shadow as sh  # noqa: E402
 import verify_flow as vf  # noqa: E402
+from db_check_test import FakeConn, utc  # noqa: E402
 
 SYM = "AAA.NL"
 OTHER = "BB.DE"
@@ -139,11 +141,13 @@ class RunHappyPathTest(unittest.TestCase):
                                 consume=consume)
             self.assertTrue(result.passed)
             self.assertIsNone(result.reference)
+            self.assertIsNone(result.database)
             self.assertEqual(result.compare.total_windows, 3)
             self.assertEqual(result.compare.matched, 3)
             self.assertEqual(result.compare.unexplained, [])
             report = json.loads(report_path.read_text())
             self.assertNotIn("reference", report)
+            self.assertNotIn("database", report)
             self.assertEqual(report["topics"], TOPICS)
             self.assertEqual(report["tolerance"], str(TOLERANCE))
             self.assertEqual(report["total_events"], 3)
@@ -287,10 +291,121 @@ class RunWithReferenceTest(unittest.TestCase):
         self.assertEqual(self.consume.calls, [])
 
 
+def fake_db(ema_records, advisory_records, tamper=None):
+    """A FakeConn holding exactly what the materializer would have stored.
+
+    `tamper(windows)` may edit the ema_windows rows (a list of tuples) first.
+    """
+    state = db_check.expected_state(ema_records, advisory_records).state
+    windows = [(symbol, utc(start), utc(row.window_end_ms), Decimal(row.closing_price_micros),
+                row.ema38, row.ema100) for (symbol, start), row in sorted(state.windows.items())]
+    if tamper:
+        tamper(windows)
+    advisories = [(symbol, utc(start), row.action, row.previous_ema38, row.previous_ema100)
+                  for (symbol, start), row in sorted(state.advisories.items())]
+    return FakeConn([(symbol,) for symbol in sorted(state.symbols)], windows, advisories)
+
+
+class RunWithDatabaseTest(unittest.TestCase):
+    SPECS = RunHappyPathTest.SPECS
+    URL = "postgresql://test/db"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        event_records, shadow_out = make_stream(self.SPECS)
+        self.ema_records, self.advisory_records = actual_topic_records(shadow_out)
+        self.consume = fake_consume(event_records, self.ema_records, self.advisory_records)
+
+    def run_flow(self, conn=None, connect=None):
+        conn = conn or fake_db(self.ema_records, self.advisory_records)
+        self.connected = []
+
+        def default_connect(url):
+            self.connected.append(url)
+            return conn
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            result = vf.run(BROKERS, TOPICS, self.dir / "report.json", TOLERANCE,
+                            consume=self.consume, db_url=self.URL,
+                            db_connect=connect or default_connect)
+        return result, out.getvalue(), json.loads((self.dir / "report.json").read_text()), conn
+
+    def test_faithful_database_passes_and_is_reported(self):
+        result, text, report, conn = self.run_flow()
+        self.assertTrue(result.passed)
+        self.assertTrue(result.database.passed)
+        self.assertEqual(self.connected, [self.URL])
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["database"]["matched_windows"], 3)
+        self.assertEqual(report["database"]["expected_advisories"], 2)
+        self.assertTrue(report["database"]["passed"])
+        self.assertIn("database: 3 of 3 windows, 2 of 2 advisories match, 0 mismatched", text)
+        self.assertIn("passed: True", text)
+        self.assertTrue(conn.closed)
+
+    def test_tampered_database_fails_the_flow_though_everything_else_matches(self):
+        def tamper(windows):
+            symbol, start, end, close, ema38, ema100 = windows[0]
+            windows[0] = (symbol, start, end, close, ema38 + 1, ema100)
+
+        result, text, report, conn = self.run_flow(fake_db(
+            self.ema_records, self.advisory_records, tamper))
+        self.assertTrue(result.compare.passed)
+        self.assertFalse(result.database.passed)
+        self.assertFalse(result.passed)
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["database"]["mismatches"]["count"], 1)
+        self.assertEqual(report["database"]["mismatches"]["windows"][0]["table"], "ema_windows")
+        self.assertIn("database mismatches", text)
+        self.assertIn("ema38", text)
+        self.assertIn("passed: False", text)
+        self.assertTrue(conn.closed)
+
+    def test_unreachable_database_fails_before_any_topic_is_read(self):
+        def refuse(url):
+            raise OSError("connection refused")
+
+        with self.assertRaisesRegex(OSError, "connection refused"):
+            self.run_flow(connect=refuse)
+        self.assertEqual(self.consume.calls, [])
+
+    def test_connection_is_closed_even_when_a_topic_read_fails(self):
+        conn = fake_db(self.ema_records, self.advisory_records)
+
+        def broken(brokers, topic):
+            raise RuntimeError("topic read failed")
+
+        with self.assertRaisesRegex(RuntimeError, "topic read failed"):
+            with redirect_stdout(io.StringIO()):
+                vf.run(BROKERS, TOPICS, self.dir / "report.json", TOLERANCE, consume=broken,
+                       db_url=self.URL, db_connect=lambda url: conn)
+        self.assertTrue(conn.closed)
+
+
 class MainTest(unittest.TestCase):
     ARGS = ["--brokers", BROKERS, "--events-topic", "trade-events",
             "--ema-topic", "ema-windows", "--advisory-topic",
             "trade-advisories"]
+
+    def test_db_url_flag_runs_the_database_check_and_decides_the_exit_code(self):
+        event_records, shadow_out = make_stream([(SYM, 10_000, 15_000_000, 1)])
+        ema_records, advisory_records = actual_topic_records(shadow_out)
+        consume = fake_consume(event_records, ema_records, advisory_records)
+        with tempfile.TemporaryDirectory() as tmp:
+            codes = {}
+            for name, tamper in (("good", None),
+                                 ("bad", lambda windows: windows.pop())):
+                conn = fake_db(ema_records, advisory_records, tamper)
+                with mock.patch("kafka_topics.consume_all", consume), \
+                        mock.patch("db_check.connect", lambda url, conn=conn: conn):
+                    with redirect_stdout(io.StringIO()):
+                        codes[name] = vf.main(self.ARGS + [
+                            "--report", str(Path(tmp) / f"{name}.json"),
+                            "--db-url", "postgresql://test/db"])
+            self.assertEqual(codes, {"good": 0, "bad": 1})
 
     def test_reference_dir_flag_decides_the_exit_code(self):
         event_records, shadow_out = make_stream([(SYM, 10_000, 15_000_000, 1)])
