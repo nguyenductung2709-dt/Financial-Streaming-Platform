@@ -2,8 +2,8 @@
 
 The materializer will consume `ema-windows` and `trade-advisories`, decode their
 Protobuf messages, and store results in PostgreSQL for the backend API.
-The database schema and Go writing layer are implemented; the Redpanda consumer
-follows separately.
+The database schema, Go writing layer, and Protobuf mapping are implemented;
+the Redpanda consumer follows separately.
 
 ## Tables
 
@@ -77,9 +77,22 @@ materializer's Go models. Timestamps use `time.Time`, prices use `uint64`, and
 EMA values use exact decimal strings. Database operations live beside their
 models in the same `data` package. The shared `upsertSymbol` helper uses the
 current transaction, so failed result writes also roll back symbol creation.
-The decoder will convert generated Protobuf messages into the result models
+The mapper converts generated Protobuf messages into the result models
 before writing to the database. This package is internal to the materializer;
 other services use their own data access code.
+
+## Protobuf mapping
+
+`internal/mapper` exposes `DecodeEmaWindow(payload)` and
+`DecodeTradeAdvisory(payload)` for raw Protobuf record values. Both return a
+validated `data` model, or an error with a nil model. They reject empty values,
+malformed Protobuf, missing or invalid timestamps, invalid window fields, and
+unsupported advisory actions. Timestamps are checked before converting to
+`time.Time`; prices and decimal strings are copied without floating-point
+conversion. Unknown Protobuf fields are accepted for schema compatibility.
+
+The mapper and database writers share the models' `Validate` methods. The mapper
+performs no database operations and has no dependency on the consumer.
 
 ## Go database layer
 
@@ -100,7 +113,7 @@ Decimal values and unsigned prices are sent as text and cast to PostgreSQL
 Run validation tests from the repository root:
 
 ```sh
-go test -race ./services/materializer/internal/data
+go test -race ./services/materializer/internal/...
 ```
 
 Run database integration tests against the local PostgreSQL service:

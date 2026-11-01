@@ -16,7 +16,7 @@ func testWindow() *EmaWindow {
 }
 
 func TestValidateWindow(t *testing.T) {
-	if err := validateWindow(testWindow()); err != nil {
+	if err := testWindow().Validate(); err != nil {
 		t.Fatal(err)
 	}
 	for name, change := range map[string]func(*EmaWindow){
@@ -40,7 +40,7 @@ func TestValidateWindow(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			w := testWindow()
 			change(w)
-			if err := validateWindow(w); err == nil {
+			if err := w.Validate(); err == nil {
 				t.Fatal("expected invalid window to fail")
 			}
 		})
