@@ -14,13 +14,16 @@ import (
 )
 
 type config struct {
-	csvPath    string
-	brokers    []string
-	topic      string
-	dlqTopic   string
-	dlqEnabled bool
-	rate       int
-	maxEvents  uint64
+	csvPath            string
+	brokers            []string
+	topic              string
+	dlqTopic           string
+	dlqEnabled         bool
+	rate               int
+	maxEvents          uint64
+	checkpointPath     string
+	checkpointInterval time.Duration
+	resume             bool
 }
 
 func main() {
@@ -53,8 +56,18 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	flags.BoolVar(&cfg.dlqEnabled, "dlqEnabled", false, "Enable the dead letter queue topic for invalid trade events")
 	flags.IntVar(&cfg.rate, "rate", 0, "Maximum events per second (0 = unlimited)")
 	flags.Uint64Var(&cfg.maxEvents, "maxEvents", 0, "Maximum acknowledged events to publish (0 = unlimited)")
+	flags.StringVar(&cfg.checkpointPath, "checkpointPath", "", "Producer checkpoint JSON path (empty disables checkpointing)")
+	flags.DurationVar(&cfg.checkpointInterval, "checkpointInterval", time.Second, "Interval between progress saves")
+	flags.BoolVar(&cfg.resume, "resume", false, "Resume from the existing producer checkpoint")
 	if err := flags.Parse(args); err != nil {
 		return config{}, err
+	}
+	cfg.checkpointPath = strings.TrimSpace(cfg.checkpointPath)
+	if cfg.resume && cfg.checkpointPath == "" {
+		return config{}, fmt.Errorf("-resume requires -checkpointPath")
+	}
+	if cfg.checkpointInterval <= 0 {
+		return config{}, fmt.Errorf("checkpoint interval must be positive")
 	}
 	if flags.NArg() != 0 {
 		return config{}, fmt.Errorf("unexpected arguments: %q; use named flags such as -csvPath=<path>", flags.Args())
@@ -123,6 +136,15 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 		return fmt.Errorf("connect to Redpanda: %w", err)
 	}
 
+	checkpoint, err := openCheckpoint(cfg)
+	if err != nil {
+		return fmt.Errorf("open producer checkpoint: %w", err)
+	}
+	defer checkpoint.close()
+	if checkpoint != nil && cfg.resume {
+		fmt.Fprintf(output, "Resuming after CSV line %d\n", checkpoint.resumeRow)
+	}
+
 	var published, skipped, rejected uint64
 	var interval time.Duration
 	if cfg.rate > 0 {
@@ -141,6 +163,12 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 			return err
 		}
 
+		if skip, err := checkpoint.skip(row.Line); err != nil {
+			return err
+		} else if skip {
+			return nil
+		}
+
 		event, skip, err := rowToPriceEvent(row)
 		if err != nil {
 			if !cfg.dlqEnabled {
@@ -155,11 +183,11 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 				return dlqErr
 			}
 			rejected++
-			return nil
+			return checkpoint.complete(row.Line)
 		}
 		if skip {
 			skipped++
-			return nil
+			return checkpoint.complete(row.Line)
 		}
 
 		if interval > 0 {
@@ -174,11 +202,21 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 		}
 
 		published++
+		if err := checkpoint.complete(row.Line); err != nil {
+			return fmt.Errorf("save producer checkpoint: %w", err)
+		}
 		if cfg.maxEvents > 0 && published >= cfg.maxEvents {
 			return limitReached
 		}
 		return nil
 	})
+
+	if err == nil && checkpoint != nil && !checkpoint.foundResume {
+		err = fmt.Errorf("checkpoint row %d was not found in the CSV", checkpoint.resumeRow)
+	}
+	if saveErr := checkpoint.save(); saveErr != nil {
+		err = fmt.Errorf("save producer checkpoint: %w (CSV result: %v)", saveErr, err)
+	}
 
 	// Report acknowledged events and intentionally skipped rows, including partial runs.
 	status := "completed"

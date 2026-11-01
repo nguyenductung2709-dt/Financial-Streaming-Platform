@@ -13,7 +13,12 @@ final class EmaProcessFunction extends KeyedProcessFunction[String, WindowClose,
   @transient private var shortEma: ValueState[BigDecimal] = _
   @transient private var longEma: ValueState[BigDecimal] = _
 
+  @transient private var lastWindowEnd: ValueState[java.lang.Long] = _
+
   override def open(context: OpenContext): Unit = {
+    lastWindowEnd = getRuntimeContext.getState(
+      new ValueStateDescriptor[java.lang.Long]("ema-last-window-end-v1", Types.LONG)
+    )
     shortEma = getRuntimeContext.getState(
       new ValueStateDescriptor[BigDecimal]("ema-38-v1", Types.BIG_DEC)
     )
@@ -27,15 +32,27 @@ final class EmaProcessFunction extends KeyedProcessFunction[String, WindowClose,
       context: KeyedProcessFunction[String, WindowClose, EmaResult]#Context,
       out: Collector[EmaResult]
   ): Unit = {
+    val previousEnd = lastWindowEnd.value()
+    val previousShort = shortEma.value()
+    val previousLong = longEma.value()
+    if (previousEnd == null && (previousShort != null || previousLong != null)) {
+      throw new IllegalStateException(
+        "Checkpoint lacks EMA window progress; use a fresh replay or migrate the legacy state"
+      )
+    }
+    // Producer replay after restore can recreate windows that were already applied.
+    if (previousEnd != null && window.windowEndMillis <= previousEnd.longValue()) return
+
     val priceMicros = window.closingTrade.getLastPriceMicros
     require(priceMicros != 0L, "closing price must be positive")
     // Protobuf uint64 uses signed Long bits on the JVM; convert through unsigned text.
     val close = new BigDecimal(java.lang.Long.toUnsignedString(priceMicros)).movePointLeft(6)
-    val nextShort = next(shortEma.value(), close, period = 38)
-    val nextLong = next(longEma.value(), close, period = 100)
+    val nextShort = next(previousShort, close, period = 38)
+    val nextLong = next(previousLong, close, period = 100)
 
     shortEma.update(nextShort)
     longEma.update(nextLong)
+    lastWindowEnd.update(java.lang.Long.valueOf(window.windowEndMillis))
     out.collect(EmaResult(window, nextShort, nextLong))
   }
 

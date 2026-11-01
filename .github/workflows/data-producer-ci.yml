@@ -7,6 +7,8 @@ on:
       - '!services/data-producer/**/*.md'
       - 'gen/go/**'
       - 'schemas/**/*.proto'
+      - 'scripts/verification/**'
+      - 'scripts/verify-producer-recovery.py'
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
@@ -17,6 +19,8 @@ on:
       - '!services/data-producer/**/*.md'
       - 'gen/go/**'
       - 'schemas/**/*.proto'
+      - 'scripts/verification/**'
+      - 'scripts/verify-producer-recovery.py'
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
@@ -89,5 +93,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Build producer
-        run: go build -o bin/data-producer ./services/data-producer
+      - name: Build producer and recovery verification reader
+        run: |
+          go build -o bin/data-producer ./services/data-producer
+          go build -o bin/producer-recovery-read ./scripts/verification/producer-recovery-read.go

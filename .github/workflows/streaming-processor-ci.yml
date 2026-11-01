@@ -8,6 +8,8 @@ on:
       - 'gen/java/**'
       - 'schemas/**/*.proto'
       - 'Makefile'
+      - 'scripts/submit-flink-job.py'
+      - 'scripts/tests/**'
       - '.github/workflows/streaming-processor-ci.yml'
   pull_request:
     paths:
@@ -16,6 +18,8 @@ on:
       - 'gen/java/**'
       - 'schemas/**/*.proto'
       - 'Makefile'
+      - 'scripts/submit-flink-job.py'
+      - 'scripts/tests/**'
       - '.github/workflows/streaming-processor-ci.yml'
 
 permissions:
@@ -33,6 +37,8 @@ jobs:
           java-version: '17'
           cache: sbt
       - uses: sbt/setup-sbt@v1
+      - name: Test Flink submission and restore commands
+        run: make test-flink-scripts
       - name: Check Scala formatting and compiler lint
         run: make lint-streaming-processor
       - name: Test and assemble deployment JAR

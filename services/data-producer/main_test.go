@@ -25,11 +25,11 @@ func TestParseConfig(t *testing.T) {
 		want config
 	}{
 		{"defaults", nil, config{
-			csvPath: "dataset/debs2022-gc-trading-day-12-11-21.csv",
-			brokers: []string{"localhost:19092"}, topic: "trade-events", dlqTopic: "trade-events-dlq",
+			csvPath:            "dataset/debs2022-gc-trading-day-12-11-21.csv",
+			checkpointInterval: time.Second, brokers: []string{"localhost:19092"}, topic: "trade-events", dlqTopic: "trade-events-dlq",
 		}},
 		{"custom flags and trimmed addresses", []string{"-csvPath=/tmp/my data.csv", "-brokers= broker1:9092, broker2:9092 ", "-topic= prices "}, config{
-			csvPath: "/tmp/my data.csv", brokers: []string{"broker1:9092", "broker2:9092"}, topic: "prices", dlqTopic: "trade-events-dlq",
+			checkpointInterval: time.Second, csvPath: "/tmp/my data.csv", brokers: []string{"broker1:9092", "broker2:9092"}, topic: "prices", dlqTopic: "trade-events-dlq",
 		}},
 	}
 	for _, tt := range tests {
@@ -61,7 +61,7 @@ func TestParseConfigHelp(t *testing.T) {
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("error = %v; want flag.ErrHelp", err)
 	}
-	for _, name := range []string{"-csvPath", "-brokers", "-topic", "-dlqTopic", "-dlqEnabled", "-rate", "-maxEvents"} {
+	for _, name := range []string{"-csvPath", "-brokers", "-topic", "-dlqTopic", "-dlqEnabled", "-rate", "-maxEvents", "-checkpointPath", "-checkpointInterval", "-resume"} {
 		if !strings.Contains(output.String(), name) {
 			t.Fatalf("help omits %s", name)
 		}
