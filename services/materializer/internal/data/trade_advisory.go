@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 )
 
 type AdvisoryAction string
@@ -26,25 +28,39 @@ func (s *Postgres) SaveTradeAdvisory(ctx context.Context, advisory *TradeAdvisor
 	if err := advisory.Validate(); err != nil {
 		return err
 	}
-	return s.transaction(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		window := advisory.EmaWindow
-		if err := upsertWindow(ctx, tx, window); err != nil {
-			return err
+	return s.transaction(ctx, advisory.save)
+}
+
+func (advisory *TradeAdvisory) save(ctx context.Context, tx *sql.Tx) error {
+	window := advisory.EmaWindow
+	if err := window.save(ctx, tx); err != nil {
+		return err
+	}
+	return upsertAdvisories(ctx, tx, []*TradeAdvisory{advisory})
+}
+
+func upsertAdvisories(ctx context.Context, tx *sql.Tx, advisories []*TradeAdvisory) error {
+	for rows := range slices.Chunk(advisories, maxUpsertRows) {
+		values := make([]string, len(rows))
+		args := make([]any, 0, 5*len(rows))
+		for i, advisory := range rows {
+			n := len(args)
+			values[i] = fmt.Sprintf("($%d,$%d,$%d,$%d::text::numeric,$%d::text::numeric)", n+1, n+2, n+3, n+4, n+5)
+			args = append(args, advisory.EmaWindow.Symbol, advisory.EmaWindow.WindowStart,
+				string(advisory.Action), advisory.PreviousEma38, advisory.PreviousEma100)
 		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO trade_advisories (symbol, window_start, action, previous_ema38, previous_ema100)
-			VALUES ($1, $2, $3, $4::text::numeric, $5::text::numeric)
+			VALUES `+strings.Join(values, ",")+`
 			ON CONFLICT (symbol, window_start) DO UPDATE SET
 			    action = EXCLUDED.action,
 			    previous_ema38 = EXCLUDED.previous_ema38,
-			    previous_ema100 = EXCLUDED.previous_ema100`,
-			window.Symbol, window.WindowStart, string(advisory.Action),
-			advisory.PreviousEma38, advisory.PreviousEma100)
+			    previous_ema100 = EXCLUDED.previous_ema100`, args...)
 		if err != nil {
-			return fmt.Errorf("upsert advisory for %q: %w", window.Symbol, err)
+			return fmt.Errorf("upsert trade advisories: %w", err)
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // Validate checks the advisory and its embedded EMA window.
