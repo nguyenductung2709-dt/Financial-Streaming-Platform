@@ -7,6 +7,9 @@ BOUNDED_TIMEOUT ?= 3600
 MAX_EVENTS ?=
 REFERENCE_DIR ?=
 DEFAULT_REFERENCE_DIR := validation/out/reference
+# 1 also checks the materializer's PostgreSQL tables against the topics (needs .env);
+# validate-flow runs drain-materializer first so the database is complete.
+DB_CHECK ?= 1
 
 # Load the same settings for the standalone materializer and the complete flow.
 define materializer-env
@@ -21,7 +24,7 @@ export MATERIALIZER_BROKERS="$${materializer_brokers:-$${MATERIALIZER_BROKERS-}}
 export MATERIALIZER_GROUP_ID="$${materializer_group_id:-$${MATERIALIZER_GROUP_ID-}}";
 endef
 
-.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow infra-up run-bounded-processor generate-reference compare-flow validate-flow test-validation
+.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow infra-up run-bounded-processor generate-reference drain-materializer compare-flow validate-flow test-validation
 
 .PHONY: help \
 	build-data-producer test-data-producer run-data-producer \
@@ -98,21 +101,30 @@ generate-reference: ## Compute the offline Python reference from the CSV (about 
 	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make generate-reference CSV=dataset/debs2022-gc-trading-day-08-11-21.csv))
 	python3 validation/generate_validation_data.py --csv $(CSV) --out $(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR))
 
-compare-flow: ## Compare ema-windows and trade-advisories against the Python shadow; REFERENCE_DIR=... also checks the shadow against a generate-reference output
+drain-materializer: build-materializer ## Run the materializer until it has consumed ema-windows and trade-advisories, then stop it
+	@$(materializer-env) exec python3 scripts/drain-materializer.py
+
+# DB_CHECK=1 (default) reads the database URL from .env and needs a drained materializer.
+compare-flow: ## Compare ema-windows and trade-advisories against the Python shadow; REFERENCE_DIR=... also checks the shadow against a generate-reference output, DB_CHECK=1 the PostgreSQL tables
+ifeq ($(DB_CHECK),1)
+	@$(materializer-env) exec python3 validation/verify_flow.py $(if $(strip $(REFERENCE_DIR)),--reference-dir $(REFERENCE_DIR)) --db-url "$$MATERIALIZER_DATABASE_URL"
+else
 	python3 validation/verify_flow.py $(if $(strip $(REFERENCE_DIR)),--reference-dir $(REFERENCE_DIR))
+endif
 
 # The CSV reference needs the whole file, so a MAX_EVENTS prefix run skips it.
-validate-flow: ## Full validation run; CSV required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv [RATE=0] [MAX_EVENTS=n]
+validate-flow: ## Full validation run; CSV required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv [RATE=0] [MAX_EVENTS=n] [DB_CHECK=0]
 	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv))
 	$(if $(strip $(MAX_EVENTS)),,$(MAKE) generate-reference REFERENCE_DIR=$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 	$(MAKE) infra-up
 	$(MAKE) reset-flow
 	$(MAKE) run-data-producer ARGS="-csvPath=$(CSV) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))"
 	$(MAKE) run-bounded-processor
+	$(if $(filter 1,$(DB_CHECK)),$(MAKE) drain-materializer)
 	$(MAKE) compare-flow REFERENCE_DIR=$(if $(strip $(MAX_EVENTS)),,$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 
 test-validation: ## Run all Python validation and flow tests
-	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py; do \
+	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/test_flow.py; do \
 		echo "== $$t"; \
 		python3 $$t || exit 1; \
 	done
