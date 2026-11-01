@@ -21,6 +21,8 @@ JOB_NAME = config.FLINK_JOB_NAME
 TOPICS = (config.TOPIC_EVENTS, config.TOPIC_DLQ, config.TOPIC_EMA_WINDOWS,
           config.TOPIC_TRADE_ADVISORIES)
 TERMINAL_STATES = {"FINISHED", "FAILED", "CANCELED", "SUSPENDED"}
+TOPIC_READY_TIMEOUT_S = config.TOPIC_READY_TIMEOUT_S
+TOPIC_READY_POLL_S = config.TOPIC_READY_POLL_S
 
 
 def get_json(path):
@@ -88,38 +90,72 @@ def remove_materializer_group(group_id):
             raise RuntimeError("Could not remove the materializer group; topics and read models were not cleared")
 
 
-def recreate_topics(run=None):
+def pending_reason(topics):
+    """Why the described topics are not ready yet, or None when every one is.
+
+    Not ready: a project topic missing from the output, a summary or
+    partition error, no partitions, or a partition without a leader.
+    Raises at once when a ready partition holds records, since waiting
+    cannot empty it.
+    """
+    reason = None
+    if {topic["summary"]["name"] for topic in topics} != set(TOPICS):
+        reason = "Could not verify all project topics"
+    for topic in topics:
+        name = topic["summary"]["name"]
+        if topic["summary"].get("error") or not topic["partitions"]:
+            reason = reason or f"Could not inspect {name}"
+            continue
+        for partition in topic["partitions"]:
+            if partition.get("error") or partition.get("leader", 0) < 0:
+                reason = reason or f"Could not inspect {name}"
+            elif partition["log_start_offset"] != 0 or partition["high_watermark"] != 0:
+                raise RuntimeError("Recreated topics are not empty. Stop the producer and reset again.")
+    return reason
+
+
+def recreate_topics(run=None, timeout_s=None, poll_s=None, sleep=None, clock=None):
     """Delete and recreate every project topic with a pristine, empty log.
 
     Clearing records in place (trim-prefix) leaves the low watermark at
     the previous high watermark; the flow validation refuses to read a
     topic whose head is truncated that way, so the reset must recreate
     the topics instead (one partition, one replica, like create-topic).
-    `run` defaults to subprocess.run looked up at call time, so callers
-    that patch subprocess.run never reach the real broker.
+    `rpk topic create` returns before the partition has a leader, and a
+    recreated partition cannot start until the old log of the same name
+    is physically removed (about 30 s for a full day's topic), so the
+    describe check polls until every topic is ready, up to timeout_s.
+    `run`, `sleep` and `clock` default to subprocess.run, time.sleep and
+    time.monotonic looked up at call time, so callers that patch
+    subprocess.run never reach the real broker.
     """
     run = run or subprocess.run
-    rpk =["docker", "compose", "exec", "-T", "redpanda-0", "rpk", "topic"]
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    timeout_s = TOPIC_READY_TIMEOUT_S if timeout_s is None else timeout_s
+    poll_s = TOPIC_READY_POLL_S if poll_s is None else poll_s
+    rpk = ["docker", "compose", "exec", "-T", "redpanda-0", "rpk", "topic"]
     broker = ["-X", "brokers=redpanda-0:9092"]
     for topic in TOPICS:
         run([*rpk, "delete", topic, *broker], cwd=ROOT, check=True)
         run([*rpk, "create", topic, "--partitions", "1", "--replicas", "1", *broker],
             cwd=ROOT, check=True)
 
-    described = run([*rpk, "describe", *TOPICS, "--format", "json", *broker],
-                    cwd=ROOT, text=True, capture_output=True, check=True)
-    topics = json.loads(described.stdout)
-    if {topic["summary"]["name"] for topic in topics} != set(TOPICS):
-        raise RuntimeError("Could not verify all project topics")
-    for topic in topics:
-        if topic["summary"].get("error") or not topic["partitions"]:
-            raise RuntimeError(f"Could not inspect {topic['summary']['name']}")
-        for partition in topic["partitions"]:
-            if partition.get("error"):
-                raise RuntimeError(f"Could not inspect {topic['summary']['name']}")
-            if partition["log_start_offset"] != 0 \
-                    or partition["high_watermark"] != 0:
-                raise RuntimeError("Recreated topics are not empty. Stop the producer and reset again.")
+    deadline = clock() + timeout_s
+    announced = False
+    while True:
+        described = run([*rpk, "describe", *TOPICS, "--format", "json", *broker],
+                        cwd=ROOT, text=True, capture_output=True, check=True)
+        reason = pending_reason(json.loads(described.stdout))
+        if reason is None:
+            return
+        if clock() >= deadline:
+            raise RuntimeError(f"{reason}; the recreated topics were not ready after {timeout_s:g}s")
+        if not announced:
+            print(f"Waiting for the recreated topics to become ready ({reason});"
+                  " the old logs may still be being removed.", flush=True)
+            announced = True
+        sleep(poll_s)
 
 
 def reset():

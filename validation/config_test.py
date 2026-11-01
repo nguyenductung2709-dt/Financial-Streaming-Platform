@@ -100,6 +100,8 @@ class ConfigValuesTest(unittest.TestCase):
         self.assertEqual(config.DRAIN_POLL_S, 1.0)
         self.assertEqual(config.MATERIALIZER_STOP_TIMEOUT_S, 30.0)
         self.assertEqual(config.OFFSET_QUERY_TIMEOUT_S, 10.0)
+        self.assertEqual(config.TOPIC_READY_TIMEOUT_S, 120.0)
+        self.assertEqual(config.TOPIC_READY_POLL_S, 1.0)
         self.assertEqual(config.CONSUMER_GROUP_ID, "full-flow-validation")
         self.assertEqual(config.DEFAULT_REPORT_PATH, "validation/out/flow-report.json")
 
@@ -221,6 +223,12 @@ class FlowScriptsFollowsConfigTest(unittest.TestCase):
         self.assertEqual(script_follows_override(
             self.RESET, {"FLINK_JOB_NAME": "other-job"}, "module.JOB_NAME"),
             "other-job")
+        self.assertEqual(script_follows_override(
+            self.RESET, {"TOPIC_READY_TIMEOUT_S": 7.5}, "module.TOPIC_READY_TIMEOUT_S"),
+            "7.5")
+        self.assertEqual(script_follows_override(
+            self.RESET, {"TOPIC_READY_POLL_S": 0.25}, "module.TOPIC_READY_POLL_S"),
+            "0.25")
         self.assertEqual(script_follows_override(
             self.RESET, {"TOPIC_EVENTS": "evt", "TOPIC_DLQ": "dlq",
                          "TOPIC_EMA_WINDOWS": "ema", "TOPIC_TRADE_ADVISORIES":

@@ -64,3 +64,8 @@ DRAIN_TIMEOUT_S = 600.0           # longest wait for the materializer to catch u
 DRAIN_POLL_S = 1.0                # committed-offset check interval
 MATERIALIZER_STOP_TIMEOUT_S = 30.0  # SIGTERM until exit, before SIGKILL
 OFFSET_QUERY_TIMEOUT_S = 10.0     # one watermark/committed-offset query
+# scripts/reset-flow.py: a recreated topic cannot start until the old log of
+# the same name is gone (~30 s for a full day's 12M events), and `rpk topic
+# create` returns before that.
+TOPIC_READY_TIMEOUT_S = 120.0     # longest wait for the recreated topics to be ready
+TOPIC_READY_POLL_S = 1.0          # describe interval while waiting

@@ -9,9 +9,20 @@ refuses to read topics whose head is truncated). The post-recreation
 describe must list exactly the project topics with a pristine log —
 log_start_offset and high_watermark both zero — or the reset fails
 loudly rather than leaving a half-reset flow behind.
+
+`rpk topic create` returns once the controller has recorded the topic,
+before the partition has a leader, and a recreated partition cannot start
+until the old log of the same name is physically gone (about 30 s for the
+12M-event topic of a full day). A topic that is not ready yet — summary or
+partition error, no partitions, no leader — is therefore waited for, up to
+a timeout, and reported with its last observed reason if it never is; a
+topic that is ready but holds records fails immediately, since waiting
+cannot empty it.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import unittest
@@ -58,21 +69,60 @@ class FakeRunner:
         return type("Result", (), {"stdout": ""})()
 
 
+class SequencedRunner(FakeRunner):
+    """FakeRunner whose successive describe calls return successive snapshots
+    (the last one repeats), like a topic that becomes ready over time."""
+
+    def __init__(self, snapshots):
+        super().__init__(snapshots[-1])
+        self.snapshots = list(snapshots)
+        self.describes = 0
+
+    def __call__(self, command, **kwargs):
+        if "describe" in command:
+            index = min(self.describes, len(self.snapshots) - 1)
+            self.describes += 1
+            self.describe_topics = self.snapshots[index]
+        return super().__call__(command, **kwargs)
+
+
+class FakeTime:
+    """Fake sleep/monotonic: every sleep advances the clock by that much."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def monotonic(self):
+        return self.now
+
+
+def pristine(mod):
+    return {name: [(0, 0)] for name in mod.TOPICS}
+
+
 class RecreateTopicsTest(unittest.TestCase):
     """recreate_topics over a recorded command stream."""
 
     def setUp(self):
         self.mod = load_module()
+        self.time = FakeTime()
 
     def recreate(self, topics):
         runner = FakeRunner(topics)
-        self.mod.recreate_topics(run=runner)
+        self.mod.recreate_topics(run=runner, sleep=self.time.sleep,
+                                 clock=self.time.monotonic)
         return runner
 
     def failing_recreate(self, topics):
         runner = FakeRunner(topics)
         with self.assertRaises(RuntimeError) as ctx:
-            self.mod.recreate_topics(run=runner)
+            self.mod.recreate_topics(run=runner, sleep=self.time.sleep,
+                                     clock=self.time.monotonic)
         return str(ctx.exception)
 
     def test_deletes_then_recreates_every_topic(self):
@@ -117,6 +167,92 @@ class RecreateTopicsTest(unittest.TestCase):
         topics["trade-events-dlq"] = [{"error": "leader not available"}]
         message = self.failing_recreate(topics)
         self.assertIn("Could not inspect trade-events-dlq", message)
+
+
+class TopicReadinessTest(unittest.TestCase):
+    """A recreated topic may take a while to get a leader; waiting is bounded."""
+
+    def setUp(self):
+        self.mod = load_module()
+        self.time = FakeTime()
+
+    def recreate(self, snapshots, **kwargs):
+        runner = SequencedRunner(snapshots)
+        self.mod.recreate_topics(run=runner, sleep=self.time.sleep,
+                                 clock=self.time.monotonic, **kwargs)
+        return runner
+
+    def with_events(self, partition):
+        topics = pristine(self.mod)
+        topics["trade-events"] = [partition]
+        return topics
+
+    def test_waits_for_a_partition_that_reports_an_error_then_succeeds(self):
+        pending = self.with_events({"error": "LEADER_NOT_AVAILABLE"})
+        runner = self.recreate([pending, pending, pending, pristine(self.mod)])
+        self.assertEqual(runner.describes, 4)
+        self.assertEqual(len(self.time.sleeps), 3)
+
+    def test_waits_while_the_topic_lists_no_partitions(self):
+        topics = pristine(self.mod)
+        topics["trade-events"] = []
+        runner = self.recreate([topics, pristine(self.mod)])
+        self.assertEqual(runner.describes, 2)
+
+    def test_waits_while_a_partition_has_no_leader(self):
+        no_leader = self.with_events({"partition": 0, "leader": -1,
+                                      "log_start_offset": 0, "high_watermark": 0})
+        runner = self.recreate([no_leader, pristine(self.mod)])
+        self.assertEqual(runner.describes, 2)
+
+    def test_waits_while_a_topic_is_not_listed_yet(self):
+        topics = pristine(self.mod)
+        del topics["trade-events"]
+        runner = self.recreate([topics, pristine(self.mod)])
+        self.assertEqual(runner.describes, 2)
+
+    def test_never_ready_fails_with_the_last_reason_after_the_timeout(self):
+        stuck = self.with_events({"error": "LEADER_NOT_AVAILABLE"})
+        with self.assertRaises(RuntimeError) as ctx:
+            self.recreate([stuck], timeout_s=10, poll_s=2)
+        message = str(ctx.exception)
+        self.assertIn("Could not inspect trade-events", message)
+        self.assertIn("not ready after 10s", message)
+        self.assertEqual(sum(self.time.sleeps), 10)       # polled up to the deadline, no further
+
+    def test_records_in_a_ready_topic_fail_at_once_without_waiting(self):
+        dirty = self.with_events((0, 5))
+        with self.assertRaisesRegex(RuntimeError, "not empty"):
+            runner = SequencedRunner([dirty])
+            self.mod.recreate_topics(run=runner, sleep=self.time.sleep,
+                                     clock=self.time.monotonic)
+        self.assertEqual(self.time.sleeps, [])
+        self.assertEqual(runner.describes, 1)
+
+    def test_records_win_over_a_pending_topic(self):
+        topics = self.with_events((0, 5))
+        topics["ema-windows"] = [{"error": "LEADER_NOT_AVAILABLE"}]
+        with self.assertRaisesRegex(RuntimeError, "not empty"):
+            self.recreate([topics])
+        self.assertEqual(self.time.sleeps, [])
+
+    def test_says_once_that_it_is_waiting_and_why(self):
+        pending = self.with_events({"error": "LEADER_NOT_AVAILABLE"})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.recreate([pending, pending, pending, pristine(self.mod)])
+        self.assertEqual(out.getvalue().count("Waiting for the recreated topics"), 1)
+        self.assertIn("Could not inspect trade-events", out.getvalue())
+
+    def test_a_topic_that_is_ready_at_once_prints_nothing(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.recreate([pristine(self.mod)])
+        self.assertEqual(out.getvalue(), "")
+
+    def test_the_wait_defaults_come_from_config(self):
+        self.assertEqual(self.mod.TOPIC_READY_TIMEOUT_S, 120.0)
+        self.assertEqual(self.mod.TOPIC_READY_POLL_S, 1.0)
 
 
 if __name__ == "__main__":
