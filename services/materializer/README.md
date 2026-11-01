@@ -54,8 +54,10 @@ variables and does not load `.env`. Its broker and group defaults are the same.
 Update `MATERIALIZER_DATABASE_URL` if you change PostgreSQL's credentials, port,
 or database name. The database URL is never included in startup logs.
 
-Ctrl+C or SIGTERM cancels processing, closes the consumer, then closes the
-database pool. A canceled batch may replay on the next run. Configuration,
+Ctrl+C or SIGTERM cancels processing. If the database has already committed the
+current batch, the consumer first attempts to commit its offsets with a separate
+ten-second timeout, then closes the consumer and database pool. A canceled batch
+may replay on the next run if its offset commit fails or is uncertain. Configuration,
 startup, or processing failures exit with a nonzero status; restart after
 resolving the error. The executable does not apply migrations automatically.
 The `-init-db` command initializes missing tables and exits; `-reset-db`
@@ -170,12 +172,16 @@ then runs multi-row upserts inside one PostgreSQL transaction. Auto-commit is
 disabled. Only after that database transaction commits does one synchronous offset commit
 advance each topic-partition past its last saved record. A full batch uses one
 database transaction, at most three upsert statements, and one offset-commit call
-for 100 records. Offset commits have a ten-second timeout or an earlier caller
-deadline.
+for 100 records. Offset commits have an independent ten-second timeout. After a
+successful database commit, caller cancellation or deadline expiry does not
+interrupt the offset commit; cancellation stops processing before the next poll.
 Rebalances are blocked while processing and committing the batch.
 
 A decoding or model-validation error stops the loop and logs the affected
-record's topic, partition, offset, and error. Multi-row SQL errors, transaction-level
+record's topic, partition, offset, and error. Its batch remains uncommitted, so
+restarting encounters the same invalid record until the decoding/validation issue
+is fixed or an operator explicitly handles the record. There is no automatic
+skip or dead-letter topic. Multi-row SQL errors, transaction-level
 errors, and offset-commit errors log the batch size, last record location, and
 error. Fetch errors stop the loop and log their topic and partition. A failed write rolls
 back the whole database batch and leaves its offsets uncommitted; earlier
