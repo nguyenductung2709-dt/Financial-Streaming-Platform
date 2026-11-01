@@ -10,6 +10,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
+      - '.githooks/pre-commit'
       - '.github/workflows/data-producer-ci.yml'
   pull_request:
     paths:
@@ -20,6 +21,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
+      - '.githooks/pre-commit'
       - '.github/workflows/data-producer-ci.yml'
   workflow_dispatch:
 

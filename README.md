@@ -11,6 +11,7 @@ make setup-hooks
 The pre-commit hook formats staged service files:
 
 - `services/data-producer`: `gofmt -w` and `go vet`
+- `services/materializer`: `gofmt -w` and recursive `go vet`
 - `services/streaming-processor`: `scalafmtAll` and `scalafmtSbt` (slow: JVM startup)
 
 Formatting runs on a snapshot of the staged files. Formatting changes are copied
@@ -119,20 +120,28 @@ Pushes and pull requests run checks based on the changed paths:
 | Changes | Checks |
 | --- | --- |
 | `services/data-producer/**` (except Markdown) | Producer formatting, lint, tests, and build |
+| `services/materializer/**` (except Markdown) | Materializer formatting, lint, race tests, PostgreSQL integration tests, and build |
 | `services/streaming-processor/**` (except Markdown) | Processor formatting, lint, tests, and assembly verification |
-| `schemas/**/*.proto` | Producer, processor, and Protobuf generation |
-| `gen/go/**` | Producer and Protobuf generation |
+| `schemas/**/*.proto` | Producer, materializer, processor, and Protobuf generation |
+| `gen/go/**` | Producer, materializer, and Protobuf generation |
 | `gen/java/**` | Processor and Protobuf generation |
 | Other files under `gen/**` | Protobuf generation |
-| `go.mod`, `go.sum` | Producer and Protobuf generation |
-| `Makefile` | Producer, processor, and Protobuf generation |
+| `go.mod`, `go.sum` | Producer, materializer, and Protobuf generation |
+| `Makefile` | Producer, materializer, processor, and Protobuf generation |
+| `.githooks/pre-commit` | Producer and materializer checks |
 | `compose.yaml` | Infrastructure Compose configuration validation |
 | A file in `.github/workflows/` | The workflow defined by that file |
 
 Documentation-only changes and changes to local scripts do not trigger these
 checks. Changes spanning multiple areas run all matching workflows.
-The producer and infrastructure workflows also support manual runs with
+The producer, materializer, and infrastructure workflows also support manual runs with
 `workflow_dispatch`.
+
+Materializer CI uses a PostgreSQL 18 service container for the database integration
+tests. Each test creates and removes its own schema. Unit tests run separately
+from the database integration tests, and coverage is uploaded as an artifact.
+Locally, use `make test-materializer`, `make format-materializer`, and
+`MATERIALIZER_TEST_DATABASE_URL='<PostgreSQL URL>' make test-materializer-integration`.
 
 Infrastructure CI runs `docker compose -f compose.yaml config --quiet` to validate
 the Compose configuration without starting containers. This checks configuration
