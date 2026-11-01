@@ -41,6 +41,7 @@ class _RealConsumer:
         from confluent_kafka import Consumer
         self._consumer = Consumer({
             "bootstrap.servers": brokers,
+            "broker.address.family": "v4",  # the published Redpanda port is IPv4-only
             "enable.auto.commit": False,
             "enable.partition.eof": False,
             "group.id": CONSUMER_GROUP_ID,

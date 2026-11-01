@@ -217,6 +217,15 @@ class RealConsumerAdapterTest(unittest.TestCase):
             self.assertEqual(seen[0].topic, "trade-events")
             self.assertEqual(seen[0].partition, 0)
 
+    def test_consumer_dials_ipv4_only(self):
+        # Docker publishes the Redpanda port on IPv4 only, but "localhost"
+        # resolves to ::1 first; without this every run logs refused ::1
+        # connections that look like failures.
+        stub, _ = self._stub([])
+        with mock.patch.dict(sys.modules, {"confluent_kafka": stub}):
+            consumer = kafka_topics._default_consumer_factory("localhost:19092")
+        self.assertEqual(consumer._consumer.config["broker.address.family"], "v4")
+
     def test_watermark_query_retries_transient_failure(self):
         responses = [None, None, (0, 5)]
         stub, seen = self._stub(responses)
