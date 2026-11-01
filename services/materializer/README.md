@@ -1,9 +1,71 @@
 # Materializer
 
-The materializer will consume `ema-windows` and `trade-advisories`, decode their
-Protobuf messages, and store results in PostgreSQL for the backend API.
-The database schema, Go writing layer, Protobuf mapping, and Redpanda consumer
-are implemented. The executable and startup configuration follow separately.
+The materializer consumes `ema-windows` and `trade-advisories`, decodes their
+Protobuf messages, and stores results in PostgreSQL for the backend API.
+The database schema, Go writing layer, Protobuf mapping, Redpanda consumer, and
+executable are implemented.
+
+## Run the materializer
+
+To start the complete producer → Flink → materializer → PostgreSQL flow, use
+`make run-flow` from the repository root. It starts the local infrastructure and
+creates the initial tables if missing. `make reset-flow` stops the managed flow
+and clears its topic records, materializer group offsets, and database results.
+See the [full flow instructions](../../README.md#run-the-complete-local-flow).
+
+To run just the materializer, follow these steps.
+
+From the repository root, copy `.env.example` to `.env` once if you do not
+already have one. Edit its `MATERIALIZER_*` settings, then start the local
+services and create the topics:
+
+```sh
+docker compose up -d --wait postgres redpanda-0
+docker compose run --rm create-topic
+```
+
+Apply the initial migration below once before the first run, then start the
+materializer in its own terminal:
+
+```sh
+make run-materializer
+```
+
+The Makefile requires `.env` and loads the materializer settings from it.
+Nonempty `MATERIALIZER_*` variables already set in your environment, or passed
+as Make command-line variables, take precedence over `.env`.
+
+| Environment variable | `.env.example` value |
+| --- | --- |
+| `MATERIALIZER_DATABASE_URL` | `postgresql://financial:financial_dev@localhost:15432/financial_streaming?sslmode=disable` |
+| `MATERIALIZER_BROKERS` | `localhost:19092`; accepts comma-separated addresses |
+| `MATERIALIZER_GROUP_ID` | `materializer` |
+
+To customize these settings, edit `.env`, or override a setting for one run:
+
+```sh
+make run-materializer MATERIALIZER_GROUP_ID=materializer-dev
+```
+
+`make build-materializer` builds `bin/materializer`. When running that binary
+directly, export `MATERIALIZER_DATABASE_URL` yourself; the binary reads environment
+variables and does not load `.env`. Its broker and group defaults are the same.
+
+Update `MATERIALIZER_DATABASE_URL` if you change PostgreSQL's credentials, port,
+or database name. The database URL is never included in startup logs.
+
+Ctrl+C or SIGTERM cancels processing. If the database has already committed the
+current batch, the consumer first attempts to commit its offsets with a separate
+ten-second timeout, then closes the consumer and database pool. A canceled batch
+may replay on the next run if its offset commit fails or is uncertain. Configuration,
+startup, or processing failures exit with a nonzero status; restart after
+resolving the error. The executable does not apply migrations automatically.
+The `-init-db` command initializes missing tables and exits; `-reset-db`
+initializes them if needed, truncates the three read-model tables, and exits.
+The full-flow scripts use these explicit commands with the same database URL
+as the running service. Existing tables are preserved by initialization, and
+partial schemas require manual repair. Neither command is a migration version
+tracker.
 
 ## Tables
 
@@ -172,7 +234,7 @@ Decimal values and unsigned prices are sent as text and cast to PostgreSQL
 Run validation tests from the repository root:
 
 ```sh
-go test -race ./services/materializer/internal/...
+go test -race ./services/materializer/...
 ```
 
 Run database integration tests against the local PostgreSQL service:

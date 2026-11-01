@@ -43,4 +43,3 @@ live tests.
   dropped late),
   symbol and window statistics, advisory counts, diagnostics, and the recorded
   spec and interpretation notes.
-

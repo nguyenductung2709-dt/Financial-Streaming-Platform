@@ -17,6 +17,9 @@ coverage.out
 coverage.html
 *.prof
 
+# Python bytecode from the local flow scripts
+__pycache__/
+
 # Scala / sbt build outputs and tooling caches
 target/
 *.class
