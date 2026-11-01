@@ -79,6 +79,7 @@ class ConfigValuesTest(unittest.TestCase):
         self.assertEqual(config.EMA_J_LONG, 100)
         self.assertEqual(config.EMA_INIT, "prev-zero")
         self.assertEqual(config.ALLOWED_LATENESS_MS, 0)
+        self.assertEqual(config.TRADE_TIME_UTC_OFFSET_HOURS, 2)
         self.assertEqual(config.EMA_TOLERANCE, Decimal("1e-9"))
         self.assertEqual(config.MAX_REPORT_MISMATCHES, 100)
         self.assertEqual(config.SUMMARY_EXAMPLES, 10)

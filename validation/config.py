@@ -25,6 +25,10 @@ EMA_INIT = "prev-zero"
 # watermark.  is_late honors a nonzero value (mirrors a processor WITH
 # allowedLateness: more events survive the drop rule).
 ALLOWED_LATENESS_MS = 0
+# data-producer event.go parseTradeTime: time.FixedZone("CEST", 2*60*60).  The
+# generator's window_start strings are CEST wall clock; the topics carry UTC
+# instants, so the reference join converts with this offset.
+TRADE_TIME_UTC_OFFSET_HOURS = 2
 
 # --- Validation-tool knobs ---
 # EMA comparison tolerance in price units (= 1e-3 micros).
