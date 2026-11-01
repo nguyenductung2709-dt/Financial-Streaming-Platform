@@ -30,6 +30,7 @@ type fakeClient struct {
 	commits       []*kgo.Record
 	commitBatches [][]*kgo.Record
 	commitErr     error
+	commit        func(context.Context) error
 	rebalances    int
 	closed        bool
 	events        *[]string
@@ -55,6 +56,9 @@ func (f *fakeClient) CommitRecords(ctx context.Context, records ...*kgo.Record) 
 	}
 	f.commits = append(f.commits, records...)
 	f.commitBatches = append(f.commitBatches, slices.Clone(records))
+	if f.commit != nil {
+		return f.commit(ctx)
+	}
 	return f.commitErr
 }
 
@@ -438,7 +442,7 @@ func TestRunStopsOnFetchError(t *testing.T) {
 }
 
 func TestRunCancellationDoesNotCommit(t *testing.T) {
-	for _, point := range []string{"before polling", "while polling", "after write"} {
+	for _, point := range []string{"before polling", "while polling"} {
 		t.Run(point, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -452,11 +456,6 @@ func TestRunCancellationDoesNotCommit(t *testing.T) {
 					cancel()
 					return kgo.NewErrFetch(ctx.Err())
 				}
-			case "after write":
-				store.afterSave = cancel
-				client.fetches = []kgo.Fetches{recordFetch(
-					resultRecord(t, EmaWindowsTopic, 41), resultRecord(t, EmaWindowsTopic, 42),
-				)}
 			}
 			if err := testConsumer(client, store).Run(ctx); !errors.Is(err, context.Canceled) {
 				t.Fatalf("Run error = %v; want context canceled", err)
@@ -464,9 +463,68 @@ func TestRunCancellationDoesNotCommit(t *testing.T) {
 			if len(client.commits) != 0 || !client.closed {
 				t.Fatal("canceled run committed an offset or failed to close")
 			}
-			if point == "after write" && (store.saveCalls != 1 || len(store.windows) != 2) {
-				t.Fatal("cancellation after database commit did not preserve the whole saved batch")
+		})
+	}
+}
+
+func TestRunCommitsSavedBatchDespiteCancellation(t *testing.T) {
+	for _, point := range []string{"after database commit", "during offset commit"} {
+		t.Run(point, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			records := []*kgo.Record{
+				resultRecord(t, EmaWindowsTopic, 41), resultRecord(t, EmaWindowsTopic, 42),
+			}
+			client := &fakeClient{fetches: []kgo.Fetches{
+				recordFetch(records...), recordFetch(resultRecord(t, EmaWindowsTopic, 43)),
+			}}
+			store := &fakeStore{}
+			if point == "after database commit" {
+				store.afterSave = cancel
+			}
+			client.commit = func(commitCtx context.Context) error {
+				if point == "during offset commit" {
+					cancel()
+				}
+				if err := commitCtx.Err(); err != nil {
+					t.Fatalf("offset commit inherited caller cancellation: %v", err)
+				}
+				deadline, ok := commitCtx.Deadline()
+				if remaining := time.Until(deadline); !ok || remaining <= 0 || remaining > commitTimeout {
+					t.Fatalf("offset commit deadline = %v; want a timeout within %v", deadline, commitTimeout)
+				}
+				if client.rebalances != 0 || client.closed {
+					t.Fatal("consumer released the rebalance gate or closed before committing offsets")
+				}
+				return nil
+			}
+			if err := testConsumer(client, store).Run(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("Run error = %v; want context canceled", err)
+			}
+			if store.saveCalls != 1 || len(store.windows) != 2 ||
+				len(client.commitBatches) != 1 || !reflect.DeepEqual(client.commits, records) ||
+				client.polls != 1 || !client.closed {
+				t.Fatal("consumer failed to commit the saved batch and stop before polling again")
 			}
 		})
+	}
+}
+
+func TestCommitBatchIgnoresExpiredCallerDeadline(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	client := &fakeClient{commit: func(commitCtx context.Context) error {
+		deadline, ok := commitCtx.Deadline()
+		if remaining := time.Until(deadline); !ok || remaining <= 0 || remaining > commitTimeout {
+			t.Fatalf("offset commit inherited expired caller deadline: %v", deadline)
+		}
+		return commitCtx.Err()
+	}}
+	record := resultRecord(t, EmaWindowsTopic, 41)
+	if err := testConsumer(client, &fakeStore{}).commitBatch(ctx, []*kgo.Record{record}); err != nil {
+		t.Fatalf("commitBatch error = %v; want successful offset commit", err)
+	}
+	if !reflect.DeepEqual(client.commits, []*kgo.Record{record}) {
+		t.Fatal("expired caller deadline prevented the offset commit")
 	}
 }
