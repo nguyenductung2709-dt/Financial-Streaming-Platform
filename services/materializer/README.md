@@ -98,8 +98,9 @@ performs no database operations and has no dependency on the consumer.
 
 `data.Postgres` uses Go's `database/sql` with `github.com/lib/pq v1.12.3`.
 `NewPostgres(ctx, databaseURL)` creates a connection pool and checks connectivity.
-The caller closes the store when finished. Startup and writes use a ten-second
-context timeout, or an earlier caller deadline. Connection attempts use the
+The caller closes the store when finished. Startup and each database transaction
+use a ten-second context timeout, or an earlier caller deadline. For `SaveBatch`,
+that timeout covers the whole transaction. Connection attempts use the
 driver's `connect_timeout`, defaulting to ten seconds; set a positive value in
 the connection string to override it. Operations use the driver's normal context
 cancellation, so a network failure can delay return beyond the context deadline.
@@ -107,6 +108,21 @@ Connection-string parsing errors are reported without exposing credentials.
 
 `SaveEmaWindow` upserts the symbol and window in one transaction.
 `SaveTradeAdvisory` upserts the symbol, embedded window, and advisory together.
+`SaveBatch` accepts an ordered slice of EMA windows and trade advisories. It
+validates every input before opening a transaction, including inputs overwritten
+by later records. For each `(symbol, window_start)`, the last window value wins
+across both standalone windows and embedded advisory windows; the last advisory
+independently supplies the action and previous EMAs. Equivalent timestamp time
+zones identify the same key. SQL writes are sorted by key for consistent row-lock
+ordering, then applied to symbols, windows, and advisories in foreign-key order.
+The single-result methods share the same parameterized upsert helpers.
+
+Each table uses one multi-row statement for a normal 100-record batch; an empty
+advisory set needs no statement. Larger direct `SaveBatch` calls split each table
+into statements of at most 1,000 rows, all inside the same transaction, to bound
+the number of SQL parameters. A `data.BatchError` identifies the zero-based input
+that failed validation. SQL execution and commit failures are batch-level errors,
+because a multi-row statement does not reliably identify one source record.
 Decimal values and unsigned prices are sent as text and cast to PostgreSQL
 `NUMERIC`, preserving precision without floating-point conversion.
 
@@ -125,4 +141,6 @@ MATERIALIZER_TEST_DATABASE_URL='postgresql://financial:financial_dev@localhost:1
 
 The integration tests create temporary schemas, apply the migration there, and
 remove those schemas afterward. They check duplicate delivery, either topic
-arriving first, exact decimals, transaction rollback, and migration rollback.
+arriving first, exact decimals, last-value semantics for mixed and duplicate
+batches, full batch rollback on write or commit errors, cancellation, statement
+chunking, and migration rollback.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,28 +28,39 @@ func (s *Postgres) SaveEmaWindow(ctx context.Context, window *EmaWindow) error {
 	if err := window.Validate(); err != nil {
 		return err
 	}
-	return s.transaction(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		return upsertWindow(ctx, tx, window)
-	})
+	return s.transaction(ctx, window.save)
 }
 
-func upsertWindow(ctx context.Context, tx *sql.Tx, window *EmaWindow) error {
+func (window *EmaWindow) save(ctx context.Context, tx *sql.Tx) error {
 	if err := upsertSymbol(ctx, tx, window.Symbol); err != nil {
 		return err
 	}
-	// Decimal text and uint64 text are cast by PostgreSQL without a float conversion.
-	_, err := tx.ExecContext(ctx, `
+	return upsertWindows(ctx, tx, []*EmaWindow{window})
+}
+
+func upsertWindows(ctx context.Context, tx *sql.Tx, windows []*EmaWindow) error {
+	for rows := range slices.Chunk(windows, maxUpsertRows) {
+		values := make([]string, len(rows))
+		args := make([]any, 0, 6*len(rows))
+		for i, window := range rows {
+			n := len(args)
+			values[i] = fmt.Sprintf("($%d,$%d,$%d,$%d::text::numeric,$%d::text::numeric,$%d::text::numeric)",
+				n+1, n+2, n+3, n+4, n+5, n+6)
+			// Cast decimal and uint64 text without any floating-point conversion.
+			args = append(args, window.Symbol, window.WindowStart, window.WindowEnd,
+				strconv.FormatUint(window.ClosingPriceMicros, 10), window.Ema38, window.Ema100)
+		}
+		_, err := tx.ExecContext(ctx, `
 		INSERT INTO ema_windows (symbol, window_start, window_end, closing_price_micros, ema38, ema100)
-		VALUES ($1, $2, $3, $4::text::numeric, $5::text::numeric, $6::text::numeric)
+		VALUES `+strings.Join(values, ",")+`
 		ON CONFLICT (symbol, window_start) DO UPDATE SET
 		    window_end = EXCLUDED.window_end,
 		    closing_price_micros = EXCLUDED.closing_price_micros,
 		    ema38 = EXCLUDED.ema38,
-		    ema100 = EXCLUDED.ema100`,
-		window.Symbol, window.WindowStart, window.WindowEnd,
-		strconv.FormatUint(window.ClosingPriceMicros, 10), window.Ema38, window.Ema100)
-	if err != nil {
-		return fmt.Errorf("upsert EMA window for %q: %w", window.Symbol, err)
+		    ema100 = EXCLUDED.ema100`, args...)
+		if err != nil {
+			return fmt.Errorf("upsert EMA windows: %w", err)
+		}
 	}
 	return nil
 }
