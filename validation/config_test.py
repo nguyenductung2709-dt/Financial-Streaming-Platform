@@ -85,6 +85,7 @@ class ConfigValuesTest(unittest.TestCase):
         self.assertEqual(config.SUMMARY_EXAMPLES, 10)
         self.assertEqual(config.DECIMAL_PREC, 50)
         self.assertEqual(config.EMA_PLACES, 9)
+        self.assertEqual(config.EMISSION_CASES_CAP, 1_000)
         self.assertEqual(config.BROKERS, "localhost:19092")
         self.assertEqual(config.TOPIC_EVENTS, "trade-events")
         self.assertEqual(config.TOPIC_DLQ, "trade-events-dlq")
@@ -166,6 +167,9 @@ class GeneratorFollowsConfigTest(unittest.TestCase):
         self.assertEqual(module_follows_override(
             "generate_validation_data", {"EMA_J_LONG": 101},
             "generate_validation_data.J_LONG"), "101")
+        self.assertEqual(module_follows_override(
+            "generate_validation_data", {"EMISSION_CASES_CAP": 7},
+            "generate_validation_data.EMISSION_CASES_CAP"), "7")
         self.assertEqual(module_follows_override(
             "generate_validation_data", {"EMA_INIT": "zero-window"},
             "inspect.signature(generate_validation_data.run)"

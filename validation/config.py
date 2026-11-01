@@ -41,6 +41,9 @@ SUMMARY_EXAMPLES = 10
 DECIMAL_PREC = 50
 # Decimals emitted for EMA values in micros.
 EMA_PLACES = 9
+# Rows extracted to the generator's drops_pending_watermark_emission.csv
+# (the summary count stays exact).
+EMISSION_CASES_CAP = 1_000
 
 # --- Infra/connection ---
 BROKERS = "localhost:19092"        # compose.yaml redpanda external port

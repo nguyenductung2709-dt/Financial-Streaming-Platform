@@ -84,7 +84,7 @@ UINT64_MAX = 2**64 - 1
 # StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s), allowed lateness 0.
 OUT_OF_ORDERNESS_MS = config.OUT_OF_ORDERNESS_MS
 # Rows extracted to drops_pending_watermark_emission.csv (the summary count is exact).
-EMISSION_CASES_CAP = 1_000
+EMISSION_CASES_CAP = config.EMISSION_CASES_CAP
 DECIMAL_PREC = config.DECIMAL_PREC  # far tighter than double precision
 EMA_PLACES = config.EMA_PLACES      # decimals emitted for EMA values in micros
 J_SHORT, J_LONG = config.EMA_J_SHORT, config.EMA_J_LONG  # smoothing factors (PDF 3.2, 3.3)
