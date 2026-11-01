@@ -228,14 +228,19 @@ Decimal values and unsigned prices are sent as text and cast to PostgreSQL
 Run validation tests from the repository root:
 
 ```sh
-go test -race ./services/materializer/...
+make test-materializer
 ```
+
+This runs uncached race tests and writes coverage to `bin/materializer-coverage.out`.
+Use `make format-materializer` to format this service; `make formatall` includes it.
+The pre-commit hook formats staged materializer Go files and runs recursive vet
+checks against the staged snapshot.
 
 Run database integration tests against the local PostgreSQL service:
 
 ```sh
 MATERIALIZER_TEST_DATABASE_URL='postgresql://financial:financial_dev@localhost:15432/financial_streaming?sslmode=disable' \
-  go test -race -tags integration ./services/materializer/internal/data
+  make test-materializer-integration
 ```
 
 The integration tests create temporary schemas, apply the migration there, and

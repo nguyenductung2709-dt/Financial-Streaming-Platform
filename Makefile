@@ -20,9 +20,9 @@ endef
 
 .PHONY: help \
 	build-data-producer test-data-producer run-data-producer \
-	build-materializer run-materializer \
+	build-materializer test-materializer test-materializer-integration run-materializer \
 	build-streaming-processor test-streaming-processor \
-	formatall format-data-producer format-streaming-processor lint-streaming-processor \
+	formatall format-data-producer format-materializer format-streaming-processor lint-streaming-processor \
 	generate-protobuf setup-hooks run-postgres postgres-shell
 
 help: ## Show command usage; also displayed by plain make
@@ -60,6 +60,13 @@ build-materializer: ## Compile the Go materializer to bin/materializer
 	mkdir -p bin
 	go build -o bin/materializer ./services/materializer
 
+test-materializer: ## Run materializer race tests and write bin/materializer-coverage.out
+	mkdir -p bin
+	go test -race -count=1 -timeout=2m -coverprofile=bin/materializer-coverage.out ./services/materializer/...
+
+test-materializer-integration: ## Run PostgreSQL integration tests; requires MATERIALIZER_TEST_DATABASE_URL
+	go test -race -count=1 -timeout=2m -tags integration ./services/materializer/internal/data
+
 run-materializer: build-materializer ## Build and run using .env; copy .env.example once to configure
 	@$(materializer-env) exec ./bin/materializer
 
@@ -89,10 +96,13 @@ run-flow: build-data-producer build-materializer ## Start all local services, in
 reset-flow: build-materializer ## Stop the managed flow, cancel Flink, and clear project topics, consumer offsets, and PostgreSQL results
 	@$(materializer-env) exec python3 scripts/reset-flow.py
 
-formatall: format-data-producer format-streaming-processor ## Format Go sources, Scala sources, and sbt build files
+formatall: format-data-producer format-materializer format-streaming-processor ## Format Go sources, Scala sources, and sbt build files
 
 format-data-producer: ## Format Go producer application and test sources
 	gofmt -w services/data-producer
+
+format-materializer: ## Format Go materializer application and test sources
+	gofmt -w services/materializer
 
 # Format Scala application/test sources and sbt build files.
 format-streaming-processor: ## Format Scala application/test sources and sbt build files

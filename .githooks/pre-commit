@@ -12,7 +12,7 @@ cd "$root" || exit 1
 
 staged=$(git diff --cached --name-only --diff-filter=ACMR)
 
-go_files=$(printf '%s\n' "$staged" | grep -E '^services/data-producer/.*\.go$' || true)
+go_files=$(printf '%s\n' "$staged" | grep -E '^services/(data-producer|materializer)/.*\.go$' || true)
 scala_files=$(printf '%s\n' "$staged" | grep -E '^services/streaming-processor/.*\.(scala|sbt)$' || true)
 
 if [[ -z "$go_files" && -z "$scala_files" ]]; then
@@ -28,6 +28,13 @@ cd "$snapshot" || exit 1
 failed=0
 
 if [[ -n "$go_files" ]]; then
+  go_packages=()
+  if [[ "$go_files" == *services/data-producer/* ]]; then
+    go_packages+=(./services/data-producer)
+  fi
+  if [[ "$go_files" == *services/materializer/* ]]; then
+    go_packages+=(./services/materializer/...)
+  fi
   if ! command -v gofmt >/dev/null 2>&1; then
     echo "pre-commit: gofmt not found on PATH, skipping Go format check (CI still enforces it)." >&2
   else
@@ -38,8 +45,8 @@ if [[ -n "$go_files" ]]; then
   fi
   if ! command -v go >/dev/null 2>&1; then
     echo "pre-commit: go not found on PATH, skipping go vet (CI still enforces it)." >&2
-  elif ! go vet ./services/data-producer; then
-    echo "pre-commit: go vet failed for services/data-producer." >&2
+  elif ! go vet "${go_packages[@]}"; then
+    echo "pre-commit: go vet failed for ${go_packages[*]}." >&2
     failed=1
   fi
 fi

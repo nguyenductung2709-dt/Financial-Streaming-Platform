@@ -1,0 +1,117 @@
+name: Materializer CI
+
+on:
+  push:
+    paths:
+      - 'services/materializer/**'
+      - '!services/materializer/**/*.md'
+      - 'gen/go/**'
+      - 'schemas/**/*.proto'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.githooks/pre-commit'
+      - '.github/workflows/materializer-ci.yml'
+  pull_request:
+    paths:
+      - 'services/materializer/**'
+      - '!services/materializer/**/*.md'
+      - 'gen/go/**'
+      - 'schemas/**/*.proto'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.githooks/pre-commit'
+      - '.github/workflows/materializer-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: materializer-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          files=$(gofmt -l services/materializer)
+          if [[ -n "$files" ]]; then
+            echo "Run gofmt on these files:"
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Check pre-commit hook syntax
+        run: bash -n .githooks/pre-commit
+
+      - name: Verify dependencies
+        run: |
+          go mod verify
+          go mod tidy -diff
+
+      - name: Go vet
+        run: go vet ./services/materializer/...
+
+      - name: Install Staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+
+      - name: Staticcheck
+        run: staticcheck ./services/materializer/...
+
+  test-and-build:
+    name: Test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: materializer_test
+          POSTGRES_USER: financial
+          POSTGRES_PASSWORD: financial_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U financial -d materializer_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      MATERIALIZER_TEST_DATABASE_URL: postgresql://financial:financial_test@localhost:5432/materializer_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Unit tests with race detection and coverage
+        run: make test-materializer
+
+      - name: PostgreSQL integration tests
+        run: make test-materializer-integration
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: materializer-coverage
+          path: bin/materializer-coverage.out
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Build materializer
+        run: make build-materializer
