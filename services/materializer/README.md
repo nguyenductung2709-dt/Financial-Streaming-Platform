@@ -2,8 +2,8 @@
 
 The materializer will consume `ema-windows` and `trade-advisories`, decode their
 Protobuf messages, and store results in PostgreSQL for the backend API.
-The database schema, Go writing layer, and Protobuf mapping are implemented;
-the Redpanda consumer follows separately.
+The database schema, Go writing layer, Protobuf mapping, and Redpanda consumer
+are implemented. The executable and startup configuration follow separately.
 
 ## Tables
 
@@ -93,6 +93,45 @@ conversion. Unknown Protobuf fields are accepted for schema compatibility.
 
 The mapper and database writers share the models' `Validate` methods. The mapper
 performs no database operations and has no dependency on the consumer.
+
+## Redpanda consumer
+
+`internal/consumer.New(brokers, groupID, store, logger)` creates a consumer for
+`ema-windows` and `trade-advisories`, using the existing `franz-go` dependency.
+The store implements `SaveBatch(ctx, []data.Result)`; `*data.Postgres` already
+satisfies this interface. A nil logger uses Go's default structured
+logger. The consumer resumes from committed group offsets, falling back to the
+earliest available records when the group has no committed offset.
+
+`Run(ctx)` polls up to 100 records at a time. It returns available records without
+waiting for a full batch, then decodes and validates every record before starting
+database writes. The store deduplicates repeated keys using the last input value,
+then runs multi-row upserts inside one PostgreSQL transaction. Auto-commit is
+disabled. Only after that database transaction commits does one synchronous offset commit
+advance each topic-partition past its last saved record. A full batch uses one
+database transaction, at most three upsert statements, and one offset-commit call
+for 100 records. Offset commits have a ten-second timeout or an earlier caller
+deadline.
+Rebalances are blocked while processing and committing the batch.
+
+A decoding or model-validation error stops the loop and logs the affected
+record's topic, partition, offset, and error. Multi-row SQL errors, transaction-level
+errors, and offset-commit errors log the batch size, last record location, and
+error. Fetch errors stop the loop and log their topic and partition. A failed write rolls
+back the whole database batch and leaves its offsets uncommitted; earlier
+completed batches stay committed. If the database commits but the broker commit
+fails, or its outcome is uncertain, the batch may replay. The existing upserts
+handle repeated delivery.
+
+`Run` closes the Redpanda client on return, including on cancellation or failure.
+Create a new consumer to retry from committed offsets; do not reuse a failed
+instance. `Close()` also closes a consumer created without calling `Run`. The
+caller owns the database store and closes it after the consumer stops.
+
+The consumer tests use fake broker and store interfaces to check routing,
+write-before-commit ordering, failure handling, and cancellation. They run
+without a broker or database. Full flow tests with Redpanda
+and PostgreSQL are a separate step.
 
 ## Go database layer
 
