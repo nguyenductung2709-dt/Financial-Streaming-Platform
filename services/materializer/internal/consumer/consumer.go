@@ -152,10 +152,9 @@ func (c *Consumer) batchError(operation string, records []*kgo.Record, err error
 }
 
 func (c *Consumer) commitBatch(ctx context.Context, records []*kgo.Record) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	commitCtx, cancel := context.WithTimeout(ctx, commitTimeout)
+	// The database has committed. Finish acknowledging this batch even if the
+	// caller is shutting down, while bounding how long shutdown can wait.
+	commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
 	defer cancel()
 	if err := c.client.CommitRecords(commitCtx, records...); err != nil {
 		return fmt.Errorf("commit offsets: %w", err)
