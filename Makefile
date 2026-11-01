@@ -4,6 +4,9 @@ PRODUCER_ARGS ?= -rate=1000
 FLINK_START_TIMEOUT ?= 120
 RATE ?= 0
 BOUNDED_TIMEOUT ?= 3600
+MAX_EVENTS ?=
+REFERENCE_DIR ?=
+DEFAULT_REFERENCE_DIR := validation/out/reference
 
 # Load the same settings for the standalone materializer and the complete flow.
 define materializer-env
@@ -18,7 +21,7 @@ export MATERIALIZER_BROKERS="$${materializer_brokers:-$${MATERIALIZER_BROKERS-}}
 export MATERIALIZER_GROUP_ID="$${materializer_group_id:-$${MATERIALIZER_GROUP_ID-}}";
 endef
 
-.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow infra-up run-bounded-processor compare-flow validate-flow test-validation
+.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow infra-up run-bounded-processor generate-reference compare-flow validate-flow test-validation
 
 .PHONY: help \
 	build-data-producer test-data-producer run-data-producer \
@@ -91,16 +94,22 @@ run-streaming-processor: build-streaming-processor infra-up ## Build the process
 run-bounded-processor: build-streaming-processor infra-up ## Process everything currently in trade-events, then stop
 	python3 scripts/submit-flink-job.py --timeout $(FLINK_START_TIMEOUT) --bounded-timeout $(BOUNDED_TIMEOUT) -- --bounded --starting-offsets earliest
 
-compare-flow: ## Compare ema-windows and trade-advisories against the Python shadow
-	python3 validation/verify_flow.py
+generate-reference: ## Compute the offline Python reference from the CSV (about 3 minutes per day); CSV required, REFERENCE_DIR optional
+	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make generate-reference CSV=dataset/debs2022-gc-trading-day-08-11-21.csv))
+	python3 validation/generate_validation_data.py --csv $(CSV) --out $(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR))
 
-validate-flow: ## Full validation run; CSV required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv
+compare-flow: ## Compare ema-windows and trade-advisories against the Python shadow; REFERENCE_DIR=... also checks the shadow against a generate-reference output
+	python3 validation/verify_flow.py $(if $(strip $(REFERENCE_DIR)),--reference-dir $(REFERENCE_DIR))
+
+# The CSV reference needs the whole file, so a MAX_EVENTS prefix run skips it.
+validate-flow: ## Full validation run; CSV required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv [RATE=0] [MAX_EVENTS=n]
 	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv))
+	$(if $(strip $(MAX_EVENTS)),,$(MAKE) generate-reference REFERENCE_DIR=$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 	$(MAKE) infra-up
 	$(MAKE) reset-flow
-	$(MAKE) run-data-producer ARGS="-csvPath=$(CSV) -rate=$(RATE) -dlqEnabled"
+	$(MAKE) run-data-producer ARGS="-csvPath=$(CSV) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))"
 	$(MAKE) run-bounded-processor
-	$(MAKE) compare-flow
+	$(MAKE) compare-flow REFERENCE_DIR=$(if $(strip $(MAX_EVENTS)),,$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 
 test-validation: ## Run all Python validation and flow tests
 	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py; do \
