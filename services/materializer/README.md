@@ -1,9 +1,54 @@
 # Materializer
 
-The materializer will consume `ema-windows` and `trade-advisories`, decode their
-Protobuf messages, and store results in PostgreSQL for the backend API.
-The database schema, Go writing layer, Protobuf mapping, and Redpanda consumer
-are implemented. The executable and startup configuration follow separately.
+The materializer consumes `ema-windows` and `trade-advisories`, decodes their
+Protobuf messages, and stores results in PostgreSQL for the backend API.
+The database schema, Go writing layer, Protobuf mapping, Redpanda consumer, and
+executable are implemented.
+
+## Run the materializer
+
+Copy `.env.example` to `.env` once if needed and edit its `MATERIALIZER_*`
+settings. Start the local services and create the topics from the repository root:
+
+```sh
+docker compose up -d --wait postgres redpanda-0
+docker compose run --rm create-topic
+```
+
+Apply the initial migration below once before the first run, then build and run
+in a separate terminal:
+
+```sh
+go build -o bin/materializer ./services/materializer
+set -a
+. ./.env
+set +a
+./bin/materializer
+```
+
+The executable reads exported environment variables and does not load `.env`
+itself. `MATERIALIZER_DATABASE_URL` is required; the broker and group have the
+following defaults:
+
+| Environment variable | Value |
+| --- | --- |
+| `MATERIALIZER_DATABASE_URL` | Required; see `.env.example` for the local PostgreSQL URL |
+| `MATERIALIZER_BROKERS` | `localhost:19092`; accepts comma-separated addresses |
+| `MATERIALIZER_GROUP_ID` | `materializer` |
+
+Override an exported setting for one run with:
+
+```sh
+MATERIALIZER_GROUP_ID=materializer-dev ./bin/materializer
+```
+
+Update `MATERIALIZER_DATABASE_URL` if you change PostgreSQL's credentials, port,
+or database name. The database URL is never included in startup logs.
+
+Ctrl+C or SIGTERM cancels processing, closes the consumer, then closes the
+database pool. A canceled batch may replay on the next run. Configuration,
+startup, or processing failures exit with a nonzero status; restart after
+resolving the error. The executable does not apply migrations automatically.
 
 ## Tables
 
@@ -168,7 +213,7 @@ Decimal values and unsigned prices are sent as text and cast to PostgreSQL
 Run validation tests from the repository root:
 
 ```sh
-go test -race ./services/materializer/internal/...
+go test -race ./services/materializer/...
 ```
 
 Run database integration tests against the local PostgreSQL service:
