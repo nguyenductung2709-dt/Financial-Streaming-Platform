@@ -15,6 +15,10 @@ type SourceRow struct {
 }
 
 func StreamCSV(filePath string, handle func(SourceRow) error) error {
+	return StreamCSVs([]string{filePath}, handle)
+}
+
+func streamCSV(filePath string, base *uint64, handle func(SourceRow) error) error {
 	// Open the file
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -23,7 +27,9 @@ func StreamCSV(filePath string, handle func(SourceRow) error) error {
 	defer f.Close()
 
 	// Create the CSV reader
-	reader := csv.NewReader(f)
+	lines := &csvLineReader{reader: f}
+	defer func() { *base += lines.lines() }()
+	reader := csv.NewReader(lines)
 	reader.FieldsPerRecord = -1 // skip FieldsPerRecord check, will validate rows against header
 	reader.LazyQuotes = false
 
@@ -84,7 +90,7 @@ func StreamCSV(filePath string, handle func(SourceRow) error) error {
 		}
 
 		if err := handle(SourceRow{
-			Line:    uint64(line),
+			Line:    *base + uint64(line),
 			Values:  record,
 			Columns: columns,
 		}); err != nil {

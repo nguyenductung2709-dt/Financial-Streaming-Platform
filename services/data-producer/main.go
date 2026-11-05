@@ -14,7 +14,7 @@ import (
 )
 
 type config struct {
-	csvPath    string
+	csvPaths   []string
 	brokers    []string
 	topic      string
 	dlqTopic   string
@@ -46,7 +46,13 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	var brokersText string
 	flags := flag.NewFlagSet("data-producer", flag.ContinueOnError)
 	flags.SetOutput(output)
-	flags.StringVar(&cfg.csvPath, "csvPath", "dataset/debs2022-gc-trading-day-12-11-21.csv", "Path of the CSV file")
+	flags.Func("csvPath", "CSV file or directory (immediate .csv files, alphabetical); repeat for ordered inputs", func(path string) error {
+		if strings.TrimSpace(path) == "" {
+			return fmt.Errorf("CSV path must not be empty")
+		}
+		cfg.csvPaths = append(cfg.csvPaths, path)
+		return nil
+	})
 	flags.StringVar(&brokersText, "brokers", "localhost:19092", "Comma-separated broker addresses")
 	flags.StringVar(&cfg.topic, "topic", "trade-events", "Trade event Redpanda topic")
 	flags.StringVar(&cfg.dlqTopic, "dlqTopic", "trade-events-dlq", "Trade event dead letter queue Redpanda topic")
@@ -62,8 +68,8 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	if cfg.rate < 0 || cfg.rate > int(time.Second) {
 		return config{}, fmt.Errorf("rate must be between 0 and 1000000000 events per second")
 	}
-	if strings.TrimSpace(cfg.csvPath) == "" {
-		return config{}, fmt.Errorf("CSV path must not be empty")
+	if len(cfg.csvPaths) == 0 {
+		cfg.csvPaths = []string{"dataset/debs2022-gc-trading-day-12-11-21.csv"}
 	}
 	cfg.topic = strings.TrimSpace(cfg.topic)
 	if cfg.topic == "" {
@@ -135,8 +141,8 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 	var nextPublish time.Time
 	limitReached := errors.New("event limit reached")
 
-	// Call StreamCSV with handler
-	err = StreamCSV(cfg.csvPath, func(row SourceRow) error {
+	// Keep rate, limits, and counters continuous across the entire input sequence.
+	err = StreamCSVs(cfg.csvPaths, func(row SourceRow) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
