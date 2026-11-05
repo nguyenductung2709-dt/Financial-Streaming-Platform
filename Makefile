@@ -7,6 +7,11 @@ BOUNDED_TIMEOUT ?= 3600
 MAX_EVENTS ?=
 REFERENCE_DIR ?=
 DEFAULT_REFERENCE_DIR := validation/out/reference
+# CSV is a whitespace-separated list of files/directories. Quote each input for
+# the shell; explicit list order is significant in both native readers.
+shell-quote = '$(subst ','"'"',$(1))'
+REFERENCE_CSV_ARGS = $(foreach path,$(CSV),--csv $(call shell-quote,$(path)))
+PRODUCER_CSV_ARGS = $(foreach path,$(CSV),$(call shell-quote,-csvPath=$(path)))
 # 1 also checks the materializer's PostgreSQL tables against the topics (needs .env);
 # validate-flow runs drain-materializer first so the database is complete.
 DB_CHECK ?= 1
@@ -97,9 +102,9 @@ run-streaming-processor: build-streaming-processor infra-up ## Build the process
 run-bounded-processor: build-streaming-processor infra-up ## Process everything currently in trade-events, then stop
 	python3 scripts/submit-flink-job.py --timeout $(FLINK_START_TIMEOUT) --bounded-timeout $(BOUNDED_TIMEOUT) -- --bounded --starting-offsets earliest
 
-generate-reference: ## Compute the offline Python reference from the CSV (about 3 minutes per day); CSV required, REFERENCE_DIR optional
+generate-reference: ## Compute the offline Python reference; CSV=file, directory, or "file1 file2" required, REFERENCE_DIR optional
 	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make generate-reference CSV=dataset/debs2022-gc-trading-day-08-11-21.csv))
-	python3 validation/generate_validation_data.py --csv $(CSV) --out $(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR))
+	python3 validation/generate_validation_data.py $(REFERENCE_CSV_ARGS) --out $(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR))
 
 drain-materializer: build-materializer ## Run the materializer until it has consumed ema-windows and trade-advisories, then stop it
 	@$(materializer-env) exec python3 scripts/drain-materializer.py
@@ -113,18 +118,18 @@ else
 endif
 
 # The CSV reference needs the whole file, so a MAX_EVENTS prefix run skips it.
-validate-flow: ## Full validation run; CSV required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv [RATE=0] [MAX_EVENTS=n] [DB_CHECK=0]
+validate-flow: ## Full validation run; CSV=file, directory, or "file1 file2" required [RATE=0] [MAX_EVENTS=n] [DB_CHECK=0]
 	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv))
 	$(if $(strip $(MAX_EVENTS)),,$(MAKE) generate-reference REFERENCE_DIR=$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 	$(MAKE) infra-up
 	$(MAKE) reset-flow
-	$(MAKE) run-data-producer ARGS="-csvPath=$(CSV) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))"
+	$(MAKE) run-data-producer ARGS=$(call shell-quote,$(PRODUCER_CSV_ARGS) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS)))
 	$(MAKE) run-bounded-processor
 	$(if $(filter 1,$(DB_CHECK)),$(MAKE) drain-materializer)
 	$(MAKE) compare-flow REFERENCE_DIR=$(if $(strip $(MAX_EVENTS)),,$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 
 test-validation: ## Run all Python validation and flow tests
-	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/test_flow.py; do \
+	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py; do \
 		echo "== $$t"; \
 		python3 $$t || exit 1; \
 	done
