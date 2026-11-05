@@ -3,7 +3,7 @@
 ## Reference generator
 
 ```sh
-python3 validation/generate_validation_data.py [--limit-rows N] [--out DIR]
+python3 validation/generate_validation_data.py [--csv PATH] [--limit-rows N] [--out DIR]
 python3 validation/validation_generator_test.py
 ```
 
@@ -29,7 +29,13 @@ Requirements: Docker, Go with a C compiler, Java 17 + sbt, a `.env`
 
 ```sh
 make validate-flow CSV=dataset/<file>.csv [RATE=0] [MAX_EVENTS=n] [DB_CHECK=0]
+make validate-flow CSV=dataset
+make validate-flow CSV="dataset/day08.csv dataset/day09.csv"
 ```
+
+`CSV` accepts a file, a whitespace-separated list in supplied order, or a directory
+(immediate `.csv` files, alphabetical). State and limits continue across files.
+For native tools, repeat `-csvPath` / `--csv`; quote paths containing spaces.
 
 `RATE` is the producer's events per second (`0` is unlimited). `MAX_EVENTS`
 publishes only the first n events and skips check 2. `DB_CHECK=0` skips the
