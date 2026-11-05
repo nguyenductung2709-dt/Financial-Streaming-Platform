@@ -25,11 +25,11 @@ func TestParseConfig(t *testing.T) {
 		want config
 	}{
 		{"defaults", nil, config{
-			csvPath: "dataset/debs2022-gc-trading-day-12-11-21.csv",
-			brokers: []string{"localhost:19092"}, topic: "trade-events", dlqTopic: "trade-events-dlq",
+			csvPaths: []string{"dataset/debs2022-gc-trading-day-12-11-21.csv"},
+			brokers:  []string{"localhost:19092"}, topic: "trade-events", dlqTopic: "trade-events-dlq",
 		}},
 		{"custom flags and trimmed addresses", []string{"-csvPath=/tmp/my data.csv", "-brokers= broker1:9092, broker2:9092 ", "-topic= prices "}, config{
-			csvPath: "/tmp/my data.csv", brokers: []string{"broker1:9092", "broker2:9092"}, topic: "prices", dlqTopic: "trade-events-dlq",
+			csvPaths: []string{"/tmp/my data.csv"}, brokers: []string{"broker1:9092", "broker2:9092"}, topic: "prices", dlqTopic: "trade-events-dlq",
 		}},
 	}
 	for _, tt := range tests {
@@ -107,7 +107,7 @@ func TestRunWithClientPublishesAndSummarizes(t *testing.T) {
 	path := writeCSVFile(t, csvContents(testCSVHeader, validRunRow+"A0HN5C.ETR,E,,,\n"+"FREN4.FR,I,0.000000,00:00:00.000,\n"))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events"}, client, &output)
+	err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events"}, client, &output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestRunWithClientStopsOnConversionError(t *testing.T) {
 	path := writeCSVFile(t, csvContents(testCSVHeader, validRunRow+"IIIFL.FR,I,57.117900,07:00:01.014,31-11-2021\n"+validRunRow))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events"}, client, &output)
+	err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events"}, client, &output)
 	if err == nil || !strings.Contains(err.Error(), "CSV line 15") || !strings.Contains(err.Error(), "parse trading date") {
 		t.Fatalf("expected conversion error with physical line; got %v", err)
 	}
@@ -156,7 +156,7 @@ func TestRunWithClientReturnsPublishError(t *testing.T) {
 	failure := errors.New("broker rejected record")
 	client := &fakeRunClient{produceErr: failure}
 	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events"}, client, &output)
+	err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events"}, client, &output)
 	if !errors.Is(err, failure) {
 		t.Fatalf("error = %v; want wrapped publish error", err)
 	}
@@ -172,7 +172,7 @@ func TestRunWithClientReturnsPingError(t *testing.T) {
 	failure := errors.New("broker unavailable")
 	client := &fakeRunClient{pingErr: failure}
 	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: "unused.csv"}, client, &output)
+	err := runWithClient(context.Background(), config{csvPaths: []string{"unused.csv"}}, client, &output)
 	if !errors.Is(err, failure) || !strings.Contains(err.Error(), "connect to Redpanda") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestRunWithClientReturnsPingError(t *testing.T) {
 func TestRunWithClientReturnsFileError(t *testing.T) {
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: filepath.Join(t.TempDir(), "missing.csv"), topic: "trade-events"}, client, &output)
+	err := runWithClient(context.Background(), config{csvPaths: []string{filepath.Join(t.TempDir(), "missing.csv")}, topic: "trade-events"}, client, &output)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("error = %v; want missing file error", err)
 	}
@@ -202,7 +202,7 @@ func TestRunWithClientCancellationStopsBeforeNextRow(t *testing.T) {
 	defer cancel()
 	client := &fakeRunClient{afterProduce: cancel}
 	var output bytes.Buffer
-	err := runWithClient(ctx, config{csvPath: path, topic: "trade-events"}, client, &output)
+	err := runWithClient(ctx, config{csvPaths: []string{path}, topic: "trade-events"}, client, &output)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v; want context.Canceled", err)
 	}
@@ -218,7 +218,7 @@ func TestRunWithClientHeaderWithoutData(t *testing.T) {
 	path := writeCSVFile(t, csvContents(testCSVHeader, ""))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	if err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events"}, client, &output); err != nil {
+	if err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events"}, client, &output); err != nil {
 		t.Fatal(err)
 	}
 	if len(client.records) != 0 || client.closeCalls != 1 {
@@ -238,7 +238,7 @@ func TestRunWithClientDLQContinuesAfterRejectedRow(t *testing.T) {
 			path := writeCSVFile(t, csvContents(testCSVHeader, row+"\n"+validRunRow))
 			client := &fakeRunClient{}
 			var output bytes.Buffer
-			cfg := config{csvPath: path, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true, maxEvents: 1}
+			cfg := config{csvPaths: []string{path}, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true, maxEvents: 1}
 			if err := runWithClient(context.Background(), cfg, client, &output); err != nil {
 				t.Fatal(err)
 			}
@@ -266,7 +266,7 @@ func TestRunWithClientStopsOnMissingDateWithoutDLQ(t *testing.T) {
 	path := writeCSVFile(t, csvContents(testCSVHeader, "IIIFL.FR,I,57.117900,07:00:01.014,\n"+validRunRow))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events"}, client, &output)
+	err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events"}, client, &output)
 	if !errors.Is(err, errMissingTradingDate) || len(client.records) != 0 || client.closeCalls != 1 {
 		t.Fatalf("error=%v, records=%d, closes=%d", err, len(client.records), client.closeCalls)
 	}
@@ -277,7 +277,7 @@ func TestRunWithClientStopsOnDLQPublishFailure(t *testing.T) {
 	failure := errors.New("DLQ unavailable")
 	client := &fakeRunClient{produceErr: failure}
 	var output bytes.Buffer
-	cfg := config{csvPath: path, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true}
+	cfg := config{csvPaths: []string{path}, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true}
 	err := runWithClient(context.Background(), cfg, client, &output)
 	if !errors.Is(err, failure) || len(client.records) != 1 || client.records[0].Topic != cfg.dlqTopic || client.closeCalls != 1 {
 		t.Fatalf("error=%v, records=%v, closes=%d", err, client.records, client.closeCalls)
@@ -294,7 +294,7 @@ func TestRunWithClientPublishesIndexUsingSystemDate(t *testing.T) {
 			"RUI.FR,E,28.040000,09:00:00.179,12-11-2021,12-11-2021\n"))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events"}, client, &output)
+	err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events"}, client, &output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestRunWithClientPacesPublishedEvents(t *testing.T) {
 		validRunRow+"A0HN5C.ETR,E,,,\n"+validRunRow+validRunRow))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events", rate: 50}, client, &output)
+	err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events", rate: 50}, client, &output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestRunWithClientCancellationDuringRateWait(t *testing.T) {
 	}}
 	var output bytes.Buffer
 	started := time.Now()
-	err := runWithClient(ctx, config{csvPath: path, topic: "trade-events", rate: 1}, client, &output)
+	err := runWithClient(ctx, config{csvPaths: []string{path}, topic: "trade-events", rate: 1}, client, &output)
 	<-canceled
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error=%v; want context.Canceled", err)
@@ -412,7 +412,7 @@ func TestRunWithClientStopsAtMaxEvents(t *testing.T) {
 			"RUI.FR,E,invalid,09:00:00.179,12-11-2021\n"))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true, maxEvents: 1}, client, &output)
+	err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true, maxEvents: 1}, client, &output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ func TestRunWithClientMaxEventsAboveFileSize(t *testing.T) {
 	path := writeCSVFile(t, csvContents(testCSVHeader, validRunRow))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	if err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events", maxEvents: 10}, client, &output); err != nil {
+	if err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events", maxEvents: 10}, client, &output); err != nil {
 		t.Fatal(err)
 	}
 	if len(client.records) != 1 || !strings.Contains(output.String(), "completed: published=1") {
@@ -440,7 +440,7 @@ func TestRunWithClientRateAndMaxEvents(t *testing.T) {
 	path := writeCSVFile(t, csvContents(testCSVHeader, validRunRow+validRunRow+validRunRow))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	err := runWithClient(context.Background(), config{csvPath: path, topic: "trade-events", rate: 50, maxEvents: 2}, client, &output)
+	err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events", rate: 50, maxEvents: 2}, client, &output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +513,7 @@ func TestRunWithClientDLQSkipsNonPriceRows(t *testing.T) {
 		"A0HN5C.ETR,E,,,\nFREN4.FR,I,0.000000,00:00:00.000,\n"+validRunRow))
 	client := &fakeRunClient{}
 	var output bytes.Buffer
-	cfg := config{csvPath: path, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true}
+	cfg := config{csvPaths: []string{path}, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true}
 	if err := runWithClient(context.Background(), cfg, client, &output); err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +531,7 @@ func TestRunWithClientCancellationAfterDLQStopsReplay(t *testing.T) {
 	defer cancel()
 	client := &fakeRunClient{afterProduce: cancel}
 	var output bytes.Buffer
-	cfg := config{csvPath: path, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true}
+	cfg := config{csvPaths: []string{path}, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true}
 	err := runWithClient(ctx, cfg, client, &output)
 	if !errors.Is(err, context.Canceled) || len(client.records) != 1 || client.records[0].Topic != cfg.dlqTopic || client.closeCalls != 1 {
 		t.Fatalf("error=%v, records=%v, closes=%d", err, client.records, client.closeCalls)
