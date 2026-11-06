@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import unittest
+from unittest import mock
 
 import exporter
 
@@ -57,6 +58,51 @@ class RenderTest(unittest.TestCase):
     def test_escapes_label_values(self):
         text = exporter.render([({"service": 'a"b', "container": "c"}, exporter.parse_stats(STATS_V2))])
         self.assertIn('service="a\\"b"', text)
+
+
+class CollectTest(unittest.TestCase):
+    """collect() must survive containers that vanish between list and stats."""
+
+    CONTAINERS = [
+        {"Id": "a", "Names": ["/p-redpanda-0-1"], "Labels": {exporter.SERVICE_LABEL: "redpanda-0"}},
+        {"Id": "b", "Names": ["/p-create-topic-run-1"], "Labels": {exporter.SERVICE_LABEL: "create-topic"}},
+        {"Id": "c", "Names": ["/p-postgres-1"], "Labels": {exporter.SERVICE_LABEL: "postgres"}},
+    ]
+
+    def collect_with(self, stats_by_id):
+        def docker_get(path):
+            if path.startswith("/containers/json"):
+                return self.CONTAINERS
+            container_id = path.split("/")[2]
+            result = stats_by_id[container_id]
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with mock.patch.object(exporter, "docker_get", docker_get):
+            return exporter.collect("p")
+
+    def services(self, samples):
+        return sorted(labels["service"] for labels, _ in samples)
+
+    def test_collects_every_running_container(self):
+        samples = self.collect_with({"a": STATS_V2, "b": STATS_V2, "c": STATS_V2})
+        self.assertEqual(self.services(samples), ["create-topic", "postgres", "redpanda-0"])
+
+    def test_skips_a_container_that_exited_after_the_list_call(self):
+        for status in (404, 409):
+            with self.subTest(status=status):
+                samples = self.collect_with({"a": STATS_V2, "b": exporter.DockerError("/containers/b/stats", status),
+                                             "c": STATS_V2})
+                self.assertEqual(self.services(samples), ["postgres", "redpanda-0"])
+
+    def test_skips_a_container_whose_first_stats_are_still_empty(self):
+        samples = self.collect_with({"a": STATS_V2, "b": {"cpu_stats": {}, "memory_stats": {}}, "c": STATS_V2})
+        self.assertEqual(self.services(samples), ["postgres", "redpanda-0"])
+
+    def test_other_docker_errors_still_fail_the_scrape(self):
+        with self.assertRaises(exporter.DockerError):
+            self.collect_with({"a": STATS_V2, "b": exporter.DockerError("/containers/b/stats", 500), "c": STATS_V2})
 
 
 if __name__ == "__main__":

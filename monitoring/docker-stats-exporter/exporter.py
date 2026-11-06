@@ -29,6 +29,14 @@ METRICS = [
 ]
 
 
+class DockerError(RuntimeError):
+    """The Docker API answered with an error status."""
+
+    def __init__(self, path, status):
+        super().__init__(f"GET {path}: HTTP {status}")
+        self.status = status
+
+
 class DockerConnection(HTTPConnection):
     def __init__(self, path=SOCKET, timeout=10):
         super().__init__("localhost", timeout=timeout)
@@ -47,14 +55,21 @@ def docker_get(path):
         response = conn.getresponse()
         body = response.read()
         if response.status != 200:
-            raise RuntimeError(f"GET {path}: HTTP {response.status}")
+            raise DockerError(path, response.status)
         return json.loads(body)
     finally:
         conn.close()
 
 
 def parse_stats(stats):
-    """Map one Docker stats document to {metric name: value}."""
+    """Map one Docker stats document to {metric name: value}.
+
+    None when the document has no CPU counter yet (a container's first
+    sample can be empty); exporting zeros would read as a counter reset.
+    """
+    cpu_total = ((stats.get("cpu_stats") or {}).get("cpu_usage") or {}).get("total_usage")
+    if cpu_total is None:
+        return None
     memory = stats.get("memory_stats") or {}
     cache = memory.get("stats") or {}
     # cgroup v2 reports inactive_file, v1 total_inactive_file.
@@ -67,7 +82,7 @@ def parse_stats(stats):
         if op in blkio_total:
             blkio_total[op] += entry.get("value", 0)
     return {
-        "docker_container_cpu_usage_seconds_total": stats["cpu_stats"]["cpu_usage"]["total_usage"] / 1e9,
+        "docker_container_cpu_usage_seconds_total": cpu_total / 1e9,
         "docker_container_memory_working_set_bytes": max(memory.get("usage", 0) - inactive, 0),
         "docker_container_network_receive_bytes_total": sum(n.get("rx_bytes", 0) for n in networks),
         "docker_container_network_transmit_bytes_total": sum(n.get("tx_bytes", 0) for n in networks),
@@ -105,13 +120,21 @@ def collect(project):
     containers = docker_get("/containers/json?filters=" + urllib.parse.quote(json.dumps(filters)))
 
     def sample(container):
-        stats = docker_get(f"/containers/{container['Id']}/stats?stream=false&one-shot=true")
+        try:
+            stats = docker_get(f"/containers/{container['Id']}/stats?stream=false&one-shot=true")
+        except DockerError as error:
+            if error.status in (404, 409):  # exited or removed since the list call
+                return None
+            raise
+        values = parse_stats(stats)
+        if values is None:
+            return None
         name = container["Names"][0].lstrip("/")
         labels = {"service": container["Labels"].get(SERVICE_LABEL, name), "container": name}
-        return labels, parse_stats(stats)
+        return labels, values
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        return list(pool.map(sample, containers))
+        return [item for item in pool.map(sample, containers) if item is not None]
 
 
 def main():
