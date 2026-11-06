@@ -126,7 +126,7 @@ class ResetSafetyTests(unittest.TestCase):
                 stdout = json.dumps([{"group": "test-materializer", "status": "OK"}])
             elif "describe" in command:
                 stdout = json.dumps([{"summary": {"name": topic}, "partitions": [
-                    {"log_start_offset": 7, "high_watermark": 7}]} for topic in reset_flow.TOPICS])
+                    {"log_start_offset": 0, "high_watermark": 0}]} for topic in reset_flow.TOPICS])
             else:
                 stdout = ""
             return subprocess.CompletedProcess(command, 0, stdout=stdout)
@@ -143,11 +143,12 @@ class ResetSafetyTests(unittest.TestCase):
                         with patch.object(reset_flow.subprocess, "run", side_effect=execute):
                             reset_flow.reset()
         cancel = next(i for i, command in enumerate(calls) if "cancel" in command)
-        trims = [i for i, command in enumerate(calls) if "trim-prefix" in command]
+        # Topics are recreated (rpk topic delete, then create), not trimmed in place.
+        deletes = [i for i, command in enumerate(calls) if "topic" in command and "delete" in command]
         reset = next(i for i, command in enumerate(calls) if "-reset-db" in command)
-        self.assertEqual(len(trims), 4)
-        self.assertLess(cancel, min(trims))
-        self.assertLess(max(trims), reset)
+        self.assertEqual(len(deletes), 4)
+        self.assertLess(cancel, min(deletes))
+        self.assertLess(max(deletes), reset)
 
     def test_active_external_materializer_prevents_data_clear(self):
         calls = []
@@ -162,7 +163,8 @@ class ResetSafetyTests(unittest.TestCase):
                 with patch.object(reset_flow.subprocess, "run", side_effect=execute):
                     with self.assertRaisesRegex(RuntimeError, "group is still active"):
                         reset_flow.reset()
-        self.assertFalse(any("trim-prefix" in command or "-reset-db" in command for command in calls))
+        self.assertFalse(any(("topic" in command and "delete" in command) or "-reset-db" in command
+                             for command in calls))
 
 
 if __name__ == "__main__":
