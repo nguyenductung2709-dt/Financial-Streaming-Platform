@@ -44,7 +44,7 @@ endef
 	build-streaming-processor test-streaming-processor \
 	formatall format-data-producer format-materializer format-streaming-processor lint-streaming-processor \
 	generate-protobuf generate-python-protobuf setup-hooks run-postgres postgres-shell \
-	monitoring-up monitoring-down collect-metrics
+	monitoring-up monitoring-down collect-metrics measure-flow
 
 .PHONY: setup-backend migrate-backend run-backend stop-flow
 
@@ -92,6 +92,11 @@ monitoring-down: ## Stop the monitoring containers; recorded metrics are kept in
 collect-metrics: ## Export CPU, memory, network and block I/O for a window to CSV; START=<epoch|ISO> [END=...] [OUT=dir] [LABELS="rate=1000"]
 	$(if $(strip $(START)),,$(error START is required, e.g. make collect-metrics START=2026-11-05T10:00:00))
 	python3 scripts/collect-resource-metrics.py --start $(call shell-quote,$(START)) $(if $(strip $(END)),--end $(call shell-quote,$(END))) --out $(call shell-quote,$(OUT)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label)))
+
+# Resets the flow first, so this permanently clears the project topics and database results.
+measure-flow: build-data-producer build-materializer build-streaming-processor ## One command: reset, run the full pipeline, time it, export resource usage; CSV=file|dir|"f1 f2" required [RATE=0] [MAX_EVENTS=n] [LABELS="k=v"] [OUT=dir]
+	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make measure-flow CSV=dataset/day08.csv MAX_EVENTS=1000000))
+	@$(materializer-env) exec python3 scripts/measure-flow.py --out $(call shell-quote,$(OUT)) --label rate=$(RATE) $(if $(strip $(MAX_EVENTS)),--label max_events=$(MAX_EVENTS)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label))) -- $(PRODUCER_CSV_ARGS) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))
 
 build-data-producer: ## Compile the Go producer to bin/data-producer
 	mkdir -p bin
@@ -164,7 +169,7 @@ validate-flow: ## Full validation run; CSV=file, directory, or "file1 file2" req
 	$(MAKE) compare-flow REFERENCE_DIR=$(if $(strip $(MAX_EVENTS)),,$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 
 test-validation: ## Run all Python validation and flow tests
-	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py scripts/collect_resource_metrics_test.py monitoring/docker-stats-exporter/exporter_test.py; do \
+	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py scripts/collect_resource_metrics_test.py scripts/measure_flow_test.py monitoring/docker-stats-exporter/exporter_test.py; do \
 		echo "== $$t"; \
 		python3 $$t || exit 1; \
 	done
