@@ -1,0 +1,29 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Docker containers: CPU, memory, network I/O, block I/O.
+  - job_name: docker
+    scrape_interval: 2s
+    static_configs:
+      - targets: ["docker-stats-exporter:9101"]
+
+  # Host processes (data-producer, materializer).
+  - job_name: process
+    scrape_interval: 2s
+    static_configs:
+      - targets: ["process-exporter:9256"]
+
+  # Flink exposes these through its bundled Prometheus reporter (see compose.yaml).
+  - job_name: flink-jobmanager
+    static_configs:
+      - targets: ["jobmanager:9249"]
+  - job_name: flink-taskmanager
+    static_configs:
+      - targets: ["taskmanager:9249"]
+
+  - job_name: redpanda
+    metrics_path: /public_metrics
+    static_configs:
+      - targets: ["redpanda-0:9644"]
