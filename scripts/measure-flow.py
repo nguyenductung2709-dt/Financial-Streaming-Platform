@@ -154,6 +154,45 @@ class Prometheus:
         return pipeline_sample(self.scalar(SOURCE_RECORDS), ends, committed), ends
 
 
+def csv_inputs(producer_args):
+    """The -csvPath values among the producer arguments, in order."""
+    values = []
+    for index, arg in enumerate(producer_args):
+        name, separator, value = arg.partition("=")
+        if name in ("-csvPath", "--csvPath"):
+            if separator:
+                values.append(value)
+            elif index + 1 < len(producer_args):
+                values.append(producer_args[index + 1])
+    return values
+
+
+def check_inputs(producer_args):
+    """Resolve the CSV inputs like the producer does, before anything is reset.
+
+    Rejects a missing or dangling path, and two inputs that are the same file
+    (for example an alias symlink next to the file it points to), which the
+    producer would replay twice.
+    """
+    inputs = csv_inputs(producer_args)
+    if not inputs:
+        return []
+    sys.path.insert(0, str(ROOT / "validation"))
+    from csv_inputs import resolve_csv_paths
+    try:
+        files = resolve_csv_paths(inputs)
+    except (ValueError, OSError) as error:
+        raise RuntimeError(f"Cannot use the CSV input: {error}. Nothing was reset.")
+    seen = {}
+    for path in files:
+        real = path.resolve()
+        if real in seen:
+            raise RuntimeError(f"{seen[real]} and {path} are the same file ({real}) and would be replayed twice; "
+                               "list each file once, e.g. CSV=\"dataset/day08.csv dataset/day09.csv\". Nothing was reset.")
+        seen[real] = path
+    return files
+
+
 def run(command, **kwargs):
     subprocess.run(command, cwd=ROOT, check=True, **kwargs)
 
@@ -310,6 +349,9 @@ def main(argv=None):
     for binary in ("bin/materializer", "bin/data-producer"):
         if not (ROOT / binary).is_file():
             raise RuntimeError(f"{binary} is missing; run make build-materializer build-data-producer")
+    files = check_inputs(producer_args)
+    if files:
+        print(f"Input: {len(files)} file(s): {', '.join(str(path) for path in files)}", flush=True)
     result = measure(args, producer_args)
     pipeline, table = export(args, result, producer_args)
     print(f"\n{table}\n")

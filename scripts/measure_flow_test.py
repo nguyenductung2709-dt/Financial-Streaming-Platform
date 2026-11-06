@@ -2,8 +2,10 @@
 """Tests for measure-flow.py: when a run counts as finished and how results are formatted."""
 
 import importlib.util
+import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -119,6 +121,53 @@ class FormatTableTest(unittest.TestCase):
         self.assertEqual(task.split(), ["taskmanager", "0.500", "1.500", "100", "200", "5.0", "-", "-", "-"])
         host = next(line for line in lines if line.startswith("data-producer"))
         self.assertEqual(host.split()[:3], ["data-producer", "*", "0.250"])
+
+
+class CsvInputsTest(unittest.TestCase):
+    def test_reads_every_csv_path_form_in_order(self):
+        args = ["-csvPath=a.csv", "-rate=0", "--csvPath", "b.csv", "-csvPath=c"]
+        self.assertEqual(measure.csv_inputs(args), ["a.csv", "b.csv", "c"])
+
+    def test_no_csv_path_is_not_checked(self):
+        self.assertEqual(measure.check_inputs(["-rate=0"]), [])
+
+
+class CheckInputsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def touch(self, name):
+        path = self.dir / name
+        path.write_text("x")
+        return path
+
+    def test_lists_the_files_of_a_directory(self):
+        self.touch("b.csv"), self.touch("a.csv")
+        files = measure.check_inputs([f"-csvPath={self.dir}"])
+        self.assertEqual([p.name for p in files], ["a.csv", "b.csv"])
+
+    def test_rejects_a_dangling_symlink(self):
+        self.touch("day08.csv")
+        os.symlink("missing.csv", self.dir / "day11.csv")
+        with self.assertRaisesRegex(RuntimeError, r"day11\.csv.*Nothing was reset"):
+            measure.check_inputs([f"-csvPath={self.dir}"])
+
+    def test_rejects_a_missing_file(self):
+        with self.assertRaisesRegex(RuntimeError, "Nothing was reset"):
+            measure.check_inputs([f"-csvPath={self.dir / 'nope.csv'}"])
+
+    def test_rejects_an_alias_next_to_its_target(self):
+        real = self.touch("debs-08.csv")
+        os.symlink(real.name, self.dir / "day08.csv")
+        with self.assertRaisesRegex(RuntimeError, "same file.*replayed twice"):
+            measure.check_inputs([f"-csvPath={self.dir}"])
+
+    def test_rejects_the_same_file_listed_twice(self):
+        real = self.touch("a.csv")
+        with self.assertRaisesRegex(RuntimeError, "same file"):
+            measure.check_inputs([f"-csvPath={real}", f"-csvPath={real}"])
 
 
 if __name__ == "__main__":
