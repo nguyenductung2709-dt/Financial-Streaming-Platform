@@ -1,0 +1,60 @@
+# Optional resource monitoring; layer it on top of compose.yaml:
+#   docker compose -f compose.yaml -f compose.monitoring.yaml up -d   (or make monitoring-up)
+# Everything is bound to 127.0.0.1.
+volumes:
+  prometheus-data:
+  grafana-data:
+services:
+  # Per-container CPU, memory, network I/O and block I/O, read from the Docker API.
+  # (cAdvisor cannot see containers when Docker uses the containerd image store.)
+  docker-stats-exporter:
+    image: python:3.13-alpine
+    command: ["python", "/app/exporter.py"]
+    volumes:
+      - ./monitoring/docker-stats-exporter/exporter.py:/app/exporter.py:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  # The Go producer and materializer run on the host, outside Docker.
+  process-exporter:
+    image: ncabatoff/process-exporter:0.8.7
+    command:
+      - --procfs=/host/proc
+      - --config.path=/etc/process-exporter/process-exporter.yml
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - ./monitoring/process-exporter.yml:/etc/process-exporter/process-exporter.yml:ro
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - docker-stats-exporter
+      - process-exporter
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
