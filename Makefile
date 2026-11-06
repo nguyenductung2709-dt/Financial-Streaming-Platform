@@ -19,6 +19,7 @@ BACKEND_VENV ?= .venv
 BACKEND_PYTHON := $(abspath $(BACKEND_VENV))/bin/python
 BACKEND_HOST ?= 127.0.0.1
 BACKEND_PORT ?= 8000
+PROMETHEUS_URL ?= http://localhost:9090
 COMPOSE_MONITORING = docker compose -f compose.yaml -f compose.monitoring.yaml
 MONITORING_SERVICES = docker-stats-exporter process-exporter prometheus grafana
 OUT ?= bin/metrics/$(shell date +%Y%m%d-%H%M%S)
@@ -91,12 +92,12 @@ monitoring-down: ## Stop the monitoring containers; recorded metrics are kept in
 
 collect-metrics: ## Export CPU, memory, network and block I/O for a window to CSV; START=<epoch|ISO> [END=...] [OUT=dir] [LABELS="rate=1000"]
 	$(if $(strip $(START)),,$(error START is required, e.g. make collect-metrics START=2026-11-05T10:00:00))
-	python3 scripts/collect-resource-metrics.py --start $(call shell-quote,$(START)) $(if $(strip $(END)),--end $(call shell-quote,$(END))) --out $(call shell-quote,$(OUT)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label)))
+	python3 scripts/collect-resource-metrics.py --start $(call shell-quote,$(START)) $(if $(strip $(END)),--end $(call shell-quote,$(END))) --prometheus-url $(call shell-quote,$(PROMETHEUS_URL)) --out $(call shell-quote,$(OUT)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label)))
 
 # Resets the flow first, so this permanently clears the project topics and database results.
 measure-flow: build-data-producer build-materializer build-streaming-processor ## One command: reset, run the full pipeline, time it, export resource usage; CSV=file|dir|"f1 f2" required [RATE=0] [MAX_EVENTS=n] [LABELS="k=v"] [OUT=dir]
 	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make measure-flow CSV=dataset/day08.csv MAX_EVENTS=1000000))
-	@$(materializer-env) exec python3 scripts/measure-flow.py --out $(call shell-quote,$(OUT)) --label rate=$(RATE) $(if $(strip $(MAX_EVENTS)),--label max_events=$(MAX_EVENTS)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label))) -- $(PRODUCER_CSV_ARGS) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))
+	@$(materializer-env) exec python3 scripts/measure-flow.py --prometheus-url $(call shell-quote,$(PROMETHEUS_URL)) --out $(call shell-quote,$(OUT)) --label rate=$(RATE) $(if $(strip $(MAX_EVENTS)),--label max_events=$(MAX_EVENTS)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label))) -- $(PRODUCER_CSV_ARGS) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))
 
 build-data-producer: ## Compile the Go producer to bin/data-producer
 	mkdir -p bin
