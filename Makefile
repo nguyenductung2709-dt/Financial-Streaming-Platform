@@ -2,6 +2,14 @@
 FLINK_ARGS ?= --starting-offsets earliest
 PRODUCER_ARGS ?= -rate=1000
 FLINK_START_TIMEOUT ?= 120
+RATE ?= 0
+BOUNDED_TIMEOUT ?= 3600
+MAX_EVENTS ?=
+REFERENCE_DIR ?=
+DEFAULT_REFERENCE_DIR := validation/out/reference
+# 1 also checks the materializer's PostgreSQL tables against the topics (needs .env);
+# validate-flow runs drain-materializer first so the database is complete.
+DB_CHECK ?= 1
 
 # Load the same settings for the standalone materializer and the complete flow.
 define materializer-env
@@ -16,14 +24,14 @@ export MATERIALIZER_BROKERS="$${materializer_brokers:-$${MATERIALIZER_BROKERS-}}
 export MATERIALIZER_GROUP_ID="$${materializer_group_id:-$${MATERIALIZER_GROUP_ID-}}";
 endef
 
-.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow
+.PHONY: build-data-producer test-data-producer run-data-producer generate-protobuf build-streaming-processor test-streaming-processor format-streaming-processor lint-streaming-processor setup-hooks run-streaming-processor run-flow reset-flow infra-up run-bounded-processor generate-reference drain-materializer compare-flow validate-flow test-validation
 
 .PHONY: help \
 	build-data-producer test-data-producer run-data-producer \
 	build-materializer test-materializer test-materializer-integration run-materializer \
 	build-streaming-processor test-streaming-processor \
 	formatall format-data-producer format-materializer format-streaming-processor lint-streaming-processor \
-	generate-protobuf setup-hooks run-postgres postgres-shell
+	generate-protobuf generate-python-protobuf setup-hooks run-postgres postgres-shell
 
 help: ## Show command usage; also displayed by plain make
 	@printf 'Run from the repository root: make <target>\n\nCommands:\n\n'
@@ -78,11 +86,48 @@ build-streaming-processor: ## Assemble and verify the deployment JAR, then copy 
 test-streaming-processor: ## Run the Scala processor test suite with sbt
 	cd services/streaming-processor && sbt test
 
-# Build, start local infrastructure, create topics, and submit one processor job.
-run-streaming-processor: build-streaming-processor ## Build the processor, start local infrastructure, create topics, and submit a Flink job; use FLINK_ARGS="..." for job flags
+infra-up: ## Start local infrastructure and create topics
 	docker compose up -d redpanda-0 console jobmanager taskmanager
 	docker compose run --rm create-topic
+
+# Build, start local infrastructure, create topics, and submit one processor job.
+run-streaming-processor: build-streaming-processor infra-up ## Build the processor, start local infrastructure, create topics, and submit a Flink job; use FLINK_ARGS="..." for job flags
 	python3 scripts/submit-flink-job.py --timeout $(FLINK_START_TIMEOUT) -- $(FLINK_ARGS)
+
+run-bounded-processor: build-streaming-processor infra-up ## Process everything currently in trade-events, then stop
+	python3 scripts/submit-flink-job.py --timeout $(FLINK_START_TIMEOUT) --bounded-timeout $(BOUNDED_TIMEOUT) -- --bounded --starting-offsets earliest
+
+generate-reference: ## Compute the offline Python reference from the CSV (about 3 minutes per day); CSV required, REFERENCE_DIR optional
+	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make generate-reference CSV=dataset/debs2022-gc-trading-day-08-11-21.csv))
+	python3 validation/generate_validation_data.py --csv $(CSV) --out $(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR))
+
+drain-materializer: build-materializer ## Run the materializer until it has consumed ema-windows and trade-advisories, then stop it
+	@$(materializer-env) exec python3 scripts/drain-materializer.py
+
+# DB_CHECK=1 (default) reads the database URL from .env and needs a drained materializer.
+compare-flow: ## Compare ema-windows and trade-advisories against the Python shadow; REFERENCE_DIR=... also checks the shadow against a generate-reference output, DB_CHECK=1 the PostgreSQL tables
+ifeq ($(DB_CHECK),1)
+	@$(materializer-env) exec python3 validation/verify_flow.py $(if $(strip $(REFERENCE_DIR)),--reference-dir $(REFERENCE_DIR)) --db-url "$$MATERIALIZER_DATABASE_URL"
+else
+	python3 validation/verify_flow.py $(if $(strip $(REFERENCE_DIR)),--reference-dir $(REFERENCE_DIR))
+endif
+
+# The CSV reference needs the whole file, so a MAX_EVENTS prefix run skips it.
+validate-flow: ## Full validation run; CSV required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv [RATE=0] [MAX_EVENTS=n] [DB_CHECK=0]
+	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv))
+	$(if $(strip $(MAX_EVENTS)),,$(MAKE) generate-reference REFERENCE_DIR=$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
+	$(MAKE) infra-up
+	$(MAKE) reset-flow
+	$(MAKE) run-data-producer ARGS="-csvPath=$(CSV) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))"
+	$(MAKE) run-bounded-processor
+	$(if $(filter 1,$(DB_CHECK)),$(MAKE) drain-materializer)
+	$(MAKE) compare-flow REFERENCE_DIR=$(if $(strip $(MAX_EVENTS)),,$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
+
+test-validation: ## Run all Python validation and flow tests
+	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/test_flow.py; do \
+		echo "== $$t"; \
+		python3 $$t || exit 1; \
+	done
 
 # Example: make run-flow PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
 run-flow: build-data-producer build-materializer ## Start all local services, initialize PostgreSQL, and run the producer and materializer; use PRODUCER_ARGS="..."
@@ -93,7 +138,7 @@ run-flow: build-data-producer build-materializer ## Start all local services, in
 	@$(materializer-env) exec python3 scripts/flow.py -- $(PRODUCER_ARGS)
 
 # This permanently clears project topic records and materialized database results.
-reset-flow: build-materializer ## Stop the managed flow, cancel Flink, and clear project topics, consumer offsets, and PostgreSQL results
+reset-flow: build-materializer ## Stop the managed flow, cancel Flink, recreate the project topics empty, and clear consumer offsets and PostgreSQL results
 	@$(materializer-env) exec python3 scripts/reset-flow.py
 
 formatall: format-data-producer format-materializer format-streaming-processor ## Format Go sources, Scala sources, and sbt build files
@@ -118,6 +163,9 @@ generate-protobuf: ## Regenerate gen/ bindings after schema changes; commit them
 		xargs -0 protoc -I schemas \
 			--go_out=. --go_opt=module=financial-streaming-platform \
 			--java_out=gen/java
+
+generate-python-protobuf: ## Regenerate gen/python bindings after schema changes; commit them with the schemas
+	python3 validation/generate_bindings.py
 
 setup-hooks: ## Run once after cloning to set this checkout's Git hooks path to .githooks
 	git config core.hooksPath .githooks

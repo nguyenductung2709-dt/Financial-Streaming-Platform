@@ -1,45 +1,41 @@
-# Validation dataset
+# Validation
 
-## Usage examples
+## Reference generator
 
 ```sh
-python3 validation/generate_validation_data.py                 # full dataset, ~2 min
-python3 validation/generate_validation_data.py --limit-rows 100000 --no-md5 --out /tmp/vout
-python3 validation/generate_validation_data.py --ema-init first-close --out validation/out/first-close
-python3 validation/generate_validation_data.py --keep-late-events --out /tmp/vout   # no 70 s watermark drop
-python3 validation/validation_generator_test.py                # test suite
+python3 validation/generate_validation_data.py [--limit-rows N] [--out DIR]
+python3 validation/validation_generator_test.py
 ```
 
-## Late events
+Writes `ema_windows.csv`, `advisories.csv` and `summary.json` (`--help` lists
+the other options). Like the processor, it drops a price event once the
+watermark (max trade time - 70 s) has passed its 5-minute window and counts the
+drops in `summary.json`. Flink's watermark only advances every 200 ms, so it may
+keep a few events the generator drops; those are listed in
+`drops_pending_watermark_emission.csv`.
 
-Like the streaming processor (`forBoundedOutOfOrderness(70 s)`, one watermark
-over all symbols, no allowed lateness), the generator drops a price event once
-the watermark (max trade time seen - 70 s - 1 ms) has passed the end of its
-5-minute window. Dropped events are only counted
-(`rows.dropped_late_by_watermark` in `summary.json`); they add no window and
-cannot become a symbol's first window. Use `--out-of-orderness-seconds N` to
-change the delay or `--keep-late-events` to turn the rule off.
+## Flow validation
 
-One divergence: the generator's watermark advances with every event, Flink's
-only every 200 ms, so a late event arriving right after the event that
-closed its window may still be kept by Flink.
-`diagnostics.drops_pending_watermark_emission` counts these events and
-`drops_pending_watermark_emission.csv` extracts them, when any, for separate
-live tests.
+Produces a CSV through the Go producer and the Flink processor, drains the
+results into PostgreSQL with the materializer, then checks:
 
-## Outputs
+1. **Processor vs shadow:** a Python replay of the published `trade-events`
+   against `ema-windows` and `trade-advisories`. Catches processor bugs.
+2. **Shadow vs CSV reference:** exact. Catches producer bugs.
+3. **Database vs topics:** exact. Catches materializer bugs.
 
-- `ema_windows.csv` - one row per (symbol, window with price events): the
-  window's close (price, micros, source row), EMA(38)/EMA(100) and the previous
-  emitted pair (micros, 9 decimals), the advisory, and diagnostics.
+Requirements: Docker, Go with a C compiler, Java 17 + sbt, a `.env`
+(`cp .env.example .env`), and `pip3 install -r validation/requirements.txt`.
 
-- `advisories.csv` - one row per BUY/SELL advisory.
+```sh
+make validate-flow CSV=dataset/<file>.csv [RATE=0] [MAX_EVENTS=n] [DB_CHECK=0]
+```
 
-- `drops_pending_watermark_emission.csv` - written only when such events
-  exist: the drops whose outcome depends on Flink's periodic watermark
-  emission timing (see Late events), for separate live tests.
+`RATE` is the producer's events per second (`0` is unlimited). `MAX_EVENTS`
+publishes only the first n events and skips check 2. `DB_CHECK=0` skips the
+materializer and check 3. The report goes to `validation/out/flow-report.json`,
+and the target exits non-zero on failure.
 
-- `summary.json` - input checksum, row accounting (skipped/rejected/accepted/
-  dropped late),
-  symbol and window statistics, advisory counts, diagnostics, and the recorded
-  spec and interpretation notes.
+Check 1 labels each window `match`, `lateness-explained`, `lateness-related` or
+`unexplained`. Only `unexplained` fails the run; the lateness labels are
+differences attributable to late-event drops.
