@@ -260,7 +260,7 @@ def measure(args, producer_args):
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             children.append(producer)
             threading.Thread(target=echo, args=(producer.stdout,), daemon=True).start()
-            print(f"Measuring from {datetime.fromtimestamp(started).isoformat(timespec='seconds')}.", flush=True)
+            print(f"Measuring from {datetime.fromtimestamp(started).isoformat(timespec='seconds')} (epoch {int(started)}).", flush=True)
 
             settle = Settle(started)
             producer_done = None
