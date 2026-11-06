@@ -19,6 +19,7 @@ plus summary.txt and pipeline.json (event counts, durations, throughput).
 """
 
 import argparse
+from collections import deque
 from datetime import datetime
 import importlib.util
 import json
@@ -236,7 +237,7 @@ def measure(args, producer_args):
     prometheus = Prometheus(args.prometheus_url)
     group = os.environ.get("MATERIALIZER_GROUP_ID", "materializer")
     children = []
-    producer_output = []
+    producer_output = deque(maxlen=200)  # only the final summary line is needed
 
     def echo(stream):
         for line in stream:
