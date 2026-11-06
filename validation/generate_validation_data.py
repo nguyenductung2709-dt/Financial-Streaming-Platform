@@ -65,12 +65,14 @@ import re
 import sys
 import time
 from collections import Counter
+from contextlib import closing
 from datetime import date
 from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 from pathlib import Path
 
 import config
 import ema_replay
+from csv_inputs import REQUIRED_COLUMNS, iter_csv_rows, resolve_csv_paths
 from ema_replay import is_late, update_close
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -95,7 +97,6 @@ J_SHORT, J_LONG = config.EMA_J_SHORT, config.EMA_J_LONG  # smoothing factors (PD
 #   zero-window  literal EMA[s, w_0] = 0; the recursion starts in window two.
 EMA_INIT_MODES = ("prev-zero", "first-close", "zero-window")
 
-REQUIRED_COLUMNS = ("ID", "SecType", "Last", "Trading time", "Trading date")
 # parseTradeTime in event.go uses the Go layout "02-01-2006 15:04:05.000":
 # Go takes a one- or two-digit hour and either "." or "," before the exactly
 # three millisecond digits.
@@ -163,7 +164,7 @@ def parse_trade_dt(date_text, time_text):
 
 
 def scan_events(csv_path, limit_rows=None, out_of_orderness_ms=OUT_OF_ORDERNESS_MS):
-    """Single pass over the CSV, mirroring the producer's row handling.
+    """Single pass over ordered CSV inputs, mirroring the producer's row handling.
 
     Price events later than the watermark are dropped like the Flink job does
     (None keeps them all) and only counted.  Returns (closes, arrivals,
@@ -182,35 +183,21 @@ def scan_events(csv_path, limit_rows=None, out_of_orderness_ms=OUT_OF_ORDERNESS_
     prev_row_max = float("-inf")  # the same max as of the previous event row (one-event lag)
     emission_cases = []
     started = time.monotonic()
-    with open(csv_path, newline="", encoding="utf-8", errors="replace") as f:
-        reader = csv.reader(f)
-        for record in reader:
-            line = reader.line_num  # physical line number, like Go's FieldPos
-            if line == 12:  # header; lines 1-11 and 13 are preamble
-                columns = {name.strip(): i for i, name in enumerate(record)}
-                missing = [c for c in REQUIRED_COLUMNS if c not in columns]
-                if missing:
-                    raise ValueError(f"CSV header is missing columns {missing}")
+    paths = resolve_csv_paths(csv_path)
+    with closing(iter_csv_rows(paths, limit_rows=limit_rows,
+                              on_truncate=lambda: stats.update(truncated=1))) as rows:
+        for row in rows:
+            record, line = row.values, row.source_row
+            if columns is not row.columns:
+                columns = row.columns
                 idx = {c: columns[c] for c in REQUIRED_COLUMNS}
                 idx["Date"] = columns.get("Date", -1)
-                max_required = max(columns[c] for c in REQUIRED_COLUMNS)
-                continue
-            if line < 12 or line == 13:
-                continue
-            if columns is None:
-                raise ValueError("CSV header is missing at line 12")
 
-            if limit_rows is not None and stats["data_rows"] >= limit_rows:
-                stats["truncated"] = 1
-                break
             stats["data_rows"] += 1
             if stats["data_rows"] % 5_000_000 == 0:
                 print(f"  rows={stats['data_rows']:,} events={stats['price_events']:,} "
                       f"windows={len(closes):,} {time.monotonic() - started:.0f}s",
                       file=sys.stderr, flush=True)
-            if len(record) <= max_required:
-                raise ValueError(f"CSV line {line} is missing required fields")
-
             last_text = record[idx["Last"]].strip()
             if last_text == "":
                 stats["skipped_no_last"] += 1
@@ -358,11 +345,12 @@ def display_path(path):
 
 
 def run(csv_path, out_dir, limit_rows=None, ema_init=config.EMA_INIT, compute_md5=True,
-        out_of_orderness_ms=OUT_OF_ORDERNESS_MS):
-    print(f"Input CSV : {csv_path}")
+         out_of_orderness_ms=OUT_OF_ORDERNESS_MS):
+    paths = resolve_csv_paths(csv_path)
+    print(f"Input CSVs: {', '.join(str(path) for path in paths)}")
     print(f"Output dir: {out_dir}")
     closes, arrivals, symbols, stats, emission_cases = scan_events(
-        csv_path, limit_rows=limit_rows, out_of_orderness_ms=out_of_orderness_ms)
+        paths, limit_rows=limit_rows, out_of_orderness_ms=out_of_orderness_ms)
     if stats["dropped_late"]:
         print(f"Dropped {stats['dropped_late']:,} late events (watermark delay "
               f"{out_of_orderness_ms / 1000:g}s)")
@@ -378,6 +366,8 @@ def run(csv_path, out_dir, limit_rows=None, ema_init=config.EMA_INIT, compute_md
                 start, end = window_bounds(event_tt_ms // WINDOW_MS)
                 w_pend.writerow([row, symbol, ms_to_wall_clock(event_tt_ms), start, end])
 
+    csv_files = [{"path": display_path(path),
+                  "md5": md5_file(path) if compute_md5 else None} for path in paths]
     summary = {
         "spec": {
             "source": "documents/CS_E4780_Course_Project_2026.pdf",
@@ -397,8 +387,9 @@ def run(csv_path, out_dir, limit_rows=None, ema_init=config.EMA_INIT, compute_md
             "interpretation_notes": list(INTERPRETATION_NOTES),
         },
         "input": {
-            "csv_path": display_path(csv_path),
-            "csv_md5": md5_file(csv_path) if compute_md5 else None,
+            "csv_path": csv_files[0]["path"] if len(paths) == 1 else None,
+            "csv_md5": csv_files[0]["md5"] if len(paths) == 1 else None,
+            "csv_files": csv_files,
             "truncated_by_limit": bool(stats.get("truncated")),
         },
         "rows": {
@@ -466,8 +457,10 @@ def finite_non_negative_seconds(text):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Generate the EMA/advisory validation dataset from the trading CSV.")
-    parser.add_argument("--csv", type=Path, default=DEFAULT_CSV, help="trading day CSV path")
+        description="Generate the EMA/advisory validation dataset from ordered trading CSVs.")
+    parser.add_argument("--csv", action="append",
+                        help="CSV file or directory (immediate .csv files, alphabetical);"
+                             " repeat for ordered inputs")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output directory")
     parser.add_argument("--limit-rows", type=int, default=None,
                         help="stop after N data rows (smoke tests only)")
@@ -483,7 +476,8 @@ def main(argv=None):
                       help="never drop late events (the Flink job would)")
     args = parser.parse_args(argv)
     out_of_orderness_ms = None if args.keep_late_events else round(args.out_of_orderness_seconds * 1000)
-    run(args.csv, args.out, limit_rows=args.limit_rows, ema_init=args.ema_init,
+    run(args.csv if args.csv is not None else DEFAULT_CSV, args.out,
+        limit_rows=args.limit_rows, ema_init=args.ema_init,
         compute_md5=not args.no_md5, out_of_orderness_ms=out_of_orderness_ms)
     return 0
 

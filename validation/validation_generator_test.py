@@ -8,6 +8,7 @@ checked against an independent exact-rational model (fractions.Fraction).
 
 import contextlib
 import csv
+import hashlib
 import io
 import json
 import sys
@@ -205,6 +206,86 @@ class SyntheticCsvTestCase(unittest.TestCase):
     def run_csv(self, rows, **kwargs):
         return gvd.run(csv_path=self.write_csv(rows), out_dir=self.out_dir,
                        compute_md5=False, **kwargs)
+
+
+class MultiCsvTest(SyntheticCsvTestCase):
+    def file(self, name, rows):
+        path = Path(self.tmp.name) / name
+        path.write_text(build_csv(rows), newline="", encoding="utf-8")
+        return path
+
+    def test_explicit_order_and_cross_file_close_tie(self):
+        first = self.file("z.csv", [data_row("A", "E", "08:01:00.000", "1"),
+                                    data_row("A", "E", "08:01:00.000", "2")])
+        second = self.file("a.csv", [data_row("A", "E", "08:01:00.000", "3")])
+        summary = gvd.run([first, second], self.out_dir, compute_md5=False)
+        rows = read_csv(self.out_dir / "ema_windows.csv")
+        self.assertEqual(summary["rows"]["price_events_accepted"], 3)
+        self.assertEqual(rows[0]["event_count"], "3")
+        self.assertEqual(rows[0]["close_micros"], "3000000")
+        self.assertEqual(rows[0]["close_source_row"], "29")
+
+    def test_directory_order_and_ema_continue_across_days(self):
+        self.file("b.csv", [data_row("A", "E", "08:01:00.000", "2", tdate="13-11-2021")])
+        self.file("a.csv", [data_row("A", "E", "08:01:00.000", "1", tdate="12-11-2021")])
+        summary = gvd.run(Path(self.tmp.name), self.out_dir, compute_md5=False)
+        rows = read_csv(self.out_dir / "ema_windows.csv")
+        self.assertEqual(summary["rows"]["price_events_accepted"], 2)
+        self.assertEqual([row["close_micros"] for row in rows], ["1000000", "2000000"])
+        self.assertEqual(rows[1]["prev_ema38_micros"], "51282.051282051")
+        self.assertEqual(rows[1]["prev_ema100_micros"], "19801.980198020")
+
+    def test_watermark_is_not_reset_between_files(self):
+        first = self.file("first.csv", [data_row("A", "E", "10:10:00.000", "1")])
+        second = self.file("second.csv", [data_row("B", "E", "01:00:00.000", "2")])
+        summary = gvd.run([first, second], self.out_dir, compute_md5=False)
+        self.assertEqual(summary["rows"]["price_events_accepted"], 2)
+        self.assertEqual(summary["rows"]["dropped_late_by_watermark"], 1)
+        self.assertEqual([r["symbol"] for r in read_csv(self.out_dir / "ema_windows.csv")], ["A"])
+
+    def test_limit_rows_applies_to_the_whole_sequence(self):
+        first = self.file("first.csv", [data_row("A", "E", "08:01:00.000", "1")])
+        second = self.file("second.csv", [data_row("A", "E", "08:02:00.000", "2"),
+                                         data_row("B", "E", "08:02:00.000", "3")])
+        summary = gvd.run([first, second], self.out_dir, limit_rows=2, compute_md5=False)
+        self.assertEqual(summary["rows"]["data_rows"], 2)
+        self.assertTrue(summary["input"]["truncated_by_limit"])
+        rows = read_csv(self.out_dir / "ema_windows.csv")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["close_micros"], "2000000")
+
+    def test_repeated_cli_flags_record_ordered_checksums(self):
+        first = self.file("z.csv", [data_row("A", "E", "08:01:00.000", "1")])
+        second = self.file("a.csv", [data_row("B", "E", "08:01:00.000", "2")])
+        gvd.main(["--csv", str(first), "--csv", str(second), "--out", str(self.out_dir)])
+        summary = json.loads((self.out_dir / "summary.json").read_text())
+        self.assertEqual(summary["input"]["csv_files"], [
+            {"path": str(first), "md5": hashlib.md5(first.read_bytes()).hexdigest()},
+            {"path": str(second), "md5": hashlib.md5(second.read_bytes()).hexdigest()},
+        ])
+        self.assertIsNone(summary["input"]["csv_path"])
+        self.assertIsNone(summary["input"]["csv_md5"])
+
+    def test_limit_at_file_boundary_does_not_parse_later_file(self):
+        first = self.file("first.csv", [data_row("A", "E", "08:01:00.000", "1")])
+        later = Path(self.tmp.name) / "later.csv"
+        later.write_text("not a dataset header\n")
+        summary = gvd.run([first, later], self.out_dir, limit_rows=1, compute_md5=False)
+        self.assertEqual(summary["rows"]["data_rows"], 1)
+        self.assertTrue(summary["input"]["truncated_by_limit"])
+
+    def test_short_row_after_limit_is_not_validated(self):
+        path = self.file("prefix.csv", [data_row("A", "E", "08:01:00.000", "1"), "A,E"])
+        summary = gvd.run(path, self.out_dir, limit_rows=1, compute_md5=False)
+        self.assertEqual(summary["rows"]["data_rows"], 1)
+        self.assertTrue(summary["input"]["truncated_by_limit"])
+
+    def test_single_file_summary_is_compatible(self):
+        path = self.file("single.csv", [data_row("A", "E", "08:01:00.000", "1")])
+        summary = gvd.run(path, self.out_dir)
+        self.assertEqual(summary["input"]["csv_path"], str(path))
+        self.assertEqual(summary["input"]["csv_md5"], hashlib.md5(path.read_bytes()).hexdigest())
+        self.assertEqual(read_csv(self.out_dir / "ema_windows.csv")[0]["close_source_row"], "14")
 
 
 class EndToEndTest(SyntheticCsvTestCase):
