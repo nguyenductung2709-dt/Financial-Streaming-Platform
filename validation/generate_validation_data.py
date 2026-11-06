@@ -64,26 +64,30 @@ import math
 import re
 import sys
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import date
 from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 from pathlib import Path
+
+import config
+import ema_replay
+from ema_replay import is_late, update_close
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CSV = REPO_ROOT / "dataset" / "debs2022-gc-trading-day-12-11-21.csv"
 DEFAULT_OUT = REPO_ROOT / "validation" / "out"
 
-WINDOW_MS = 300_000        # 5-minute tumbling windows anchored at 00:00 CEST (PDF 3.1)
+WINDOW_MS = config.WINDOW_MS  # 5-minute tumbling windows anchored at 00:00 CEST (PDF 3.1)
 MS_PER_DAY = 86_400_000
 PRICE_SCALE = 1_000_000    # prices are exact integers in millionths, like last_price_micros
 UINT64_MAX = 2**64 - 1
 # StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s), allowed lateness 0.
-OUT_OF_ORDERNESS_MS = 70_000
+OUT_OF_ORDERNESS_MS = config.OUT_OF_ORDERNESS_MS
 # Rows extracted to drops_pending_watermark_emission.csv (the summary count is exact).
-EMISSION_CASES_CAP = 1_000
-DECIMAL_PREC = 50          # far tighter than double precision
-EMA_PLACES = 9             # decimals emitted for EMA values in micros
-J_SHORT, J_LONG = 38, 100  # smoothing factors (PDF 3.2, 3.3)
+EMISSION_CASES_CAP = config.EMISSION_CASES_CAP
+DECIMAL_PREC = config.DECIMAL_PREC  # far tighter than double precision
+EMA_PLACES = config.EMA_PLACES      # decimals emitted for EMA values in micros
+J_SHORT, J_LONG = config.EMA_J_SHORT, config.EMA_J_LONG  # smoothing factors (PDF 3.2, 3.3)
 
 # First-window EMA initialization:
 #   prev-zero    default; the PDF's "the EMA of the previous window is zero".
@@ -98,9 +102,9 @@ REQUIRED_COLUMNS = ("ID", "SecType", "Last", "Trading time", "Trading date")
 DATE_RE = re.compile(r"\A(\d{2})-(\d{2})-(\d{4})\Z")
 TIME_RE = re.compile(r"\A(\d{1,2}):(\d{2}):(\d{2})[.,](\d{3})\Z")
 
-# closes[(symbol, window_index)] = [close_tt_ms, close_row, close_micros,
-#                                   arrival_micros, arrival_row, event_count]
-TT_MS, CLOSE_ROW, CLOSE_MICROS, ARRIVAL_MICROS, ARRIVAL_ROW, COUNT = range(6)
+# closes[(symbol, window_index)] = CloseState (close by trade time, tie: later
+# row), mirrored by arrivals[(symbol, window_index)] = [arrival_micros,
+# arrival_row] for last-arrival diagnostics (not part of the replay).
 # symbols[symbol] = [security_type, last_seen_tt_ms, late_event_count]
 SECTYPE, LAST_TT_MS, LATE = range(3)
 
@@ -158,27 +162,21 @@ def parse_trade_dt(date_text, time_text):
     return day.toordinal(), sod, ms
 
 
-def is_late(tt_ms, max_tt_ms, out_of_orderness_ms):
-    """Whether Flink drops an event: the watermark (max trade time seen -
-    out_of_orderness - 1 ms) has reached its window's last timestamp."""
-    window_last_ms = (tt_ms // WINDOW_MS + 1) * WINDOW_MS - 1
-    return window_last_ms <= max_tt_ms - out_of_orderness_ms - 1
-
-
 def scan_events(csv_path, limit_rows=None, out_of_orderness_ms=OUT_OF_ORDERNESS_MS):
     """Single pass over the CSV, mirroring the producer's row handling.
 
     Price events later than the watermark are dropped like the Flink job does
-    (None keeps them all) and only counted.  Returns (closes, symbols, stats,
-    emission_cases) with per (symbol, window) close state (close by trade
-    time, tie: later row; plus last-arrival state for diagnostics), per symbol
-    [sectype, last_tt_ms, late_count], counters, and the (source_row, symbol,
+    (None keeps them all) and only counted.  Returns (closes, arrivals,
+    symbols, stats, emission_cases) with per (symbol, window) close state
+    (close by trade time, tie: later row; via update_close), per-window
+    last-arrival [micros, row] for diagnostics, per symbol [sectype,
+    last_tt_ms, late_count], counters, and the (source_row, symbol,
     trade_time_ms) of dropped events whose window the immediately preceding
     event just closed -- Flink's periodic watermark emission (200 ms
     auto-watermark interval) may not have fired yet, so it may keep them.
     """
     stats = Counter()
-    closes, symbols = {}, {}
+    closes, arrivals, symbols = {}, {}, {}
     columns = None
     max_tt_ms = float("-inf")  # the watermark follows the max trade time over all symbols
     prev_row_max = float("-inf")  # the same max as of the previous event row (one-event lag)
@@ -266,16 +264,11 @@ def scan_events(csv_path, limit_rows=None, out_of_orderness_ms=OUT_OF_ORDERNESS_
                     sym_state[LATE] += 1
                     stats["late_events"] += 1
                 sym_state[LAST_TT_MS] = tt_ms
-            w = closes.get((symbol, tt_ms // WINDOW_MS))
-            if w is None:
-                closes[(symbol, tt_ms // WINDOW_MS)] = [tt_ms, line, micros, micros, line, 1]
-            else:
-                w[COUNT] += 1
-                w[ARRIVAL_MICROS], w[ARRIVAL_ROW] = micros, line
-                if tt_ms > w[TT_MS] or (tt_ms == w[TT_MS] and line > w[CLOSE_ROW]):
-                    w[TT_MS], w[CLOSE_ROW], w[CLOSE_MICROS] = tt_ms, line, micros
+            key = (symbol, tt_ms // WINDOW_MS)
+            closes[key] = update_close(closes.get(key), tt_ms, micros, line)
+            arrivals[key] = (micros, line)
     stats["scan_seconds"] = round(time.monotonic() - started, 1)
-    return closes, symbols, stats, emission_cases
+    return closes, arrivals, symbols, stats, emission_cases
 
 
 def fmt_ema(value):
@@ -303,11 +296,8 @@ def window_bounds(widx):
     return ms_to_wall_clock(start)[:16], ms_to_wall_clock(start + WINDOW_MS)[:16]
 
 
-def compute_outputs(closes, symbols, out_dir, ema_init="prev-zero"):
-    """Replay the windows in order and write ema_windows.csv / advisories.csv."""
-    per_symbol = defaultdict(dict)
-    for (symbol, widx), state in closes.items():
-        per_symbol[symbol][widx] = state
+def compute_outputs(closes, arrivals, symbols, out_dir, ema_init=config.EMA_INIT):
+    """Replay the windows via the shared module and write ema_windows.csv / advisories.csv."""
     out_dir.mkdir(parents=True, exist_ok=True)
     ema_path, adv_path = out_dir / "ema_windows.csv", out_dir / "advisories.csv"
     stats = Counter()
@@ -320,6 +310,7 @@ def compute_outputs(closes, symbols, out_dir, ema_init="prev-zero"):
                   "advice", "is_first_window", "close_price", "close_micros",
                   "close_source_row", f"ema{J_SHORT}_micros", f"ema{J_LONG}_micros",
                   f"prev_ema{J_SHORT}_micros", f"prev_ema{J_LONG}_micros"]
+    results = ema_replay.replay(closes, ema_init=ema_init)
     with localcontext() as ctx:
         ctx.prec = DECIMAL_PREC
         with open(ema_path, "w", newline="", encoding="utf-8") as fema, \
@@ -327,43 +318,26 @@ def compute_outputs(closes, symbols, out_dir, ema_init="prev-zero"):
             w_ema, w_adv = csv.writer(fema, lineterminator="\n"), csv.writer(fadv, lineterminator="\n")
             w_ema.writerow(ema_header)
             w_adv.writerow(adv_header)
-            for symbol in sorted(per_symbol):
-                sect = symbols[symbol][SECTYPE]
-                prev_short = prev_long = Decimal(0)
-                first = True
-                for widx in sorted(per_symbol[symbol]):
-                    state = per_symbol[symbol][widx]
-                    close = Decimal(state[CLOSE_MICROS])
-                    if first and ema_init == "first-close":
-                        prev_short = prev_long = close  # seed: first EMA = Close
-                    if first and ema_init == "zero-window":
-                        ema_short = ema_long = Decimal(0)  # literal EMA[s, w_0] = 0
-                    else:
-                        # Close*a + prev*(1-a) as one division: exact at the
-                        # first-close seed (a pre-rounded a adds noise that can
-                        # flip the EMA38==EMA100 comparison).
-                        ema_short = (close * 2 + prev_short * (J_SHORT - 1)) / (J_SHORT + 1)
-                        ema_long = (close * 2 + prev_long * (J_LONG - 1)) / (J_LONG + 1)
-                    advisory = ""
-                    if ema_short > ema_long and prev_short <= prev_long:
-                        advisory = "BUY"
-                    elif ema_short < ema_long and prev_short >= prev_long:
-                        advisory = "SELL"
-                    arrival_differs = int(state[ARRIVAL_MICROS] != state[CLOSE_MICROS])
-                    stats["ema_rows"] += 1
-                    stats["arrival_close_differs"] += arrival_differs
-                    row = [symbol, sect, *window_bounds(widx), widx, state[COUNT],
-                           micros_to_price(state[CLOSE_MICROS]), state[CLOSE_MICROS],
-                           state[CLOSE_ROW], fmt_ema(ema_short), fmt_ema(ema_long),
-                           fmt_ema(prev_short), fmt_ema(prev_long), advisory, arrival_differs]
-                    w_ema.writerow(row)
-                    if advisory:
-                        stats["advisories_" + advisory.lower()] += 1
-                        if first:
-                            stats["advisories_" + advisory.lower() + "_first_window"] += 1
-                        w_adv.writerow(row[:5] + [advisory, int(first)] + row[6:13])
-                    prev_short, prev_long = ema_short, ema_long
-                    first = False
+            symbol, sect, first = None, None, False
+            for res in results:
+                if res.symbol != symbol:
+                    symbol, sect = res.symbol, symbols[res.symbol][SECTYPE]
+                    first = True
+                arrival_differs = int(arrivals[(res.symbol, res.window_index)][0] != res.close_micros)
+                stats["ema_rows"] += 1
+                stats["arrival_close_differs"] += arrival_differs
+                row = [res.symbol, sect, *window_bounds(res.window_index), res.window_index,
+                       res.event_count, micros_to_price(res.close_micros), res.close_micros,
+                       res.close_order, fmt_ema(res.ema38_micros), fmt_ema(res.ema100_micros),
+                       fmt_ema(res.prev_ema38_micros), fmt_ema(res.prev_ema100_micros),
+                       res.advisory, arrival_differs]
+                w_ema.writerow(row)
+                if res.advisory:
+                    stats["advisories_" + res.advisory.lower()] += 1
+                    if first:
+                        stats["advisories_" + res.advisory.lower() + "_first_window"] += 1
+                    w_adv.writerow(row[:5] + [res.advisory, int(first)] + row[6:13])
+                first = False
     return stats, ema_path, adv_path
 
 
@@ -383,17 +357,17 @@ def display_path(path):
         return str(path)
 
 
-def run(csv_path, out_dir, limit_rows=None, ema_init="prev-zero", compute_md5=True,
+def run(csv_path, out_dir, limit_rows=None, ema_init=config.EMA_INIT, compute_md5=True,
         out_of_orderness_ms=OUT_OF_ORDERNESS_MS):
     print(f"Input CSV : {csv_path}")
     print(f"Output dir: {out_dir}")
-    closes, symbols, stats, emission_cases = scan_events(csv_path, limit_rows=limit_rows,
-                                                         out_of_orderness_ms=out_of_orderness_ms)
+    closes, arrivals, symbols, stats, emission_cases = scan_events(
+        csv_path, limit_rows=limit_rows, out_of_orderness_ms=out_of_orderness_ms)
     if stats["dropped_late"]:
         print(f"Dropped {stats['dropped_late']:,} late events (watermark delay "
               f"{out_of_orderness_ms / 1000:g}s)")
     print(f"Computing EMAs and advisories (init={ema_init})...")
-    out_stats, ema_path, adv_path = compute_outputs(closes, symbols, out_dir, ema_init)
+    out_stats, ema_path, adv_path = compute_outputs(closes, arrivals, symbols, out_dir, ema_init)
     pending_path = None
     if emission_cases:
         pending_path = out_dir / "drops_pending_watermark_emission.csv"
@@ -497,7 +471,7 @@ def main(argv=None):
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output directory")
     parser.add_argument("--limit-rows", type=int, default=None,
                         help="stop after N data rows (smoke tests only)")
-    parser.add_argument("--ema-init", choices=EMA_INIT_MODES, default="prev-zero",
+    parser.add_argument("--ema-init", choices=EMA_INIT_MODES, default=config.EMA_INIT,
                         help="first-window EMA initialization mode")
     parser.add_argument("--no-md5", action="store_true", help="skip the CSV md5 checksum")
     late = parser.add_mutually_exclusive_group()
