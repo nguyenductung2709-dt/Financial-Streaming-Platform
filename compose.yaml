@@ -134,6 +134,9 @@ services:
         execution.checkpointing.dir: file:///opt/flink/state/checkpoints
         execution.checkpointing.savepoint-dir: file:///opt/flink/state/savepoints
         execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+        metrics.reporters: prom
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
     volumes:
       - flink-state:/opt/flink/state
     restart: unless-stopped
@@ -151,6 +154,9 @@ services:
         jobmanager.rpc.address: jobmanager
         rest.profiling.enabled: true
         taskmanager.numberOfTaskSlots: 2
+        metrics.reporters: prom
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
         execution.checkpointing.storage: filesystem
         execution.checkpointing.dir: file:///opt/flink/state/checkpoints
         execution.checkpointing.savepoint-dir: file:///opt/flink/state/savepoints
