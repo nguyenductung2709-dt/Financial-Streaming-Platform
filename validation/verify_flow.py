@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """End-to-end flow validation CLI: consume, shadow-replay, compare, report.
 
-run() drains the three flow topics via kafka_topics.consume_all, replays
-the price events through the shadow (keep-all/drop-model/at-risk), decodes
+run() reads the three flow topics via kafka_topics (the price events are
+streamed straight into the shadow replay, the two result topics are held
+for the comparisons), replays the price events through the shadow
+(keep-all/drop-model/at-risk), decodes
 the processor's actual protobuf output, and classifies every window
 against the shadow via compare.compare.  With --reference-dir the shadow is
 also checked against the CSV generator's offline output (reference.py),
@@ -107,26 +109,31 @@ def _print_summary(shadow, result: cmp.CompareResult,
 
 def run(brokers: str, topics: dict[str, str], report_path: Path,
         tolerance: Decimal, consume=None, reference_dir=None,
-        db_url=None, db_connect=None) -> FlowResult:
+        db_url=None, db_connect=None, stream=None) -> FlowResult:
     """Validate one finished flow and write its JSON report.
 
-    Consumes the three topics (events feed the shadow replay; ema and
-    advisories are the actual), compares actual against the shadow at the
-    given tolerance and, when reference_dir is given, the shadow against
-    the generator's output there.  When db_url is given the materializer's
+    Reads the three topics (events feed the shadow replay as a stream and
+    are never held in memory; ema and advisories are the actual, read into
+    lists), compares actual against the shadow at the given tolerance and,
+    when reference_dir is given, the shadow against the generator's output
+    there.  When db_url is given the materializer's
     PostgreSQL tables are checked against the same topic records (the
     flow must be drained into the database first); the connection is
     opened before any topic is read and closed on every path.  Writes the
     report dict to report_path (creating parent directories), prints the
     console summary, and returns every result with the overall verdict.
-    `consume` and `db_connect` are injectable for tests and default to
-    kafka_topics.consume_all and db_check.connect.
+    `consume`, `stream` and `db_connect` are injectable for tests and
+    default to kafka_topics.consume_all, kafka_topics.iter_records and
+    db_check.connect; an injected `consume` also serves as the default
+    `stream`, since a list is iterable.
     """
+    stream = stream or consume or kafka_topics.iter_records
     consume = consume or kafka_topics.consume_all
     reference = ref.load_reference(reference_dir) if reference_dir is not None else None
     conn = (db_connect or db_check.connect)(db_url) if db_url is not None else None
+    event_records = None
     try:
-        event_records = consume(brokers, topics["events"])
+        event_records = stream(brokers, topics["events"])
         ema_records = consume(brokers, topics["ema"])
         advisory_records = consume(brokers, topics["advisories"])
         shadow = sh.shadow_replay(
@@ -143,6 +150,9 @@ def run(brokers: str, topics: dict[str, str], report_path: Path,
             db_check.expected_state(ema_records, advisory_records), db_check.read_db(conn))
             if conn is not None else None)
     finally:
+        close = getattr(event_records, "close", None)
+        if close is not None:
+            close()  # releases the consumer if the stream was not fully read
         if conn is not None:
             conn.close()
     passed = (result.passed
