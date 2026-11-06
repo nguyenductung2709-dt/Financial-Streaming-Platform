@@ -1,0 +1,60 @@
+name: Monitoring CI
+
+on:
+  push:
+    paths:
+      - 'compose.yaml'
+      - 'compose.monitoring.yaml'
+      - 'monitoring/**'
+      - 'scripts/collect-resource-metrics.py'
+      - 'scripts/collect_resource_metrics_test.py'
+      - 'scripts/measure-flow.py'
+      - 'scripts/measure_flow_test.py'
+      - 'scripts/flow.py'
+      - 'validation/csv_inputs.py'
+      - '.github/workflows/monitoring-ci.yml'
+  pull_request:
+    paths:
+      - 'compose.yaml'
+      - 'compose.monitoring.yaml'
+      - 'monitoring/**'
+      - 'scripts/collect-resource-metrics.py'
+      - 'scripts/collect_resource_metrics_test.py'
+      - 'scripts/measure-flow.py'
+      - 'scripts/measure_flow_test.py'
+      - 'scripts/flow.py'
+      - 'validation/csv_inputs.py'
+      - '.github/workflows/monitoring-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-config:
+    name: Validate monitoring configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the Compose configuration with the monitoring overlay
+        run: docker compose -f compose.yaml -f compose.monitoring.yaml config --quiet
+      - name: Validate the Prometheus configuration
+        run: >
+          docker run --rm --entrypoint promtool
+          -v "$PWD/monitoring:/monitoring:ro"
+          prom/prometheus:v3.5.0 check config /monitoring/prometheus.yml
+      - name: Validate the Grafana dashboards
+        run: for dashboard in monitoring/grafana/dashboards/*.json; do python3 -m json.tool "$dashboard" > /dev/null; done
+
+  test:
+    name: Exporter and measurement tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the tests
+        run: |
+          python3 monitoring/docker-stats-exporter/exporter_test.py
+          python3 scripts/collect_resource_metrics_test.py
+          python3 scripts/measure_flow_test.py
