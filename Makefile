@@ -19,6 +19,9 @@ BACKEND_VENV ?= .venv
 BACKEND_PYTHON := $(abspath $(BACKEND_VENV))/bin/python
 BACKEND_HOST ?= 127.0.0.1
 BACKEND_PORT ?= 8000
+COMPOSE_MONITORING = docker compose -f compose.yaml -f compose.monitoring.yaml
+MONITORING_SERVICES = docker-stats-exporter process-exporter prometheus grafana
+OUT ?= bin/metrics/$(shell date +%Y%m%d-%H%M%S)
 
 # Load the same settings for the standalone materializer and the complete flow.
 define materializer-env
@@ -40,7 +43,8 @@ endef
 	build-materializer test-materializer test-materializer-integration run-materializer \
 	build-streaming-processor test-streaming-processor \
 	formatall format-data-producer format-materializer format-streaming-processor lint-streaming-processor \
-	generate-protobuf generate-python-protobuf setup-hooks run-postgres postgres-shell
+	generate-protobuf generate-python-protobuf setup-hooks run-postgres postgres-shell \
+	monitoring-up monitoring-down collect-metrics
 
 .PHONY: setup-backend migrate-backend run-backend stop-flow
 
@@ -78,6 +82,16 @@ run-postgres: ## Start PostgreSQL and wait until it accepts connections
 
 postgres-shell: ## Open psql in the running PostgreSQL container; exit with \q
 	docker compose exec postgres sh -c 'exec psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
+
+monitoring-up: ## Start Prometheus (:9090), Grafana (:3000) and the container/host resource exporters
+	$(COMPOSE_MONITORING) up -d --wait --wait-timeout 120 $(MONITORING_SERVICES)
+
+monitoring-down: ## Stop the monitoring containers; recorded metrics are kept in the prometheus-data volume
+	$(COMPOSE_MONITORING) stop $(MONITORING_SERVICES)
+
+collect-metrics: ## Export CPU, memory, network and block I/O for a window to CSV; START=<epoch|ISO> [END=...] [OUT=dir] [LABELS="rate=1000"]
+	$(if $(strip $(START)),,$(error START is required, e.g. make collect-metrics START=2026-11-05T10:00:00))
+	python3 scripts/collect-resource-metrics.py --start $(call shell-quote,$(START)) $(if $(strip $(END)),--end $(call shell-quote,$(END))) --out $(call shell-quote,$(OUT)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label)))
 
 build-data-producer: ## Compile the Go producer to bin/data-producer
 	mkdir -p bin
@@ -150,7 +164,7 @@ validate-flow: ## Full validation run; CSV=file, directory, or "file1 file2" req
 	$(MAKE) compare-flow REFERENCE_DIR=$(if $(strip $(MAX_EVENTS)),,$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 
 test-validation: ## Run all Python validation and flow tests
-	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py; do \
+	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py scripts/collect_resource_metrics_test.py monitoring/docker-stats-exporter/exporter_test.py; do \
 		echo "== $$t"; \
 		python3 $$t || exit 1; \
 	done
