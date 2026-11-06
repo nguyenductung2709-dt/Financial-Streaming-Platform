@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Quiescent single-partition topic consumption for the full-flow validation.
 
-consume_all(brokers, topic) reads every record currently in a topic and
-returns (offset, value) pairs in offset order.  The topics under test are
-single-partition and quiescent once the flow has finished, so the read is
-a simple drain: capture the high watermark up front, consume from the
-beginning until reaching it, then re-check — a watermark that grew
-mid-read means records appeared while reading and the result would be
-silently partial, so that (and more than one partition, or a poll
-error) raises RuntimeError.  Retention truncation is the same sin in
-two shapes — a purged segment mid-read (polled offsets skip forward)
-and a topic head already truncated (low watermark past 0) — and both
-raise RuntimeError rather than silently under-validate.
+iter_records(brokers, topic) yields every record currently in a topic as
+(offset, value) pairs in offset order; consume_all collects them into a
+list.  The topics under test are single-partition and quiescent once the
+flow has finished, so the read is a simple drain: capture the high
+watermark up front, consume from the beginning until reaching it, then
+re-check — a watermark that grew mid-read means records appeared while
+reading and the result would be silently partial, so that (and more than
+one partition, or a poll error) raises RuntimeError.  Retention
+truncation is the same sin in two shapes — a purged segment mid-read
+(polled offsets skip forward) and a topic head already truncated (low
+watermark past 0) — and both raise RuntimeError rather than silently
+under-validate.
 
 The default consumer factory is the only place confluent_kafka appears;
 everything else, including these tests, drives the five plain methods
@@ -20,6 +21,7 @@ fake.
 """
 
 import time
+from typing import Iterator
 
 import config
 
@@ -30,7 +32,7 @@ CONSUMER_GROUP_ID = config.CONSUMER_GROUP_ID
 
 
 class _RealConsumer:
-    """confluent_kafka.Consumer narrowed to the surface consume_all uses.
+    """confluent_kafka.Consumer narrowed to the surface iter_records uses.
 
     Assignment is manual (assign() bypasses consumer-group management;
     the placeholder group.id exists only because librdkafka requires
@@ -109,9 +111,16 @@ def _watermarks(consumer, topic, partition):
     return watermarks
 
 
-def consume_all(brokers: str, topic: str,
-                consumer_factory=None) -> list[tuple[int, bytes]]:
-    """Read every record currently in `topic` as (offset, value) pairs.
+def iter_records(brokers: str, topic: str,
+                 consumer_factory=None) -> Iterator[tuple[int, bytes]]:
+    """Yield every record currently in `topic` as (offset, value) pairs.
+
+    Same contract as consume_all, but one record at a time so a caller
+    that folds them into a smaller summary never holds the whole topic.
+    The checks that can only be made at the end (a high watermark that
+    grew during the read) run when the iterator is exhausted, so the
+    caller must consume it fully; the consumer is closed when it ends,
+    fails, or is closed early.
 
     Requires exactly one partition and a quiescent topic: raises
     RuntimeError when the topic has more than one partition, when its
@@ -137,7 +146,6 @@ def consume_all(brokers: str, topic: str,
                 f" low watermark is {low}, not 0 (records [0, {low}) are"
                 " gone; reading now would be silently partial)")
         consumer.assign(topic, partition)
-        records = []
         next_offset = low
         while next_offset < high:
             record = consumer.poll(POLL_TIMEOUT_S)
@@ -150,12 +158,20 @@ def consume_all(brokers: str, topic: str,
                     f" expected {next_offset} (retention likely purged a"
                     " segment mid-read; the skipped records would make"
                     " the read silently partial)")
-            records.append((offset, value))
             next_offset = offset + 1
+            yield (offset, value)
         if _watermarks(consumer, topic, partition)[1] > high:
             raise RuntimeError(
                 f"topic {topic!r} is not quiescent: high watermark grew past"
                 f" {high} during the read")
-        return records
     finally:
         consumer.close()
+
+
+def consume_all(brokers: str, topic: str,
+                consumer_factory=None) -> list[tuple[int, bytes]]:
+    """Read every record currently in `topic` as (offset, value) pairs.
+
+    iter_records collected into a list, for topics small enough to hold.
+    """
+    return list(iter_records(brokers, topic, consumer_factory))
