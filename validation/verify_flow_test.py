@@ -14,12 +14,14 @@ printed; the console caps unexplained examples at 10; main() returns
 directory.
 """
 
+import contextlib
 import csv
 import io
 import json
 import subprocess
 import sys
 import tempfile
+import tracemalloc
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
@@ -106,6 +108,14 @@ def corrupt_closes(ema_records, indices, delta=1):
         window.closing_price_micros += delta
         records[index] = (records[index][0], window.SerializeToString())
     return records
+
+
+@contextlib.contextmanager
+def patched_topics(consume):
+    """Route both topic readers run() defaults to through one fake."""
+    with mock.patch("kafka_topics.consume_all", consume), \
+            mock.patch("kafka_topics.iter_records", consume):
+        yield
 
 
 def fake_consume(event_records, ema_records, advisory_records):
@@ -385,6 +395,140 @@ class RunWithDatabaseTest(unittest.TestCase):
         self.assertTrue(conn.closed)
 
 
+class StreamedEvents:
+    """Event-topic stand-in that is a one-shot iterator with a close(),
+    like the generator kafka_topics.iter_records returns."""
+
+    def __init__(self, records, fail_after=None):
+        self.records = iter(records)
+        self.fail_after = fail_after
+        self.yielded = 0
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.fail_after is not None and self.yielded >= self.fail_after:
+            raise RuntimeError("topic 'trade-events' read gap")
+        record = next(self.records)
+        self.yielded += 1
+        return record
+
+    def close(self):
+        self.closed = True
+
+
+class StreamedEventsTest(unittest.TestCase):
+    """The events topic is streamed into the shadow replay, never held."""
+
+    SPECS = RunHappyPathTest.SPECS
+
+    def setUp(self):
+        self.event_records, shadow_out = make_stream(self.SPECS)
+        self.ema_records, self.advisory_records = actual_topic_records(shadow_out)
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.dir)]))
+
+    def run_flow(self, stream, consume):
+        with redirect_stdout(io.StringIO()):
+            return vf.run(BROKERS, TOPICS, self.dir / "report.json", TOLERANCE,
+                          consume=consume, stream=stream)
+
+    def test_events_come_from_stream_and_results_from_consume(self):
+        consume = fake_consume([], self.ema_records, self.advisory_records)
+        stream_calls = []
+        events = StreamedEvents(self.event_records)
+
+        def stream(brokers, topic):
+            stream_calls.append((brokers, topic))
+            return events
+
+        result = self.run_flow(stream, consume)
+        self.assertTrue(result.passed)
+        self.assertEqual(stream_calls, [(BROKERS, "trade-events")])
+        self.assertEqual(consume.calls, [(BROKERS, "ema-windows"), (BROKERS, "trade-advisories")])
+        self.assertEqual(events.yielded, len(self.event_records))
+
+    def test_stream_is_closed_when_a_result_topic_read_fails(self):
+        events = StreamedEvents(self.event_records)
+
+        def consume(brokers, topic):
+            raise RuntimeError("topic read failed")
+
+        with self.assertRaisesRegex(RuntimeError, "topic read failed"):
+            self.run_flow(lambda brokers, topic: events, consume)
+        self.assertTrue(events.closed)
+        self.assertEqual(events.yielded, 0)
+
+    def test_a_mid_stream_failure_propagates_writes_no_report_and_closes(self):
+        consume = fake_consume([], self.ema_records, self.advisory_records)
+        events = StreamedEvents(self.event_records, fail_after=1)
+        with self.assertRaisesRegex(RuntimeError, "read gap"):
+            self.run_flow(lambda brokers, topic: events, consume)
+        self.assertTrue(events.closed)
+        self.assertFalse((self.dir / "report.json").exists())
+
+    def test_database_connection_is_closed_when_the_stream_fails(self):
+        conn = fake_db(self.ema_records, self.advisory_records)
+        consume = fake_consume([], self.ema_records, self.advisory_records)
+        events = StreamedEvents(self.event_records, fail_after=1)
+        with self.assertRaisesRegex(RuntimeError, "read gap"):
+            with redirect_stdout(io.StringIO()):
+                vf.run(BROKERS, TOPICS, self.dir / "report.json", TOLERANCE,
+                       consume=consume, stream=lambda brokers, topic: events,
+                       db_url="postgresql://test/db", db_connect=lambda url: conn)
+        self.assertTrue(conn.closed)
+
+    def test_a_consume_only_caller_still_works(self):
+        """Without `stream`, an injected `consume` also reads the events."""
+        consume = fake_consume(self.event_records, self.ema_records, self.advisory_records)
+        with redirect_stdout(io.StringIO()):
+            result = vf.run(BROKERS, TOPICS, self.dir / "report.json", TOLERANCE, consume=consume)
+        self.assertTrue(result.passed)
+        self.assertEqual(consume.calls[0], (BROKERS, "trade-events"))
+
+
+class MemoryTest(unittest.TestCase):
+    """Peak memory must not grow with the number of events."""
+
+    EVENTS = 10_000
+
+    def peak_bytes(self, as_stream):
+        # One symbol in one window: the shadow's state is constant, so any
+        # growth with EVENTS would come from holding the records.
+        payload = bindings.PriceEvent(
+            symbol=SYM, security_type=bindings.SECURITY_TYPE_EQUITY,
+            trade_time=ts_ms(10_000), last_price_micros=15_000_000,
+            source_row=1).SerializeToString()
+        _, shadow_out = make_stream([(SYM, 10_000, 15_000_000, 0)])
+        ema_records, advisory_records = actual_topic_records(shadow_out)
+
+        def events():
+            for offset in range(self.EVENTS):
+                yield (offset, payload)
+
+        def consume(brokers, topic):
+            return {"ema-windows": ema_records, "trade-advisories": advisory_records}[topic]
+
+        kwargs = ({"stream": lambda brokers, topic: events()} if as_stream
+                  else {"stream": lambda brokers, topic: list(events())})
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+            tracemalloc.start()
+            try:
+                vf.run(BROKERS, TOPICS, Path(tmp) / "report.json", TOLERANCE,
+                       consume=consume, **kwargs)
+                return tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+
+    def test_streaming_events_use_far_less_memory_than_holding_them(self):
+        streamed = self.peak_bytes(as_stream=True)
+        held = self.peak_bytes(as_stream=False)
+        self.assertGreater(held, 500_000, "the list baseline should be large")
+        self.assertLess(streamed, held / 10)
+
+
 class MainTest(unittest.TestCase):
     ARGS = ["--brokers", BROKERS, "--events-topic", "trade-events",
             "--ema-topic", "ema-windows", "--advisory-topic",
@@ -399,7 +543,7 @@ class MainTest(unittest.TestCase):
             for name, tamper in (("good", None),
                                  ("bad", lambda windows: windows.pop())):
                 conn = fake_db(ema_records, advisory_records, tamper)
-                with mock.patch("kafka_topics.consume_all", consume), \
+                with patched_topics(consume), \
                         mock.patch("db_check.connect", lambda url, conn=conn: conn):
                     with redirect_stdout(io.StringIO()):
                         codes[name] = vf.main(self.ARGS + [
@@ -416,7 +560,7 @@ class MainTest(unittest.TestCase):
             codes = {}
             for name, table_source in (("good", shadow_out), ("bad", other)):
                 write_reference(Path(tmp) / name, table_source)
-                with mock.patch("kafka_topics.consume_all", consume):
+                with patched_topics(consume):
                     with redirect_stdout(io.StringIO()):
                         codes[name] = vf.main(self.ARGS + [
                             "--report", str(Path(tmp) / f"{name}.json"),
@@ -429,7 +573,7 @@ class MainTest(unittest.TestCase):
         consume = fake_consume(event_records, ema_records, advisory_records)
         with tempfile.TemporaryDirectory() as tmp:
             report_path = Path(tmp) / "nested" / "dir" / "report.json"
-            with mock.patch("kafka_topics.consume_all", consume):
+            with patched_topics(consume):
                 with redirect_stdout(io.StringIO()):
                     code = vf.main(self.ARGS + ["--report", str(report_path)])
             self.assertEqual(code, 0)
@@ -447,7 +591,7 @@ class MainTest(unittest.TestCase):
                                advisory_records)
         with tempfile.TemporaryDirectory() as tmp:
             report_path = Path(tmp) / "report.json"
-            with mock.patch("kafka_topics.consume_all", consume):
+            with patched_topics(consume):
                 with redirect_stdout(io.StringIO()):
                     code = vf.main(self.ARGS + ["--report", str(report_path)])
             self.assertEqual(code, 1)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Tests for kafka_topics.py.
 
-consume_all is the validation transport: it drains a single-partition,
-quiescent topic into (offset, value) pairs.  Every test drives a
+iter_records is the validation transport: it streams a single-partition,
+quiescent topic as (offset, value) pairs, and consume_all collects them.  Every test drives a
 FakeConsumer injected via consumer_factory, so confluent_kafka never
 loads and no broker is needed — the real consumer surface (config keys,
 TopicPartition, KafkaError) lives only in the default factory.
@@ -251,6 +251,59 @@ class RealConsumerAdapterTest(unittest.TestCase):
             with self.assertRaises(stub.KafkaException):
                 consumer.get_watermark_offsets("trade-events", 0)
             self.assertEqual(len(seen), 1)
+
+
+class IterRecordsTest(unittest.TestCase):
+    def test_records_are_read_lazily_and_the_consumer_closes_at_the_end(self):
+        fake = FakeConsumer([(0, b"m0"), (1, b"m1"), (2, b"m2")])
+        records = kafka_topics.iter_records(
+            "localhost:19092", "trade-events", consumer_factory=lambda _: fake)
+        self.assertEqual(next(records), (0, b"m0"))
+        self.assertEqual(len(fake.messages), 2)  # nothing read ahead
+        self.assertFalse(fake.closed)
+        self.assertEqual(list(records), [(1, b"m1"), (2, b"m2")])
+        self.assertTrue(fake.closed)
+
+    def test_closing_early_releases_the_consumer(self):
+        fake = FakeConsumer([(0, b"m0"), (1, b"m1")])
+        records = kafka_topics.iter_records(
+            "localhost:19092", "trade-events", consumer_factory=lambda _: fake)
+        next(records)
+        records.close()
+        self.assertTrue(fake.closed)
+
+    def test_nothing_is_opened_until_the_first_record_is_requested(self):
+        built = []
+        kafka_topics.iter_records(
+            "localhost:19092", "trade-events", consumer_factory=built.append)
+        self.assertEqual(built, [])
+
+    def test_a_gap_raises_after_the_records_before_it_were_yielded(self):
+        fake = FakeConsumer([(0, b"m0"), (2, b"m2")])  # offset 1 is gone
+        records = kafka_topics.iter_records(
+            "localhost:19092", "trade-events", consumer_factory=lambda _: fake)
+        self.assertEqual(next(records), (0, b"m0"))
+        with self.assertRaisesRegex(RuntimeError, "gap"):
+            next(records)
+        self.assertTrue(fake.closed)
+
+    def test_growth_is_reported_only_once_the_stream_is_exhausted(self):
+        fake = GrowingConsumer([(0, b"m0"), (1, b"m1")])
+        records = kafka_topics.iter_records(
+            "localhost:19092", "trade-events", consumer_factory=lambda _: fake)
+        self.assertEqual(next(records), (0, b"m0"))
+        self.assertEqual(next(records), (1, b"m1"))
+        with self.assertRaisesRegex(RuntimeError, "not quiescent"):
+            next(records)
+        self.assertTrue(fake.closed)
+
+    def test_consume_all_is_the_collected_stream(self):
+        messages = [(offset, bytes([offset])) for offset in range(4)]
+        collected = kafka_topics.consume_all(
+            "localhost:19092", "trade-events", consumer_factory=lambda _: FakeConsumer(messages))
+        streamed = list(kafka_topics.iter_records(
+            "localhost:19092", "trade-events", consumer_factory=lambda _: FakeConsumer(messages)))
+        self.assertEqual(collected, streamed)
 
 
 if __name__ == "__main__":
