@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for containers.py: the producer container command and the CSV inputs behind it."""
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -174,6 +175,135 @@ class StopContainerTest(unittest.TestCase):
 
         containers.stop_container("p1", run=run)
         self.assertEqual(calls, [["docker", "stop", "-t", "10", "p1"]])
+
+
+def ps_json(state, exit_code=0):
+    """One line of `docker compose ps -a --format json materializer`, as Compose 5.6 prints it."""
+    return json.dumps({"Service": "materializer", "State": state, "ExitCode": exit_code,
+                       "Name": "financial-streaming-platform-materializer-1"}) + "\n"
+
+
+class FakeDocker:
+    """`run` stand-in: records commands, answers `ps` from `ps` (a string, or a list consumed in order)."""
+
+    def __init__(self, ps="", ignore_sigterm=False):
+        self.calls = []
+        self.ps = ps
+        self.ignore_sigterm = ignore_sigterm
+
+    def __call__(self, command, **kwargs):
+        self.calls.append(command)
+        stdout = ""
+        if "ps" in command:
+            stdout = self.ps.pop(0) if isinstance(self.ps, list) and len(self.ps) > 1 else \
+                (self.ps[0] if isinstance(self.ps, list) else self.ps)
+        elif "SIGKILL" in command:
+            self.ps = ps_json("exited", 137)
+        elif "SIGTERM" in command and not self.ignore_sigterm:
+            self.ps = ps_json("exited", 0)
+        return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+    def commands(self, verb):
+        return [c for c in self.calls if verb in c]
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class MaterializerCommandTest(unittest.TestCase):
+    def test_passes_arguments_to_the_service(self):
+        self.assertEqual(containers.materializer_command("-init-db"),
+                         ["docker", "compose", "run", "--rm", "-T", "materializer", "-init-db"])
+
+
+class MaterializerContainerTest(unittest.TestCase):
+    def handle(self, **fake):
+        self.docker = FakeDocker(**fake)
+        self.clock = FakeClock()
+        return containers.MaterializerContainer(run=self.docker, clock=self.clock, sleep=self.clock.sleep)
+
+    def test_poll_is_none_while_running(self):
+        handle = self.handle(ps=ps_json("running"))
+        self.assertIsNone(handle.poll())
+        self.assertIsNone(handle.returncode)
+
+    def test_poll_returns_the_exit_code_once_exited(self):
+        handle = self.handle(ps=ps_json("exited", 7))
+        self.assertEqual(handle.poll(), 7)
+        self.assertEqual(handle.returncode, 7)
+
+    def test_poll_parses_object_lines_and_array_output(self):
+        for output in (ps_json("exited", 3), "[" + ps_json("exited", 3).strip() + "]\n",
+                       ps_json("exited", 3) + ps_json("exited", 3)):
+            self.assertEqual(self.handle(ps=output).poll(), 3, output)
+
+    def test_no_container_polls_as_none(self):
+        self.assertIsNone(self.handle(ps="").poll())
+
+    def test_running_state_is_queried_at_most_once_per_second(self):
+        handle = self.handle(ps=ps_json("running"))
+        for now in (0.0, 0.2, 0.4):
+            self.clock.now = now
+            handle.poll()
+        self.assertEqual(len(self.docker.commands("ps")), 1)
+        self.clock.now = 1.1
+        handle.poll()
+        self.assertEqual(len(self.docker.commands("ps")), 2)
+
+    def test_start_discards_a_stale_exit_status(self):
+        handle = self.handle(ps=ps_json("exited", 7))
+        self.assertEqual(handle.poll(), 7)
+        self.docker.ps = ps_json("running")
+        handle.start()
+        self.assertEqual(self.docker.commands("up"), [["docker", "compose", "up", "-d", "materializer"]])
+        self.assertIsNone(handle.returncode)
+        self.assertIsNone(handle.poll())
+
+    def test_terminate_and_kill_send_the_signals_without_waiting(self):
+        handle = self.handle(ps=ps_json("running"), ignore_sigterm=True)
+        handle.terminate()
+        handle.kill()
+        self.assertEqual(self.docker.commands("kill"), [
+            ["docker", "compose", "kill", "-s", "SIGTERM", "materializer"],
+            ["docker", "compose", "kill", "-s", "SIGKILL", "materializer"]])
+        self.assertEqual(self.clock.now, 0.0)
+
+    def test_wait_times_out_with_timeout_expired(self):
+        handle = self.handle(ps=ps_json("running"))
+        with self.assertRaises(subprocess.TimeoutExpired):
+            handle.wait(timeout=2)
+        self.assertGreaterEqual(self.clock.now, 2)
+
+    def test_wait_returns_the_exit_code(self):
+        handle = self.handle(ps=[ps_json("running"), ps_json("running"), ps_json("exited", 0)])
+        self.assertEqual(handle.wait(timeout=5), 0)
+
+    def test_stop_escalates_to_sigkill_when_sigterm_is_ignored(self):
+        handle = self.handle(ps=ps_json("running"), ignore_sigterm=True)
+        handle.stop(timeout=3)
+        signals = [c[c.index("-s") + 1] for c in self.docker.commands("kill")]
+        self.assertEqual(signals, ["SIGTERM", "SIGKILL"])
+        self.assertEqual(handle.returncode, 137)
+
+    def test_stop_is_a_no_op_after_exit(self):
+        handle = self.handle(ps=ps_json("exited", 0))
+        handle.stop()
+        self.assertEqual(self.docker.commands("kill"), [])
+        self.assertEqual(handle.returncode, 0)
+
+    def test_stop_is_a_no_op_without_a_container(self):
+        handle = self.handle(ps="")
+        handle.stop()
+        self.assertEqual(self.docker.commands("kill"), [])
+        self.assertEqual(self.clock.now, 0.0)
 
 
 if __name__ == "__main__":
