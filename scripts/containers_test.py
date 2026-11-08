@@ -299,6 +299,15 @@ class MaterializerContainerTest(unittest.TestCase):
         self.assertEqual(self.docker.commands("kill"), [])
         self.assertEqual(handle.returncode, 0)
 
+    def test_a_container_that_vanishes_after_start_counts_as_exited(self):
+        handle = self.handle(ps=ps_json("running"))
+        handle.start()
+        self.assertIsNone(handle.poll())
+        self.docker.ps = ""
+        self.clock.now = 5.0
+        self.assertEqual(handle.poll(), containers.VANISHED)
+        self.assertEqual(handle.wait(timeout=1), containers.VANISHED)
+
     def test_stop_is_a_no_op_without_a_container(self):
         handle = self.handle(ps="")
         handle.stop()

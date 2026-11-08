@@ -15,6 +15,7 @@ import urllib.error
 import urllib.request
 
 from flow import flow_lock
+import containers
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "validation"))
@@ -41,7 +42,7 @@ def start_services():
         "postgres", "redpanda-0", "console", "jobmanager", "taskmanager",
     ], cwd=ROOT, check=True)
     subprocess.run(["docker", "compose", "run", "--rm", "create-topic"], cwd=ROOT, check=True)
-    subprocess.run([str(ROOT / "bin/materializer"), "-init-db"], cwd=ROOT, check=True)
+    subprocess.run(containers.materializer_command("-init-db"), cwd=ROOT, check=True)
 
 
 def stop_jobs():
@@ -163,16 +164,17 @@ def recreate_topics(run=None, timeout_s=None, poll_s=None, sleep=None, clock=Non
 
 
 def reset():
-    print("Stop any separately started producer or materializer before resetting.", flush=True)
+    print("Stop any producer or materializer started outside Compose before resetting.", flush=True)
     group_id = os.environ.get("MATERIALIZER_GROUP_ID", "")
     if not group_id or group_id != group_id.strip():
         raise RuntimeError("Set a nonempty, trimmed MATERIALIZER_GROUP_ID in .env")
     start_services()
     stop_jobs()
+    subprocess.run(["docker", "compose", "stop", "materializer"], cwd=ROOT, check=True)
     remove_materializer_group(group_id)
     recreate_topics()
 
-    subprocess.run([str(ROOT / "bin/materializer"), "-reset-db"], cwd=ROOT, check=True)
+    subprocess.run(containers.materializer_command("-reset-db"), cwd=ROOT, check=True)
     (ROOT / "bin/streaming-processor.job-id").unlink(missing_ok=True)
     print(f"Reset complete: flow stopped; {', '.join(TOPICS)} recreated empty and PostgreSQL read models cleared.")
     print("Infrastructure and checkpoint files are preserved.")

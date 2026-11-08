@@ -19,6 +19,8 @@ HELP_FLAGS = ("-h", "-help", "--help")
 CSV_FLAGS = ("-csvPath", "--csvPath")
 INPUT_DIR = "/input"
 UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+# Exit status reported for a materializer container that was started and then disappeared.
+VANISHED = -1
 
 
 def split_csv_args(producer_args):
@@ -128,9 +130,10 @@ def parse_ps(output):
 class MaterializerContainer:
     """The materializer service's container with the Popen methods the flow scripts use.
 
-    poll() is None while the container runs (or does not exist) and the exit
-    code once it has exited. While it runs, poll() asks Docker at most once a
-    second, so a script can poll in a tight loop.
+    poll() is None while the container runs (or before it was started) and the
+    exit code once it has exited; a started container that disappears reports
+    VANISHED, so wait() cannot hang on it. While it runs, poll() asks Docker at
+    most once a second, so a script can poll in a tight loop.
     """
 
     POLL_INTERVAL_S = 1.0
@@ -144,6 +147,7 @@ class MaterializerContainer:
         self._cwd = cwd
         self.returncode = None
         self._checked_at = None
+        self._started = False
 
     def _docker(self, *args, capture=True, check=False):
         return self._run([*self._compose, *args], cwd=self._cwd, text=True, capture_output=capture, check=check)
@@ -163,6 +167,8 @@ class MaterializerContainer:
         container = self._container()
         if container is not None and container.get("State") in ("exited", "dead"):
             self.returncode = int(container.get("ExitCode", 0))
+        elif container is None and self._started:
+            self.returncode = VANISHED
         return self.returncode
 
     def start(self):
@@ -170,6 +176,7 @@ class MaterializerContainer:
         self._docker("up", "-d", "materializer", capture=False, check=True)
         self.returncode = None
         self._checked_at = None
+        self._started = True
 
     def poll(self):
         return self._poll(force=False)

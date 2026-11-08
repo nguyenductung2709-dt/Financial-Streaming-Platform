@@ -4,11 +4,11 @@
 The materializer never exits by itself and commits a topic's offset only
 after the database transaction for those records, so its group's committed
 offset reaching a topic's end offset means PostgreSQL holds everything the
-topic holds.  This starts bin/materializer with the environment make's
-materializer-env provides, waits for that on both result topics (a timeout
-or an early exit is an error), then stops it with SIGTERM and requires a
-clean exit.  Run it after the bounded processor finished and before the
-database is compared with the topics.
+topic holds.  This starts the materializer container (docker compose up -d
+materializer, which gets its settings from Compose), waits for that on both
+result topics (a timeout or an early exit is an error), then stops it with
+SIGTERM and requires a clean exit.  Run it after the bounded processor
+finished and before the database is compared with the topics.
 """
 
 import os
@@ -19,6 +19,7 @@ import sys
 import time
 
 from flow import flow_lock
+import containers
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "validation"))
@@ -127,16 +128,12 @@ def main():
     group_id = os.environ.get("MATERIALIZER_GROUP_ID", "")
     if not group_id or group_id != group_id.strip():
         raise RuntimeError("Set a nonempty, trimmed MATERIALIZER_GROUP_ID in .env")
-    if not os.environ.get("MATERIALIZER_DATABASE_URL", "").strip():
-        raise RuntimeError("Set MATERIALIZER_DATABASE_URL in .env")
     brokers = os.environ.get("MATERIALIZER_BROKERS", config.BROKERS)
-    binary = ROOT / "bin/materializer"
-    if not binary.is_file():
-        raise RuntimeError("bin/materializer is missing; run make build-materializer")
     offsets = KafkaOffsets(brokers.split(",")[0].strip(), group_id)
     try:
         with flow_lock():
-            process = subprocess.Popen([str(binary)], cwd=ROOT, start_new_session=True)
+            process = containers.MaterializerContainer()
+            process.start()
             drain(process, offsets, TOPICS)
     finally:
         offsets.close()
