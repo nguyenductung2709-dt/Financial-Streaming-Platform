@@ -1,6 +1,0 @@
-# Group host processes by executable name; the binaries are built into bin/.
-process_names:
-  - name: "{{.Comm}}"
-    comm:
-      - data-producer
-      - materializer

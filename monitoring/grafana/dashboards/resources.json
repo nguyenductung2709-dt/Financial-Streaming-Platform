@@ -240,110 +240,6 @@
       ]
     },
     {
-      "id": 5,
-      "type": "timeseries",
-      "title": "Host processes CPU (producer, materializer)",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "calcs": [
-            "mean",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (groupname) (rate(namedprocess_namegroup_cpu_seconds_total[$__rate_interval]))",
-          "legendFormat": "{{groupname}}"
-        }
-      ]
-    },
-    {
-      "id": 6,
-      "type": "timeseries",
-      "title": "Host processes memory (resident)",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "calcs": [
-            "mean",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (groupname) (namedprocess_namegroup_memory_bytes{memtype=\"resident\"})",
-          "legendFormat": "{{groupname}}"
-        }
-      ]
-    },
-    {
       "id": 7,
       "type": "timeseries",
       "title": "Flink records per second",
@@ -354,7 +250,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 24,
+        "y": 16,
         "w": 12,
         "h": 8
       },
@@ -406,7 +302,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 24,
+        "y": 16,
         "w": 12,
         "h": 8
       },

@@ -64,14 +64,19 @@ class CollectTest(unittest.TestCase):
             "docker_container_cpu_usage_seconds_total[10s]": ("service", "taskmanager", [[100, "1.5"], [102, "2.5"], [104, "NaN"]]),
             "docker_container_cpu_usage_seconds_total[60s]": ("service", "taskmanager", 87.5),
             "docker_container_memory_working_set_bytes": ("service", "taskmanager", [[100, "1000"], [102, "3000"]]),
-            "namedprocess_namegroup_cpu_seconds_total[10s]": ("groupname", "data-producer", [[100, "0.5"]]),
         })
 
     def test_groups_series_by_component_kind_and_metric(self):
         series, _ = collector.collect(self.fetch, 100, 160, 2, "10s")
         self.assertEqual(series[("taskmanager", "docker", "cpu_cores")], [(100.0, 1.5), (102.0, 2.5)])
         self.assertEqual(series[("taskmanager", "docker", "memory_bytes")], [(100.0, 1000.0), (102.0, 3000.0)])
-        self.assertEqual(series[("data-producer", "host", "cpu_cores")], [(100.0, 0.5)])
+
+    def test_only_container_queries_are_made(self):
+        collector.collect(self.fetch, 100, 160, 2, "10s")
+        queries = [params["query"] for _, params in self.fetch.calls]
+        self.assertTrue(queries)
+        self.assertTrue(all("docker_container" in query for query in queries), queries)
+        self.assertFalse(any("namedprocess" in query for query in queries), queries)
 
     def test_drops_non_finite_samples(self):
         series, _ = collector.collect(self.fetch, 100, 160, 2, "10s")

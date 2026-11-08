@@ -15,18 +15,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
 
-  # The Go producer and materializer run on the host, outside Docker.
-  process-exporter:
-    image: ncabatoff/process-exporter:0.8.7
-    command:
-      - --procfs=/host/proc
-      - --config.path=/etc/process-exporter/process-exporter.yml
-    pid: host
-    volumes:
-      - /proc:/host/proc:ro
-      - ./monitoring/process-exporter.yml:/etc/process-exporter/process-exporter.yml:ro
-    restart: unless-stopped
-
   prometheus:
     image: prom/prometheus:v3.5.0
     command:
@@ -40,7 +28,6 @@ services:
       - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     depends_on:
       - docker-stats-exporter
-      - process-exporter
     restart: unless-stopped
 
   grafana:
