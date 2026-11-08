@@ -13,6 +13,8 @@ import time
 import urllib.error
 import urllib.request
 
+import containers
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -117,20 +119,24 @@ def main():
         if result:
             raise subprocess.CalledProcessError(result, command)
 
+    materializer = containers.MaterializerContainer()
+    producer_name = f"data-producer-run-{os.getpid()}"
+
     with flow_lock():
+        containers.resolve_inputs(producer_args)  # fail before anything starts or needs cleaning up
         try:
             run(["docker", "compose", "up", "-d", "--wait", "--wait-timeout", "120",
                  "postgres", "redpanda-0", "console", "jobmanager", "taskmanager"])
             run(["docker", "compose", "run", "--rm", "create-topic"])
-            run([str(ROOT / "bin/materializer"), "-init-db"])
+            run(containers.materializer_command("-init-db"))
             run([backend_python, str(ROOT / "services/backend/migrate.py")])
             run(["make", "run-streaming-processor"])
-            materializer = start([str(ROOT / "bin/materializer")])
+            materializer.start()
             backend = start([backend_python, str(ROOT / "services/backend/main.py")],
                             env=dict(os.environ, HOST=host, PORT=str(port)))
             wait_for_backend(backend, dashboard_url)
-            producer = start([str(ROOT / "bin/data-producer"), *producer_args])
-            print(f"Full flow running. Dashboard: {dashboard_url}. Ctrl+C stops local processes; make stop-flow also stops containers.", flush=True)
+            producer = start(containers.producer_command(producer_args, producer_name))
+            print(f"Full flow running. Dashboard: {dashboard_url}. Ctrl+C stops the producer, materializer and dashboard; make stop-flow also stops containers.", flush=True)
             producer_finished = False
             while True:
                 if materializer.poll() is not None:
@@ -162,6 +168,12 @@ def main():
                     except ProcessLookupError:
                         pass
                     child.wait()
+            # A killed `compose run` client leaves its container running, so stop it by name.
+            for cleanup in (lambda: containers.stop_container(producer_name), materializer.stop):
+                try:
+                    cleanup()
+                except (subprocess.CalledProcessError, OSError) as error:
+                    print(f"Cleanup failed: {error}", file=sys.stderr)
 
 
 if __name__ == "__main__":
