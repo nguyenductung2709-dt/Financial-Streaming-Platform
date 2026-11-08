@@ -91,6 +91,11 @@ class ConfigValuesTest(unittest.TestCase):
         self.assertEqual(config.TOPIC_DLQ, "trade-events-dlq")
         self.assertEqual(config.TOPIC_EMA_WINDOWS, "ema-windows")
         self.assertEqual(config.TOPIC_TRADE_ADVISORIES, "trade-advisories")
+        self.assertEqual(config.TOPIC_LATENCY_STAMPS, "latency-stamps")
+        self.assertEqual(config.LOG_APPEND_TIME_TOPICS,
+                         ("ema-windows", "trade-advisories"))
+        self.assertEqual(config.LOG_APPEND_TIME_CONFIG,
+                         "message.timestamp.type=LogAppendTime")
         self.assertEqual(config.FLINK_REST_URL, "http://localhost:8081")
         self.assertEqual(config.FLINK_JOB_NAME, "market-price-event-consumer")
         self.assertEqual(config.KAFKA_POLL_TIMEOUT_S, 1.0)
@@ -232,8 +237,14 @@ class FlowScriptsFollowsConfigTest(unittest.TestCase):
         self.assertEqual(script_follows_override(
             self.RESET, {"TOPIC_EVENTS": "evt", "TOPIC_DLQ": "dlq",
                          "TOPIC_EMA_WINDOWS": "ema", "TOPIC_TRADE_ADVISORIES":
-                         "adv"}, "module.TOPICS"),
-            "('evt', 'dlq', 'ema', 'adv')")
+                         "adv", "TOPIC_LATENCY_STAMPS": "lat"}, "module.TOPICS"),
+            "('evt', 'dlq', 'ema', 'adv', 'lat')")
+        self.assertEqual(script_follows_override(
+            self.RESET, {"LOG_APPEND_TIME_CONFIG": "k=v"},
+            "module.LOG_APPEND_TIME_CONFIG"), "k=v")
+        self.assertEqual(script_follows_override(
+            self.RESET, {"LOG_APPEND_TIME_TOPICS": ("ema", "adv")},
+            "module.LOG_APPEND_TIME_TOPICS"), "('ema', 'adv')")
 
     def test_drain_materializer_follows_config(self):
         for name in ("DRAIN_TIMEOUT_S", "DRAIN_POLL_S", "MATERIALIZER_STOP_TIMEOUT_S",

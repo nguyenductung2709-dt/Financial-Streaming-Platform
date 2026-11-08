@@ -24,7 +24,9 @@ import config
 REST_URL = config.FLINK_REST_URL
 JOB_NAME = config.FLINK_JOB_NAME
 TOPICS = (config.TOPIC_EVENTS, config.TOPIC_DLQ, config.TOPIC_EMA_WINDOWS,
-          config.TOPIC_TRADE_ADVISORIES)
+          config.TOPIC_TRADE_ADVISORIES, config.TOPIC_LATENCY_STAMPS)
+LOG_APPEND_TIME_TOPICS = config.LOG_APPEND_TIME_TOPICS
+LOG_APPEND_TIME_CONFIG = config.LOG_APPEND_TIME_CONFIG
 TERMINAL_STATES = {"FINISHED", "FAILED", "CANCELED", "SUSPENDED"}
 TOPIC_READY_TIMEOUT_S = config.TOPIC_READY_TIMEOUT_S
 TOPIC_READY_POLL_S = config.TOPIC_READY_POLL_S
@@ -143,7 +145,8 @@ def recreate_topics(run=None, timeout_s=None, poll_s=None, sleep=None, clock=Non
     broker = ["-X", "brokers=redpanda-0:9092"]
     for topic in TOPICS:
         run([*rpk, "delete", topic, *broker], cwd=ROOT, check=True)
-        run([*rpk, "create", topic, "--partitions", "1", "--replicas", "1", *broker],
+        settings = ["-c", LOG_APPEND_TIME_CONFIG] if topic in LOG_APPEND_TIME_TOPICS else []
+        run([*rpk, "create", topic, "--partitions", "1", "--replicas", "1", *settings, *broker],
             cwd=ROOT, check=True)
 
     deadline = clock() + timeout_s
