@@ -1,9 +1,11 @@
 package financial.streaming.ema
 
 import com.google.protobuf.Timestamp
+import financial.streaming.latency.LatencyTags
 import financial.streaming.model.{EmaResult, WindowClose}
 import java.math.BigDecimal
 import market.v1.Events.{PriceEvent, SecurityType}
+import market.v1.Latency.Stage
 import org.apache.flink.api.common.typeinfo.Types
 import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot
 import org.apache.flink.api.common.typeutils.base.TypeSerializerSingleton
@@ -17,9 +19,11 @@ import scala.jdk.CollectionConverters._
 class EmaProcessFunctionSuite extends munit.FunSuite {
   private type Harness = KeyedOneInputStreamOperatorTestHarness[String, WindowClose, EmaResult]
 
-  private def harness(): Harness = {
+  private def harness(latencyEnabled: Boolean = false): Harness = {
     val h = new Harness(
-      new KeyedProcessOperator[String, WindowClose, EmaResult](new EmaProcessFunction),
+      new KeyedProcessOperator[String, WindowClose, EmaResult](
+        new EmaProcessFunction(latencyEnabled)
+      ),
       new KeySelector[WindowClose, String] {
         override def getKey(window: WindowClose): String = window.symbol
       },
@@ -33,6 +37,14 @@ class EmaProcessFunctionSuite extends munit.FunSuite {
 
   private def withHarness(test: Harness => Unit): Unit = {
     val h = harness()
+    try {
+      h.open()
+      test(h)
+    } finally h.close()
+  }
+
+  private def withLatencyHarness(test: Harness => Unit): Unit = {
+    val h = harness(latencyEnabled = true)
     try {
       h.open()
       test(h)
@@ -160,6 +172,29 @@ class EmaProcessFunctionSuite extends munit.FunSuite {
       val next = emit(h, window("RUI.FR", 300000L, 78000000L))
       assertDecimal(next.ema38, "5.897435897435897435897435897435897")
       assertDecimal(next.ema100, "2.301539064797568865797470836192530")
+    }
+  }
+
+  test("a stamp is emitted per window with the window end and a wall-clock time") {
+    withLatencyHarness { h =>
+      val before = System.currentTimeMillis()
+      emit(h, window("RUI.FR", 0L, 39000000L))
+      val after = System.currentTimeMillis()
+      val stamps = h.getSideOutput(LatencyTags.EmaComputed).asScala.toList.map(_.getValue)
+      assertEquals(stamps.size, 1)
+      val stamp = stamps.head
+      assertEquals(stamp.symbol, "RUI.FR")
+      assertEquals(stamp.windowEndMillis, 300000L)
+      assertEquals(stamp.stage, Stage.STAGE_EMA_COMPUTED)
+      assert(!stamp.advisoryEmitted)
+      assert(stamp.atMillis >= before && stamp.atMillis <= after, s"stamp=${stamp.atMillis}")
+    }
+  }
+
+  test("no stamps are emitted when latency is off") {
+    withHarness { h =>
+      emit(h, window("RUI.FR", 0L, 39000000L))
+      assert(Option(h.getSideOutput(LatencyTags.EmaComputed)).forall(_.isEmpty))
     }
   }
 

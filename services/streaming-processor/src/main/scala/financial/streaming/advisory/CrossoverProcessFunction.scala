@@ -1,8 +1,10 @@
 package financial.streaming.advisory
 
-import financial.streaming.model.{CrossoverResult, EmaResult}
+import financial.streaming.latency.LatencyTags
+import financial.streaming.model.{CrossoverResult, EmaResult, StageStamp}
 import java.math.BigDecimal
 import market.v1.Advisory.AdvisoryAction
+import market.v1.Latency.Stage
 import org.apache.flink.api.common.functions.OpenContext
 import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 import org.apache.flink.api.common.typeinfo.Types
@@ -10,7 +12,7 @@ import org.apache.flink.streaming.api.functions.KeyedProcessFunction
 import org.apache.flink.util.Collector
 
 /** Apply after keyBy(_.window.symbol). */
-final class CrossoverProcessFunction
+final class CrossoverProcessFunction(latencyEnabled: Boolean = false)
     extends KeyedProcessFunction[String, EmaResult, CrossoverResult] {
   @transient private var previousShortEma: ValueState[BigDecimal] = _
   @transient private var previousLongEma: ValueState[BigDecimal] = _
@@ -40,14 +42,22 @@ final class CrossoverProcessFunction
     /* If prevEMA38 <= prevEMA100 && currEMA38 > currEMA100 => BUY advice
       Else if prevEMA38 >= prevEMA100 && currEMA38 < currEMA100 => SELL advice
      */
-    if (previousOrder <= 0 && currentOrder > 0) {
-      out.collect(
-        CrossoverResult(ema, AdvisoryAction.ADVISORY_ACTION_BUY, previousShort, previousLong)
+    val action =
+      if (previousOrder <= 0 && currentOrder > 0) Some(AdvisoryAction.ADVISORY_ACTION_BUY)
+      else if (previousOrder >= 0 && currentOrder < 0) Some(AdvisoryAction.ADVISORY_ACTION_SELL)
+      else None
+
+    if (latencyEnabled)
+      context.output(
+        LatencyTags.CrossoverEvaluated,
+        StageStamp(
+          ema.window.symbol,
+          ema.window.windowEndMillis,
+          Stage.STAGE_CROSSOVER_EVALUATED,
+          System.currentTimeMillis(),
+          advisoryEmitted = action.isDefined
+        )
       )
-    } else if (previousOrder >= 0 && currentOrder < 0) {
-      out.collect(
-        CrossoverResult(ema, AdvisoryAction.ADVISORY_ACTION_SELL, previousShort, previousLong)
-      )
-    }
+    action.foreach(a => out.collect(CrossoverResult(ema, a, previousShort, previousLong)))
   }
 }
