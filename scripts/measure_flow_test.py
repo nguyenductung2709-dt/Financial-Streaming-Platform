@@ -2,6 +2,8 @@
 """Tests for measure-flow.py: when a run counts as finished and how results are formatted."""
 
 import importlib.util
+import inspect
+import json
 from pathlib import Path
 import signal
 import sys
@@ -157,6 +159,42 @@ class RaiseOnSigtermTest(unittest.TestCase):
         measure.raise_on_sigterm()
         with self.assertRaises(KeyboardInterrupt):
             signal.raise_signal(signal.SIGTERM)
+
+
+class LatencyIntegrationTest(unittest.TestCase):
+    def test_the_job_is_submitted_with_the_latency_topic(self):
+        self.assertEqual(measure.JOB_ARGS,
+                         ["--starting-offsets", "earliest", "--latency-topic", "latency-stamps"])
+        self.assertIn("*JOB_ARGS", inspect.getsource(measure.measure))
+
+    def write_results(self, directory):
+        out = Path(directory)
+        (out / "summary.txt").write_text("RESOURCES\n")
+        (out / "pipeline.json").write_text(json.dumps({"total_s": 1.0}) + "\n")
+        return out
+
+    def test_add_latency_extends_summary_and_pipeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = self.write_results(directory)
+            error = measure.add_latency(out, {"total_s": 1.0}, "RESOURCES",
+                                        lambda: ([], {"measured": 3}, "LATENCY TABLE"))
+            self.assertIsNone(error)
+            summary = (out / "summary.txt").read_text()
+            self.assertTrue(summary.startswith("RESOURCES\n"))
+            self.assertLess(summary.index("RESOURCES"), summary.index("LATENCY TABLE"))
+            self.assertEqual(json.loads((out / "pipeline.json").read_text()),
+                             {"total_s": 1.0, "latency": {"measured": 3}})
+
+    def test_a_failing_collector_keeps_the_resource_results_and_returns_the_error(self):
+        def collect():
+            raise RuntimeError("no stamps")
+
+        with tempfile.TemporaryDirectory() as directory:
+            out = self.write_results(directory)
+            error = measure.add_latency(out, {"total_s": 1.0}, "RESOURCES", collect)
+            self.assertEqual(error, "no stamps")
+            self.assertEqual((out / "summary.txt").read_text(), "RESOURCES\n")
+            self.assertEqual(json.loads((out / "pipeline.json").read_text()), {"total_s": 1.0})
 
 
 if __name__ == "__main__":
