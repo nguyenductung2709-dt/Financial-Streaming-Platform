@@ -65,6 +65,20 @@ class GrowingConsumer(FakeConsumer):
         return record
 
 
+class TimestampedConsumer(FakeConsumer):
+    """FakeConsumer whose messages are (offset, value, timestamp_ms) triples,
+    counting polls so laziness is observable."""
+
+    def __init__(self, messages=(), **kwargs):
+        super().__init__([(offset, value) for offset, value, _ in messages], **kwargs)
+        self.messages = list(messages)
+        self.polls = 0
+
+    def poll(self, timeout):
+        self.polls += 1
+        return super().poll(timeout)
+
+
 class HappyPathTest(unittest.TestCase):
     def test_three_messages_drain_in_order_with_manual_assignment(self):
         fake = FakeConsumer([(0, b"m0"), (1, b"m1"), (2, b"m2")])
@@ -154,6 +168,58 @@ class OffsetOrderTest(unittest.TestCase):
         self.assertEqual(records, sorted(records))
 
 
+class StreamRecordsTest(unittest.TestCase):
+    """stream_records is consume_all's lazy twin: the same checks, but records
+    are yielded one by one together with their Kafka timestamp."""
+
+    def stream(self, fake):
+        return kafka_topics.stream_records(
+            "localhost:19092", "trade-events", consumer_factory=lambda _: fake)
+
+    def test_yields_offset_value_timestamp_in_order(self):
+        fake = TimestampedConsumer([(0, b"m0", 1000), (1, b"m1", 1001), (2, b"m2", 1002)])
+        self.assertEqual(list(self.stream(fake)),
+                         [(0, b"m0", 1000), (1, b"m1", 1001), (2, b"m2", 1002)])
+        self.assertEqual(fake.assigned, ("trade-events", 0))
+        self.assertTrue(fake.closed)
+
+    def test_is_lazy(self):
+        fake = TimestampedConsumer([(0, b"m0", 1000), (1, b"m1", 1001), (2, b"m2", 1002)])
+        stream = self.stream(fake)
+        self.assertEqual(next(stream), (0, b"m0", 1000))
+        self.assertEqual(fake.polls, 1)
+        self.assertFalse(fake.closed)
+        stream.close()
+        self.assertTrue(fake.closed)
+
+    def test_two_tuple_consumers_report_timestamp_minus_one(self):
+        fake = FakeConsumer([(0, b"m0"), (1, b"m1")])
+        self.assertEqual(list(self.stream(fake)), [(0, b"m0", -1), (1, b"m1", -1)])
+
+    def test_multi_partition_topic_raises(self):
+        fake = FakeConsumer([(0, b"m0")], partitions=(0, 1))
+        with self.assertRaises(RuntimeError):
+            list(self.stream(fake))
+        self.assertTrue(fake.closed)
+
+    def test_truncated_head_raises(self):
+        fake = FakeConsumer([(5, b"m5")], low=5)
+        with self.assertRaisesRegex(RuntimeError, "retention"):
+            list(self.stream(fake))
+        self.assertIsNone(fake.assigned)
+
+    def test_read_gap_raises(self):
+        fake = FakeConsumer([(0, b"m0"), (2, b"m2")])
+        with self.assertRaisesRegex(RuntimeError, "gap"):
+            list(self.stream(fake))
+
+    def test_growing_topic_raises_when_the_stream_is_exhausted(self):
+        fake = GrowingConsumer([(0, b"m0"), (1, b"m1")])
+        with self.assertRaisesRegex(RuntimeError, "not quiescent"):
+            list(self.stream(fake))
+        self.assertTrue(fake.closed)
+
+
 class RealConsumerAdapterTest(unittest.TestCase):
     """_RealConsumer adapts the five-method surface to confluent-kafka.
 
@@ -216,6 +282,16 @@ class RealConsumerAdapterTest(unittest.TestCase):
                 consumer.get_watermark_offsets("trade-events", 0), (0, 5))
             self.assertEqual(seen[0].topic, "trade-events")
             self.assertEqual(seen[0].partition, 0)
+
+    def test_poll_returns_the_message_timestamp(self):
+        stub, _ = self._stub([])
+        message = types.SimpleNamespace(
+            error=lambda: None, offset=lambda: 7, value=lambda: b"v",
+            timestamp=lambda: (1, 1636693500123))
+        stub.Consumer.poll = lambda self, timeout: message
+        with mock.patch.dict(sys.modules, {"confluent_kafka": stub}):
+            consumer = kafka_topics._default_consumer_factory("localhost:19092")
+            self.assertEqual(consumer.poll(1.0), (7, b"v", 1636693500123))
 
     def test_consumer_dials_ipv4_only(self):
         # Docker publishes the Redpanda port on IPv4 only, but "localhost"
