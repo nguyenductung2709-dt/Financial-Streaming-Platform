@@ -45,7 +45,7 @@ endef
 	build-streaming-processor test-streaming-processor \
 	formatall format-data-producer format-materializer format-streaming-processor lint-streaming-processor \
 	generate-protobuf generate-python-protobuf setup-hooks run-postgres postgres-shell \
-	monitoring-up monitoring-down collect-metrics measure-flow
+	monitoring-up monitoring-down collect-metrics collect-latency measure-flow
 
 .PHONY: setup-backend migrate-backend run-backend stop-flow
 
@@ -94,6 +94,9 @@ monitoring-down: ## Stop the monitoring containers; recorded metrics are kept in
 collect-metrics: ## Export CPU, memory, network and block I/O for a window to CSV; START=<epoch|ISO> [END=...] [OUT=dir] [LABELS="rate=1000"]
 	$(if $(strip $(START)),,$(error START is required, e.g. make collect-metrics START=2026-11-05T10:00:00))
 	python3 scripts/collect-resource-metrics.py --start $(call shell-quote,$(START)) $(if $(strip $(END)),--end $(call shell-quote,$(END))) --prometheus-url $(call shell-quote,$(PROMETHEUS_URL)) --out $(call shell-quote,$(OUT)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label)))
+
+collect-latency: ## Report EMA and trade advisory latency of the last run from the topics; OUT=<dir> [BROKERS=host:port]
+	python3 scripts/collect-latency.py --out $(call shell-quote,$(OUT))$(if $(strip $(BROKERS)), --brokers $(call shell-quote,$(BROKERS)))
 
 # Resets the flow first, so this permanently clears the project topics and database results.
 measure-flow: build-data-producer build-materializer build-streaming-processor ## One command: reset, run the full pipeline, time it, export resource usage; CSV=file|dir|"f1 f2" required [RATE=0] [MAX_EVENTS=n] [LABELS="k=v"] [OUT=dir]
