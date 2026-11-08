@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from psycopg.rows import dict_row
@@ -20,20 +21,21 @@ def env_file_value(name):
 
 
 #Read the database connection string from the repository's .env
-DSN = env_file_value("MATERIALIZER_DATABASE_URL")
+DSN = os.getenv("MATERIALIZER_DATABASE_URL") or env_file_value("MATERIALIZER_DATABASE_URL")
 if not DSN:
-    raise RuntimeError("MATERIALIZER_DATABASE_URL not found in repository .env")
+    raise RuntimeError("Set MATERIALIZER_DATABASE_URL in the environment or repository .env")
 
 pool = AsyncConnectionPool(DSN, min_size=1, max_size=10, timeout=5, open=False, kwargs={"autocommit": True, "row_factory": dict_row, "options": "-c timezone=UTC"})
 
 #Send the exact price as a string because JavaScript cannot safely represent very large integers
 #Also send the price and EMAs as numbers so they can be used in charts
-WINDOW_COLS = """symbol, window_start, window_end,
+WINDOW_COLS = """symbol, window_start, window_end, revision::text AS revision,
     closing_price_micros::text AS closing_price_micros,
     (closing_price_micros / 1000000)::float8 AS closing_price,
     ema38::float8 AS ema38, ema100::float8 AS ema100"""
 
 ADVISORY_COLS = """a.symbol, a.window_start, w.window_end, a.action,
+    greatest(a.revision, w.revision)::text AS revision,
     a.previous_ema38::float8 AS previous_ema38,
     a.previous_ema100::float8 AS previous_ema100,
     w.ema38::float8 AS ema38, w.ema100::float8 AS ema100,
@@ -63,6 +65,35 @@ async def fetch(sql, params=None):
     async with pool.connection() as conn:
         cur = await conn.execute(sql, params)
         return await cur.fetchall()
+
+
+class SchemaNotReady(RuntimeError):
+    """The backend's manually applied schema prerequisites are missing."""
+
+
+async def check_schema(query=None):
+    query = query or fetch
+    required = {
+        ("symbols", "symbol_notify"),
+        ("ema_windows", "ema_window_notify"),
+        ("trade_advisories", "trade_advisory_notify"),
+        ("ema_windows", "ema_window_revision"),
+        ("trade_advisories", "trade_advisory_revision"),
+    }
+    rows = await query("""SELECT c.relname AS table_name, t.tgname AS trigger_name
+        FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = current_schema() AND NOT t.tgisinternal
+          AND t.tgenabled IN ('O', 'A')""")
+    installed = {(r["table_name"], r["trigger_name"]) for r in rows}
+    columns = await query("""SELECT table_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND column_name = 'revision'
+          AND data_type = 'bigint' AND is_nullable = 'NO'
+          AND table_name IN ('ema_windows', 'trade_advisories')""")
+    if required - installed or {r["table_name"] for r in columns} != {"ema_windows", "trade_advisories"}:
+        raise SchemaNotReady(
+            "Backend schema is incomplete: apply materializer migrations 001–004 in order. "
+            "See services/backend/README.md; existing databases must apply only missing migrations.")
 
 
 #Add start and end time conditions to a query
