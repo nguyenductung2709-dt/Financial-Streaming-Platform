@@ -8,14 +8,16 @@ import financial.streaming.sink.{
   AdvisoryLoggingSink,
   AdvisoryRedpandaSink,
   EmaRedpandaSink,
-  EmaLoggingSink
+  EmaLoggingSink,
+  LatencyRedpandaSink
 }
 import financial.streaming.window.WindowCloseFunction
 import financial.streaming.serialization.WindowCloseTypeInformation
 
 import financial.streaming.ema.EmaProcessFunction
 import financial.streaming.advisory.CrossoverProcessFunction
-import financial.streaming.model.{EmaResult, WindowClose, CrossoverResult}
+import financial.streaming.model.{EmaResult, WindowClose, CrossoverResult, StageStamp}
+import financial.streaming.latency.LatencyTags
 import financial.streaming.serialization.{EmaResultTypeInformation, CrossoverResultTypeInformation}
 import market.v1.Events.PriceEvent
 import java.time.Duration
@@ -136,12 +138,27 @@ object StreamingProcessor {
       .name("trade-advisories-values")
       .uid("trade-advisories-values-v1")
 
+  // Every operator's stamp side output, merged into one stream for the latency topic.
+  private[streaming] def latencyStamps(
+      windows: SingleOutputStreamOperator[WindowClose],
+      emaResults: SingleOutputStreamOperator[EmaResult],
+      advisories: SingleOutputStreamOperator[CrossoverResult]
+  ): DataStream[StageStamp] =
+    windows
+      .getSideOutput(LatencyTags.WindowFired)
+      .union(
+        emaResults.getSideOutput(LatencyTags.EmaComputed),
+        advisories.getSideOutput(LatencyTags.CrossoverEvaluated)
+      )
+
   // Describe the operators without submitting or executing a job.
   def buildPipeline(env: StreamExecutionEnvironment, cfg: ProcessorConfig): Unit = {
     val events = env
       .fromSource(source(cfg), priceEventWatermarks, "trade-events-source")
       .uid("trade-events-source-v1")
-    val emaResults = emaValues(closingPrices(events))
+    val latency = cfg.latencyTopic.isDefined
+    val windows = closingPrices(events, latency)
+    val emaResults = emaValues(windows, latency)
     emaResults
       .sinkTo(new EmaLoggingSink(cfg.sampleLimit))
       .name("ema-inspection")
@@ -151,7 +168,7 @@ object StreamingProcessor {
       .name("ema-redpanda-output")
       .uid("ema-redpanda-output-v1")
 
-    val tradeAdvisoriesResults = crossoverResults(emaResults)
+    val tradeAdvisoriesResults = crossoverResults(emaResults, latency)
     tradeAdvisoriesResults
       .sinkTo(new AdvisoryLoggingSink(cfg.sampleLimit))
       .name("trade-advisories-inspection")
@@ -160,6 +177,13 @@ object StreamingProcessor {
       .sinkTo(AdvisoryRedpandaSink.create(cfg.brokers, cfg.advisoryTopic))
       .name("advisory-redpanda-output")
       .uid("advisory-redpanda-output-v1")
+
+    cfg.latencyTopic.foreach { topic =>
+      latencyStamps(windows, emaResults, tradeAdvisoriesResults)
+        .sinkTo(LatencyRedpandaSink.create(cfg.brokers, topic))
+        .name("latency-stamps-redpanda-output")
+        .uid("latency-stamps-redpanda-output-v1")
+    }
   }
 
   def main(args: Array[String]): Unit = {
