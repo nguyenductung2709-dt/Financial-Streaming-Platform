@@ -1,0 +1,12 @@
+# The image builds only need go.mod, go.sum, gen/go and the service directory.
+# Keep the large and local-only paths out of the build context.
+.git
+.superpowers
+.env
+.env.*
+bin
+dataset
+validation/out
+target
+**/target
+documents
