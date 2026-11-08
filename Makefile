@@ -172,7 +172,7 @@ validate-flow: ## Full validation run; CSV=file, directory, or "file1 file2" req
 	$(MAKE) compare-flow REFERENCE_DIR=$(if $(strip $(MAX_EVENTS)),,$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 
 test-validation: ## Run all Python validation and flow tests
-	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py scripts/collect_resource_metrics_test.py scripts/measure_flow_test.py scripts/containers_test.py scripts/run_producer_test.py monitoring/docker-stats-exporter/exporter_test.py; do \
+	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py scripts/collect_resource_metrics_test.py scripts/collect_latency_test.py scripts/measure_flow_test.py scripts/containers_test.py scripts/run_producer_test.py monitoring/docker-stats-exporter/exporter_test.py; do \
 		echo "== $$t"; \
 		python3 $$t || exit 1; \
 	done
