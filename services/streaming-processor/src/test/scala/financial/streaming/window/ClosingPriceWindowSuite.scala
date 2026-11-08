@@ -4,8 +4,10 @@ import financial.streaming.serialization.PriceEventTypeInformation
 import financial.streaming.StreamingProcessor
 
 import com.google.protobuf.Timestamp
-import financial.streaming.model.WindowClose
+import financial.streaming.latency.LatencyTags
+import financial.streaming.model.{StageStamp, WindowClose}
 import market.v1.Events.{PriceEvent, SecurityType}
+import market.v1.Latency.Stage
 import org.apache.flink.configuration.{Configuration, PipelineOptions}
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
 import java.time.Instant
@@ -33,17 +35,27 @@ class ClosingPriceWindowSuite extends munit.FunSuite {
       )
       .build()
 
-  private def runWindows(events: Seq[PriceEvent]): List[WindowClose] = {
+  private def input(events: Seq[PriceEvent]) = {
     val env = StreamExecutionEnvironment.getExecutionEnvironment
     env.setParallelism(1)
     // Fail the test if the pipeline falls back to generic serialization.
     val config = new Configuration()
     config.set(PipelineOptions.GENERIC_TYPES, java.lang.Boolean.FALSE)
     env.configure(config)
-    val input = env
+    env
       .fromData(events.asJava, new PriceEventTypeInformation)
       .assignTimestampsAndWatermarks(StreamingProcessor.priceEventWatermarks)
-    val results = StreamingProcessor.closingPrices(input).executeAndCollect()
+  }
+
+  private def runWindows(events: Seq[PriceEvent]): List[WindowClose] = {
+    val results = StreamingProcessor.closingPrices(input(events)).executeAndCollect()
+    try results.asScala.toList
+    finally results.close()
+  }
+
+  private def runStamps(events: Seq[PriceEvent], latency: Boolean): List[StageStamp] = {
+    val windows = StreamingProcessor.closingPrices(input(events), latency)
+    val results = windows.getSideOutput(LatencyTags.WindowFired).executeAndCollect()
     try results.asScala.toList
     finally results.close()
   }
@@ -67,6 +79,33 @@ class ClosingPriceWindowSuite extends munit.FunSuite {
       byWindow(("RUI.FR", start + fiveMinutes)),
       WindowClose(atBoundary, start + fiveMinutes, start + 2 * fiveMinutes)
     )
+  }
+
+  test("each fired window is stamped with its end") {
+    val events = Seq(
+      trade("RUI.FR", start + fiveMinutes - 1, 14L),
+      trade("RUI.FR", start + fiveMinutes, 15L),
+      trade("RUI.ETR", start + fiveMinutes - 2, 16L)
+    )
+    val before = System.currentTimeMillis()
+    val stamps = runStamps(events, latency = true)
+    val after = System.currentTimeMillis()
+    assertEquals(
+      stamps.map(stamp => (stamp.symbol, stamp.windowEndMillis)).toSet,
+      Set(
+        ("RUI.FR", start + fiveMinutes),
+        ("RUI.ETR", start + fiveMinutes),
+        ("RUI.FR", start + 2 * fiveMinutes)
+      )
+    )
+    assertEquals(stamps.size, 3)
+    assertEquals(stamps.map(_.stage).distinct, List(Stage.STAGE_WINDOW_FIRED))
+    assert(stamps.forall(stamp => !stamp.advisoryEmitted))
+    assert(stamps.forall(stamp => stamp.atMillis >= before && stamp.atMillis <= after))
+  }
+
+  test("no window stamps are emitted when latency is off") {
+    assertEquals(runStamps(Seq(trade("RUI.FR", start, 14L)), latency = false), Nil)
   }
 
   test("bounded replay closes its last window and out-of-order trades preserve nanosecond ties") {

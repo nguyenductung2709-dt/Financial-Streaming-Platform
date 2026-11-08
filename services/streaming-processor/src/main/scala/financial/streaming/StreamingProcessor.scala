@@ -85,7 +85,8 @@ object StreamingProcessor {
 
   // UTC and fixed CEST (UTC+02) have the same five-minute boundaries.
   private[streaming] def closingPrices(
-      events: DataStream[PriceEvent]
+      events: DataStream[PriceEvent],
+      latency: Boolean = false
   ): SingleOutputStreamOperator[WindowClose] =
     events
       .keyBy(
@@ -97,7 +98,7 @@ object StreamingProcessor {
       .window(TumblingEventTimeWindows.of(Duration.ofMinutes(5)))
       .aggregate(
         new ClosingPriceAggregate,
-        new WindowCloseFunction,
+        new WindowCloseFunction(latency),
         new PriceEventTypeInformation,
         new PriceEventTypeInformation,
         new WindowCloseTypeInformation
@@ -106,7 +107,8 @@ object StreamingProcessor {
       .uid("five-minute-closing-prices-v1")
 
   private[streaming] def emaValues(
-      windows: DataStream[WindowClose]
+      windows: DataStream[WindowClose],
+      latency: Boolean = false
   ): SingleOutputStreamOperator[EmaResult] =
     windows
       .keyBy(
@@ -115,12 +117,13 @@ object StreamingProcessor {
         },
         Types.STRING
       )
-      .process(new EmaProcessFunction, new EmaResultTypeInformation)
+      .process(new EmaProcessFunction(latency), new EmaResultTypeInformation)
       .name("window-ema-values")
       .uid("window-ema-values-v1")
 
   private[streaming] def crossoverResults(
-      emaResults: DataStream[EmaResult]
+      emaResults: DataStream[EmaResult],
+      latency: Boolean = false
   ): SingleOutputStreamOperator[CrossoverResult] =
     emaResults
       .keyBy(
@@ -129,7 +132,7 @@ object StreamingProcessor {
         },
         Types.STRING
       )
-      .process(new CrossoverProcessFunction, new CrossoverResultTypeInformation)
+      .process(new CrossoverProcessFunction(latency), new CrossoverResultTypeInformation)
       .name("trade-advisories-values")
       .uid("trade-advisories-values-v1")
 

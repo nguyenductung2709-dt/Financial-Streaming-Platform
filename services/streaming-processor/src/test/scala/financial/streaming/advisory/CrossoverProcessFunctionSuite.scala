@@ -1,10 +1,12 @@
 package financial.streaming.advisory
 
+import financial.streaming.latency.LatencyTags
 import financial.streaming.model.{CrossoverResult, EmaResult, WindowClose}
 import financial.streaming.serialization.CrossoverResultSerializer
 import java.math.BigDecimal
 import market.v1.Advisory.AdvisoryAction
 import market.v1.Events.PriceEvent
+import market.v1.Latency.Stage
 import org.apache.flink.api.common.typeinfo.Types
 import org.apache.flink.api.java.functions.KeySelector
 import org.apache.flink.streaming.api.operators.KeyedProcessOperator
@@ -15,9 +17,11 @@ import scala.jdk.CollectionConverters._
 class CrossoverProcessFunctionSuite extends munit.FunSuite {
   private type Harness = KeyedOneInputStreamOperatorTestHarness[String, EmaResult, CrossoverResult]
 
-  private def harness(): Harness = {
+  private def harness(latencyEnabled: Boolean = false): Harness = {
     val h = new Harness(
-      new KeyedProcessOperator[String, EmaResult, CrossoverResult](new CrossoverProcessFunction),
+      new KeyedProcessOperator[String, EmaResult, CrossoverResult](
+        new CrossoverProcessFunction(latencyEnabled)
+      ),
       new KeySelector[EmaResult, String] {
         override def getKey(ema: EmaResult): String = ema.window.symbol
       },
@@ -29,6 +33,14 @@ class CrossoverProcessFunctionSuite extends munit.FunSuite {
 
   private def withHarness(test: Harness => Unit): Unit = {
     val h = harness()
+    try {
+      h.open()
+      test(h)
+    } finally h.close()
+  }
+
+  private def withLatencyHarness(test: Harness => Unit): Unit = {
+    val h = harness(latencyEnabled = true)
     try {
       h.open()
       test(h)
@@ -53,6 +65,29 @@ class CrossoverProcessFunctionSuite extends munit.FunSuite {
     h.getOutput.clear()
     h.processElement(new StreamRecord(value))
     h.extractOutputValues().asScala.toList
+  }
+
+  test("every window is stamped and the flag marks advisories") {
+    withLatencyHarness { h =>
+      val before = System.currentTimeMillis()
+      emit(h, ema("3", "2")) // BUY from the zero state
+      emit(h, ema("4", "2", start = 300000L)) // still above: no advisory
+      val after = System.currentTimeMillis()
+      val stamps =
+        h.getSideOutput(LatencyTags.CrossoverEvaluated).asScala.toList.map(_.getValue)
+      assertEquals(stamps.map(_.stage).distinct, List(Stage.STAGE_CROSSOVER_EVALUATED))
+      assertEquals(stamps.map(_.advisoryEmitted), List(true, false))
+      assertEquals(stamps.map(_.windowEndMillis), List(300000L, 600000L))
+      assertEquals(stamps.map(_.symbol), List("RUI.FR", "RUI.FR"))
+      assert(stamps.forall(s => s.atMillis >= before && s.atMillis <= after))
+    }
+  }
+
+  test("no stamps are emitted when latency is off") {
+    withHarness { h =>
+      emit(h, ema("3", "2"))
+      assert(Option(h.getSideOutput(LatencyTags.CrossoverEvaluated)).forall(_.isEmpty))
+    }
   }
 
   test("the first positive EMA pair produces BUY from zero and preserves the input") {
