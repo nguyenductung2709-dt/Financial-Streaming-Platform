@@ -23,6 +23,22 @@ The dashboard recovers through snapshots instead of a saved trading-time cursor,
 which cannot identify changes to older windows. The backend's optional `since`
 history stream remains available to other clients.
 
+## Watchlists and cache limits
+
+The saved watchlist accepts unique symbol strings. Invalid saved values fall
+back to an empty watchlist so they cannot prevent the dashboard from opening.
+Signals from unfollowed symbols are removed before applying the 300-record feed
+limit, keeping older signals from currently followed symbols accessible.
+
+Each chart keeps the latest 5,000 window rows and 5,000 advisory rows. Incoming
+live results evict the oldest rows when these limits are reached. Removing a
+symbol from both charts evicts its chart caches immediately. Unfollowing also
+removes its signals, and highlight bookkeeping retains only current feed keys.
+
+REST requests load the latest history initially. Older history is not fetched
+automatically by zooming out; a date-range or load-older interface remains a
+separate feature. These limits bound browser state while live updates continue.
+
 ## Failures and status
 
 History requests time out after 15 seconds. A failure keeps the last complete
@@ -50,3 +66,5 @@ The tests run the actual application code with controlled DOM, network, SSE,
 and timer fixtures. They cover delayed responses, revision ordering, empty
 snapshots, failed history loads and retries, selection changes, listener status,
 obsolete connections, symbol-list races, and pending-buffer recovery.
+They also cover watchlist changes, invalid saved watchlists, retention of the
+newest rows, and immediate cache eviction after unfollowing.
