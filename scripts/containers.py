@@ -1,10 +1,12 @@
 """Commands for running the producer and materializer containers, shared by the flow scripts."""
 
+import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "validation"))
@@ -100,3 +102,108 @@ def producer_command(producer_args, name, compose=COMPOSE, base=ROOT):
 def stop_container(name, timeout=10, run=subprocess.run):
     """Stop a container by name; a container that is already gone is not an error."""
     run(["docker", "stop", "-t", str(timeout), name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+
+def materializer_command(*args, compose=COMPOSE):
+    """`docker compose run` for a one-off materializer task such as -init-db or -reset-db."""
+    return [*compose, "run", "--rm", "-T", "materializer", *args]
+
+
+def parse_ps(output):
+    """The container objects in `docker compose ps --format json` output.
+
+    Compose prints one JSON object per line (older versions print an array);
+    nothing is printed when the service has no container.
+    """
+    output = output.strip()
+    if not output:
+        return []
+    try:
+        parsed = json.loads(output)
+    except json.JSONDecodeError:
+        return [json.loads(line) for line in output.splitlines() if line.strip()]
+    return parsed if isinstance(parsed, list) else [parsed]
+
+
+class MaterializerContainer:
+    """The materializer service's container with the Popen methods the flow scripts use.
+
+    poll() is None while the container runs (or does not exist) and the exit
+    code once it has exited. While it runs, poll() asks Docker at most once a
+    second, so a script can poll in a tight loop.
+    """
+
+    POLL_INTERVAL_S = 1.0
+    WAIT_INTERVAL_S = 0.5
+
+    def __init__(self, compose=COMPOSE, run=subprocess.run, clock=time.monotonic, sleep=time.sleep, cwd=ROOT):
+        self._compose = list(compose)
+        self._run = run
+        self._clock = clock
+        self._sleep = sleep
+        self._cwd = cwd
+        self.returncode = None
+        self._checked_at = None
+
+    def _docker(self, *args, capture=True, check=False):
+        return self._run([*self._compose, *args], cwd=self._cwd, text=True, capture_output=capture, check=check)
+
+    def _container(self):
+        """The service's container as `compose ps` reports it, or None when there is none."""
+        found = parse_ps(self._docker("ps", "-a", "--format", "json", "materializer", check=True).stdout)
+        return found[0] if found else None
+
+    def _poll(self, force):
+        if self.returncode is not None:
+            return self.returncode
+        now = self._clock()
+        if not force and self._checked_at is not None and now - self._checked_at < self.POLL_INTERVAL_S:
+            return None
+        self._checked_at = now
+        container = self._container()
+        if container is not None and container.get("State") in ("exited", "dead"):
+            self.returncode = int(container.get("ExitCode", 0))
+        return self.returncode
+
+    def start(self):
+        """Start (or restart) the container in the background, forgetting any earlier exit status."""
+        self._docker("up", "-d", "materializer", capture=False, check=True)
+        self.returncode = None
+        self._checked_at = None
+
+    def poll(self):
+        return self._poll(force=False)
+
+    def terminate(self):
+        self._docker("kill", "-s", "SIGTERM", "materializer")
+
+    def kill(self):
+        self._docker("kill", "-s", "SIGKILL", "materializer")
+
+    def wait(self, timeout=None):
+        """The exit code once the container has exited; raises subprocess.TimeoutExpired after `timeout` seconds."""
+        deadline = None if timeout is None else self._clock() + timeout
+        while True:
+            code = self._poll(force=True)
+            if code is not None:
+                return code
+            if deadline is not None and self._clock() >= deadline:
+                raise subprocess.TimeoutExpired([*self._compose, "materializer"], timeout)
+            self._sleep(self.WAIT_INTERVAL_S)
+
+    def stop(self, timeout=10):
+        """SIGTERM, then SIGKILL after `timeout` seconds; nothing to do when it is not running."""
+        if self.returncode is not None:
+            return
+        container = self._container()
+        if container is None:
+            return
+        if container.get("State") in ("exited", "dead"):
+            self.returncode = int(container.get("ExitCode", 0))
+            return
+        self.terminate()
+        try:
+            self.wait(timeout)
+        except subprocess.TimeoutExpired:
+            self.kill()
+            self.wait()
