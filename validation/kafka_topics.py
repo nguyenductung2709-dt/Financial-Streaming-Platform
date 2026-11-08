@@ -2,16 +2,17 @@
 """Quiescent single-partition topic consumption for the full-flow validation.
 
 iter_records(brokers, topic) yields every record currently in a topic as
-(offset, value) pairs in offset order; consume_all collects them into a
-list.  The topics under test are single-partition and quiescent once the
-flow has finished, so the read is a simple drain: capture the high
-watermark up front, consume from the beginning until reaching it, then
-re-check — a watermark that grew mid-read means records appeared while
-reading and the result would be silently partial, so that (and more than
-one partition, or a poll error) raises RuntimeError.  Retention
-truncation is the same sin in two shapes — a purged segment mid-read
-(polled offsets skip forward) and a topic head already truncated (low
-watermark past 0) — and both raise RuntimeError rather than silently
+(offset, value) pairs in offset order; stream_records yields the same
+records as (offset, value, timestamp_ms) triples; consume_all collects
+iter_records into a list.  The topics under test are single-partition and
+quiescent once the flow has finished, so the read is a simple drain:
+capture the high watermark up front, consume from the beginning until
+reaching it, then re-check — a watermark that grew mid-read means records
+appeared while reading and the result would be silently partial, so that
+(and more than one partition, or a poll error) raises RuntimeError.
+Retention truncation is the same sin in two shapes — a purged segment
+mid-read (polled offsets skip forward) and a topic head already truncated
+(low watermark past 0) — and both raise RuntimeError rather than silently
 under-validate.
 
 The default consumer factory is the only place confluent_kafka appears;
@@ -90,7 +91,7 @@ class _RealConsumer:
             raise RuntimeError(
                 f"kafka poll error on {message.topic()}[{message.partition()}]:"
                 f" {error}")
-        return (message.offset(), message.value())
+        return (message.offset(), message.value(), message.timestamp()[1])
 
     def close(self):
         self._consumer.close()
@@ -111,25 +112,25 @@ def _watermarks(consumer, topic, partition):
     return watermarks
 
 
-def iter_records(brokers: str, topic: str,
-                 consumer_factory=None) -> Iterator[tuple[int, bytes]]:
-    """Yield every record currently in `topic` as (offset, value) pairs.
+def stream_records(brokers: str, topic: str,
+                   consumer_factory=None) -> Iterator[tuple[int, bytes, int]]:
+    """Yield every record currently in `topic` as (offset, value, timestamp_ms).
 
-    Same contract as consume_all, but one record at a time so a caller
-    that folds them into a smaller summary never holds the whole topic.
-    The checks that can only be made at the end (a high watermark that
-    grew during the read) run when the iterator is exhausted, so the
-    caller must consume it fully; the consumer is closed when it ends,
-    fails, or is closed early.
+    One record at a time, so a caller that folds them into a smaller
+    summary never holds the whole topic.  The checks that can only be
+    made at the end (a high watermark that grew during the read) run when
+    the iterator is exhausted, so the caller must consume it fully; the
+    consumer is closed when it ends, fails, or is closed early.
 
     Requires exactly one partition and a quiescent topic: raises
     RuntimeError when the topic has more than one partition, when its
     high watermark grew between the pre-read capture and the post-read
-    re-check (records appeared mid-read), or when a poll fails.
-    Retention truncation also raises: a low watermark already past 0
-    (the head was purged before the run) or a polled offset skipping
-    past the expected next offset (a segment was purged mid-read) —
-    either way the read would be silently partial.
+    re-check (records appeared mid-read; raised once the last record has
+    been yielded), or when a poll fails.  Retention truncation also
+    raises: a low watermark already past 0 (the head was purged before
+    the run) or a polled offset skipping past the expected next offset
+    (a segment was purged mid-read) - either way the read would be
+    silently partial.  A consumer that carries no timestamp reports -1.
     """
     consumer = (consumer_factory or _default_consumer_factory)(brokers)
     try:
@@ -151,7 +152,7 @@ def iter_records(brokers: str, topic: str,
             record = consumer.poll(POLL_TIMEOUT_S)
             if record is None:
                 continue
-            offset, value = record
+            offset, value, *rest = record
             if offset != next_offset:
                 raise RuntimeError(
                     f"topic {topic!r} read gap: polled offset {offset},"
@@ -159,13 +160,27 @@ def iter_records(brokers: str, topic: str,
                     " segment mid-read; the skipped records would make"
                     " the read silently partial)")
             next_offset = offset + 1
-            yield (offset, value)
+            yield offset, value, rest[0] if rest else -1
         if _watermarks(consumer, topic, partition)[1] > high:
             raise RuntimeError(
                 f"topic {topic!r} is not quiescent: high watermark grew past"
                 f" {high} during the read")
     finally:
         consumer.close()
+
+
+def iter_records(brokers: str, topic: str,
+                 consumer_factory=None) -> Iterator[tuple[int, bytes]]:
+    """Yield every record currently in `topic` as (offset, value) pairs.
+
+    stream_records without the timestamps: same checks, same contract.
+    """
+    records = stream_records(brokers, topic, consumer_factory)
+    try:
+        for offset, value, _ in records:
+            yield offset, value
+    finally:
+        records.close()
 
 
 def consume_all(brokers: str, topic: str,
