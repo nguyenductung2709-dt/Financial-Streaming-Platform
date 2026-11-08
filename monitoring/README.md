@@ -11,7 +11,7 @@ make measure-flow CSV=dataset/<file>.csv RATE=0 MAX_EVENTS=2000000
 ```
 
 Resets the flow, starts the infrastructure and the monitoring stack, runs the
-materializer and the producer, finds the start and end of the run by itself, and
+materializer and the producer as containers, finds the start and end of the run by itself, and
 writes the results to `bin/metrics/<timestamp>/` (`OUT=dir` to choose). `RATE` is
 the producer's events per second (`0` is unlimited). The reset permanently
 clears the project topics and database results. Use `MAX_EVENTS` to bound a run;
@@ -37,8 +37,7 @@ read as UTC. `measure-flow` prints its start as epoch seconds. Change the URL wi
 
 | Source | Covers | Interval |
 | --- | --- | --- |
-| `docker-stats-exporter` | Every container of this Compose project | 2 s |
-| `process-exporter` | The host-side `data-producer` and `materializer` | 2 s |
+| `docker-stats-exporter` | Every container of this Compose project, including the producer and materializer | 2 s |
 | Flink's Prometheus reporter | JobManager and TaskManager internals | 5 s |
 | Redpanda `/public_metrics` | Broker metrics, topic and consumer-group offsets | 5 s |
 
@@ -53,14 +52,26 @@ Columns in `summary.csv` (the monitoring containers are left out; `--exclude ''`
 | Metric | `avg` / `max` | `total` |
 | --- | --- | --- |
 | `cpu_cores` | cores in use (1 = one full core) | CPU-seconds |
-| `memory_bytes` | bytes: container working set (usage minus inactive page cache, as `docker stats` shows) or, for host processes, resident set | not set |
+| `memory_bytes` | bytes: container working set (usage minus inactive page cache, as `docker stats` shows) | not set |
 | `network_*_bytes_per_s`, `block_*_bytes_per_s` | bytes per second | bytes over the window |
 
 Totals use Prometheus `increase()`, so they are accurate to about one scrape interval.
 
+## Comparing with runs from before the containers
+
+Until issue #89 the producer and materializer were host processes, measured by a
+`process-exporter` that no longer exists. Exports from those runs have `kind=host` rows
+for `data-producer` and `materializer`; new runs have the same component names with
+`kind=docker`, so rows line up by component and metric. Two things differ: memory was
+the process's resident set and is now the container's working set (close for a Go
+program, but not the same number), and the producer's network I/O is measured now, so
+the old exports have nothing to compare it with. Re-exporting an old window with
+`make collect-metrics` no longer produces the host rows.
+
 ## How a run is timed
 
-The start is taken just before the producer launches. Every 2 s the script reads
+The start is taken just before the producer container launches, so it includes the
+container's startup. Every 2 s the script reads
 Flink's source count, the end offsets of `ema-windows` and `trade-advisories`, and
 the materializer's committed offsets. The run is finished when the producer has exited, the
 materializer has caught up and nothing has changed for 20 s (`--idle-seconds`); the
@@ -71,11 +82,14 @@ written and committed, not when every input window closed.
 ## Limits
 
 - Latency is not measured here (issue #48); this covers throughput and resources.
-- Host processes are read through the host's PID namespace, which `process-exporter`
-  shares on Linux. On Docker Desktop (macOS, Windows) the host binaries' rows are
-  expected to be missing; this has not been tested.
-- There is no per-process network I/O for the host binaries; their traffic shows up
-  on the Redpanda container.
+- The producer is a one-off container that exists only while it runs, and the exporter
+  scrapes every 2 s, so its last second or two of CPU and network is not seen. Totals
+  are accurate to about one scrape interval.
+- `docker compose run` does not forward Ctrl+C or SIGTERM to the container it starts
+  (the client exits and the container keeps running), so the flow scripts stop the
+  producer container by name on every exit path.
+- Untested on Docker Desktop (macOS, Windows), where the bind-mounted CSV may be read
+  more slowly.
 - The exporter mounts the Docker socket and Grafana allows anonymous admin access.
   Every port is bound to `127.0.0.1`; this is for local development only.
 - Scrape targets are static. A multi-broker or multi-TaskManager Compose (issue #38)

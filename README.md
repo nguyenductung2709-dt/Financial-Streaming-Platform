@@ -28,18 +28,22 @@ CI still enforces the full format and lint suite.
 
 ## Run the complete local flow
 
-Copy `.env.example` to `.env` once, and check the `POSTGRES_*` and
-`MATERIALIZER_*` settings. Put the CSV dataset under `dataset/`, then run:
+Docker with Compose is required: the producer and materializer run as containers
+on the Compose network, next to PostgreSQL and Redpanda. Copy `.env.example` to
+`.env` once, and check the `POSTGRES_*` and `MATERIALIZER_*` settings. Put the CSV
+dataset under `dataset/`, then run:
 
 ```sh
 make run-flow
 ```
 
-This builds the Go producer and materializer, prepares the backend's `.venv`,
+This builds the producer and materializer images and prepares the backend's `.venv`,
 starts PostgreSQL, Redpanda, the Redpanda console, and Flink, creates the topics,
 applies missing database migrations, submits the processor, and supervises the
-producer, materializer, and backend together. The dashboard is available at
-<http://localhost:8000>; publication starts only after its backend is healthy.
+producer and materializer containers and the backend together. The dashboard is
+available at <http://localhost:8000>; publication starts only after its backend is
+healthy. CSV files are mounted into the producer read-only, so any host path works
+(a `:` in the path does not).
 Startup preserves stored results and complete existing migrations. A partially
 installed migration causes startup to stop for manual repair.
 
@@ -50,9 +54,9 @@ make run-flow PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
 ```
 
 The materializer and dashboard keep running after the producer finishes so they
-can consume and display remaining and future results. Ctrl+C stops all managed
-local processes.
-Containers and the Flink job remain running. Before a fresh run, use:
+can consume and display remaining and future results. Ctrl+C stops the managed
+producer and materializer containers and the dashboard. The infrastructure
+containers and the Flink job remain running. Before a fresh run, use:
 
 ```sh
 make reset-flow
@@ -62,8 +66,8 @@ make run-flow
 `reset-flow` stops the managed producer, materializer, and backend, removes the
 Compose containers, and permanently deletes this project's local PostgreSQL,
 broker data (including topics and consumer offsets), and Flink checkpoints.
-The next `make run-flow` recreates the infrastructure and schema. Stop separately
-launched producers and materializers before resetting. Reset works without a
+The next `make run-flow` recreates the infrastructure and schema. Stop producers
+and materializers started outside Compose before resetting. Reset works without a
 `.env` and does not build or start services first.
 
 To stop local processes and all Compose containers while keeping data:
@@ -77,9 +81,11 @@ to choose its Python environment. `make run-backend` applies missing migrations
 and starts only the dashboard when PostgreSQL is already available.
 
 `run-flow` and the backend commands load `.env`; explicit `MATERIALIZER_*`
-environment or Make command-line overrides take precedence. The complete flow uses local Compose
-infrastructure, so keep the materializer URL and broker addresses pointed at
-those services.
+environment or Make command-line overrides take precedence. The containers take
+their database URL and broker addresses from `compose.yaml` (`postgres:5432` and
+`redpanda-0:9092`), so the `MATERIALIZER_DATABASE_URL` and `MATERIALIZER_BROKERS`
+values in `.env` (localhost addresses) serve only the tools that run on the host;
+`MATERIALIZER_GROUP_ID` applies to both.
 
 `validate-flow` uses its own internal data reset so containers and checkpoints
 stay available during automated validation.
@@ -140,8 +146,8 @@ Pushes and pull requests run checks based on the changed paths:
 | --- | --- |
 | Backend/frontend code (except Markdown) or materializer migrations | Dashboard CI: backend unit/PostgreSQL integration tests, frontend regression tests, and flow lifecycle/Make recipe tests |
 | Flow startup/stop/reset scripts and their tests, including `scripts/csv_make_test.py` | Dashboard CI |
-| `services/data-producer/**` (except Markdown) | Producer formatting, lint, tests, and build |
-| `services/materializer/**` (except Markdown) | Materializer formatting, lint, race tests, PostgreSQL integration tests, and build |
+| `services/data-producer/**` (except Markdown) | Producer formatting, lint, tests, build, and image build |
+| `services/materializer/**` (except Markdown) | Materializer formatting, lint, race tests, PostgreSQL integration tests, and image build |
 | `services/streaming-processor/**` (except Markdown) | Processor formatting, lint, tests, and assembly verification |
 | `schemas/**/*.proto` | Producer, materializer, processor, and Protobuf generation |
 | `gen/go/**` | Producer, materializer, and Protobuf generation |
@@ -151,6 +157,7 @@ Pushes and pull requests run checks based on the changed paths:
 | `Makefile` | Producer, materializer, processor, Protobuf generation, and dashboard checks |
 | `.githooks/pre-commit` | Producer and materializer checks |
 | `compose.yaml` | Infrastructure Compose configuration validation |
+| `.dockerignore` | Producer, materializer, and infrastructure checks |
 | A file in `.github/workflows/` | The workflow defined by that file |
 
 Documentation-only changes do not trigger these checks. The flow scripts listed
@@ -169,7 +176,7 @@ from the database integration tests, and coverage is uploaded as an artifact.
 Locally, use `make test-materializer`, `make format-materializer`, and
 `MATERIALIZER_TEST_DATABASE_URL='<PostgreSQL URL>' make test-materializer-integration`.
 
-Infrastructure CI runs `docker compose -f compose.yaml config --quiet` to validate
+Infrastructure CI runs `docker compose --profile '*' -f compose.yaml config --quiet` to validate
 the Compose configuration without starting containers. This checks configuration
 validity; it does not verify image availability or service startup. Run the same
 command locally before pushing Compose changes.

@@ -11,6 +11,10 @@ on:
       - 'scripts/measure-flow.py'
       - 'scripts/measure_flow_test.py'
       - 'scripts/flow.py'
+      - 'scripts/containers.py'
+      - 'scripts/containers_test.py'
+      - 'scripts/run-producer.py'
+      - 'scripts/run_producer_test.py'
       - 'validation/csv_inputs.py'
       - '.github/workflows/monitoring-ci.yml'
   pull_request:
@@ -23,6 +27,10 @@ on:
       - 'scripts/measure-flow.py'
       - 'scripts/measure_flow_test.py'
       - 'scripts/flow.py'
+      - 'scripts/containers.py'
+      - 'scripts/containers_test.py'
+      - 'scripts/run-producer.py'
+      - 'scripts/run_producer_test.py'
       - 'validation/csv_inputs.py'
       - '.github/workflows/monitoring-ci.yml'
   workflow_dispatch:
@@ -38,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate the Compose configuration with the monitoring overlay
-        run: docker compose -f compose.yaml -f compose.monitoring.yaml config --quiet
+        run: docker compose --profile '*' -f compose.yaml -f compose.monitoring.yaml config --quiet
       - name: Validate the Prometheus configuration
         run: >
           docker run --rm --entrypoint promtool
@@ -58,3 +66,5 @@ jobs:
           python3 monitoring/docker-stats-exporter/exporter_test.py
           python3 scripts/collect_resource_metrics_test.py
           python3 scripts/measure_flow_test.py
+          python3 scripts/containers_test.py
+          python3 scripts/run_producer_test.py

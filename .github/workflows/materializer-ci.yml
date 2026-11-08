@@ -10,6 +10,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
+      - '.dockerignore'
       - '.githooks/pre-commit'
       - '.github/workflows/materializer-ci.yml'
   pull_request:
@@ -21,6 +22,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
+      - '.dockerignore'
       - '.githooks/pre-commit'
       - '.github/workflows/materializer-ci.yml'
   workflow_dispatch:
