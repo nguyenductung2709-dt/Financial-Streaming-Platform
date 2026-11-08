@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Tests for containers.py: the producer container command and the CSV inputs behind it."""
 
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -175,6 +177,31 @@ class StopContainerTest(unittest.TestCase):
 
         containers.stop_container("p1", run=run)
         self.assertEqual(calls, [["docker", "stop", "-t", "10", "p1"]])
+
+
+class StopRunTest(unittest.TestCase):
+    def test_a_failing_cleanup_is_reported_and_does_not_skip_the_rest(self):
+        stopped = []
+
+        class Broken:
+            def stop(self):
+                raise subprocess.CalledProcessError(1, "docker")
+
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            containers.stop_run("p1", Broken(), stop_producer=stopped.append)
+        self.assertEqual(stopped, ["p1"])
+        self.assertIn("Cleanup failed", errors.getvalue())
+
+    def test_both_containers_are_stopped_in_the_normal_case(self):
+        stopped = []
+
+        class Fine:
+            def stop(self):
+                stopped.append("materializer")
+
+        containers.stop_run("p1", Fine(), stop_producer=stopped.append)
+        self.assertEqual(stopped, ["p1", "materializer"])
 
 
 def ps_json(state, exit_code=0):
