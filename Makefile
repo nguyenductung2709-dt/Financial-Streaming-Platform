@@ -45,7 +45,7 @@ endef
 	build-streaming-processor test-streaming-processor \
 	formatall format-data-producer format-materializer format-streaming-processor lint-streaming-processor \
 	generate-protobuf generate-python-protobuf setup-hooks run-postgres postgres-shell \
-	monitoring-up monitoring-down collect-metrics collect-latency measure-flow
+	monitoring-up monitoring-down collect-metrics collect-latency measure-flow sweep-flow
 
 .PHONY: setup-backend migrate-backend run-backend stop-flow
 
@@ -102,6 +102,12 @@ collect-latency: ## Report EMA and trade advisory latency of the last run from t
 measure-flow: build-data-producer build-materializer build-streaming-processor ## One command: reset, run the full pipeline, time it, export resource usage; CSV=file|dir|"f1 f2" required [RATE=0] [MAX_EVENTS=n] [LABELS="k=v"] [OUT=dir]
 	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make measure-flow CSV=dataset/day08.csv MAX_EVENTS=1000000))
 	@$(materializer-env) exec python3 scripts/measure-flow.py --prometheus-url $(call shell-quote,$(PROMETHEUS_URL)) --out $(call shell-quote,$(OUT)) --label rate=$(RATE) $(if $(strip $(MAX_EVENTS)),--label max_events=$(MAX_EVENTS)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label))) -- $(PRODUCER_CSV_ARGS) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))
+
+# Resets the flow before every rate, so this permanently clears the project topics and database results.
+sweep-flow: build-data-producer build-materializer build-streaming-processor ## Run measure-flow once per rate and compare the latency; RATES="500 1000" CSV=file|dir|"f1 f2" required [MAX_EVENTS=n] [OUT=dir]
+	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make sweep-flow RATES="500 1000" CSV=dataset/day08.csv MAX_EVENTS=1000000))
+	$(if $(strip $(RATES)),,$(error RATES is required, e.g. make sweep-flow RATES="500 1000" CSV=dataset/day08.csv))
+	@$(materializer-env) exec python3 scripts/sweep-flow.py --out $(call shell-quote,$(OUT)) --rates $(RATES) -- $(PRODUCER_CSV_ARGS) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))
 
 build-data-producer: ## Build the data producer image
 	docker compose build data-producer
@@ -172,7 +178,7 @@ validate-flow: ## Full validation run; CSV=file, directory, or "file1 file2" req
 	$(MAKE) compare-flow REFERENCE_DIR=$(if $(strip $(MAX_EVENTS)),,$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 
 test-validation: ## Run all Python validation and flow tests
-	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py scripts/collect_resource_metrics_test.py scripts/collect_latency_test.py scripts/measure_flow_test.py scripts/containers_test.py scripts/run_producer_test.py monitoring/docker-stats-exporter/exporter_test.py; do \
+	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py scripts/collect_resource_metrics_test.py scripts/collect_latency_test.py scripts/measure_flow_test.py scripts/sweep_flow_test.py scripts/containers_test.py scripts/run_producer_test.py monitoring/docker-stats-exporter/exporter_test.py; do \
 		echo "== $$t"; \
 		python3 $$t || exit 1; \
 	done
