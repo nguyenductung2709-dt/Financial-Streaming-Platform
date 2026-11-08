@@ -21,7 +21,9 @@ window) and latency-summary.csv (count, mean, p50, p95, p99, max per stage) to
 --out.
 """
 
+import argparse
 import collections
+import csv
 import math
 from pathlib import Path
 import sys
@@ -33,6 +35,8 @@ import config  # noqa: E402
 STAGES = ("ingest_to_fire", "ema_compute", "advisory_compute", "ema_publish",
           "advisory_publish", "end_to_end_ema", "end_to_end_advisory")
 SUMMARY_KEYS = ("count", "mean_ms", "p50_ms", "p95_ms", "p99_ms", "max_ms")
+ROW_COLUMNS = ("symbol", "window_end_ms", "t0_ms", "t1_ms", "t2_ms", "t3_ms", "t4e_ms",
+               "advisory_emitted", "t4a_ms", *STAGES)
 
 # One stamp from latency-stamps; stage is "fired", "ema" or "crossover".
 Stamp = collections.namedtuple("Stamp", "symbol window_end stage at advisory_emitted")
@@ -167,3 +171,132 @@ def build_rows(stamps, ema_landed, advisory_landed, triggers):
         "advisory_records": len(advisories),
     }
     return rows, coverage
+
+
+def timestamp_ms(timestamp):
+    """google.protobuf.Timestamp -> epoch milliseconds."""
+    return timestamp.seconds * 1000 + timestamp.nanos // 1_000_000
+
+
+def read_run(brokers, stream=None):
+    """(stamps, ema_landed, advisory_landed, triggers) for build_rows, read from the topics.
+
+    `stream(brokers, topic)` yields (offset, value, timestamp_ms) like
+    kafka_topics.stream_records, the default. trade-events, by far the largest
+    topic, is streamed straight into the trigger scan and never held in memory;
+    it is read last, after the cheap checks, so an empty latency-stamps topic
+    fails at once.
+    """
+    import bindings
+    import kafka_topics
+
+    stream = stream or kafka_topics.stream_records
+    stage_names = {bindings.STAGE_WINDOW_FIRED: "fired", bindings.STAGE_EMA_COMPUTED: "ema",
+                   bindings.STAGE_CROSSOVER_EVALUATED: "crossover"}
+    stamps = []
+    for _, value, _ in stream(brokers, config.TOPIC_LATENCY_STAMPS):
+        message = bindings.StageStamp.FromString(value)
+        if message.stage not in stage_names:
+            raise LatencyError(f"{config.TOPIC_LATENCY_STAMPS} holds a stamp with the "
+                               f"unrecognized stage {message.stage}")
+        stamps.append(Stamp(message.symbol, timestamp_ms(message.window_end),
+                            stage_names[message.stage], timestamp_ms(message.at),
+                            message.advisory_emitted))
+    if not stamps:
+        raise LatencyError(
+            f"{config.TOPIC_LATENCY_STAMPS} is empty. Was the Flink job started with "
+            f"--latency-topic {config.TOPIC_LATENCY_STAMPS}? (measure-flow does this itself.)")
+
+    ema_landed = []
+    for _, value, landed in stream(brokers, config.TOPIC_EMA_WINDOWS):
+        window = bindings.EmaWindow.FromString(value)
+        ema_landed.append((window.symbol, timestamp_ms(window.window_end), landed))
+    advisory_landed = []
+    for _, value, landed in stream(brokers, config.TOPIC_TRADE_ADVISORIES):
+        window = bindings.TradeAdvisory.FromString(value).ema_window
+        advisory_landed.append((window.symbol, timestamp_ms(window.window_end), landed))
+
+    def published_events():
+        for _, value, published in stream(brokers, config.TOPIC_EVENTS):
+            yield timestamp_ms(bindings.PriceEvent.FromString(value).trade_time), published
+
+    triggers = trigger_times(published_events(), config.WINDOW_MS, config.OUT_OF_ORDERNESS_MS)
+    return stamps, ema_landed, advisory_landed, triggers
+
+
+def cell(value):
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return str(round(value, 3))
+    return str(value)
+
+
+def format_table(summary, coverage):
+    """The stage table and a coverage footer, for the console and summary.txt."""
+    def number(value):
+        return "-" if value is None else (f"{value:.1f}" if isinstance(value, float) else str(value))
+
+    lines = ["Latency (ms)",
+             f"{'stage':<22}{'count':>9}" + "".join(f"{name:>10}" for name in
+                                                      ("mean", "p50", "p95", "p99", "max"))]
+    for item in summary:
+        lines.append(f"{item['stage']:<22}{item['count']:>9}" + "".join(
+            f"{number(item[key]):>10}" for key in SUMMARY_KEYS[1:]))
+    lines.append(
+        f"windows: measured {coverage['measured']}, flushed {coverage['flushed']}, "
+        f"missing a stage {coverage['missing_stage']}, duplicates {coverage['duplicates']}; "
+        f"advisories {coverage['advisories']}")
+    if coverage["advisory_stamps"] != coverage["advisory_records"]:
+        lines.append(
+            f"WARNING: advisory count mismatch: {coverage['advisory_stamps']} crossover stamps "
+            f"announced an advisory but {coverage['advisory_records']} landed on "
+            f"{config.TOPIC_TRADE_ADVISORIES}")
+    return "\n".join(lines)
+
+
+def write_outputs(out_dir, rows, summary, coverage):
+    """Write latency.csv and latency-summary.csv to out_dir; returns the console table."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "latency.csv", "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(ROW_COLUMNS)
+        for row in rows:
+            writer.writerow([cell(row[column]) for column in ROW_COLUMNS])
+    with open(out_dir / "latency-summary.csv", "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(("stage", *SUMMARY_KEYS))
+        for item in summary:
+            writer.writerow([item["stage"], *[cell(item[key]) for key in SUMMARY_KEYS]])
+    return format_table(summary, coverage)
+
+
+def collect(brokers, out_dir, stream=None):
+    """Read the run, write the outputs; returns (summary, coverage, console_table)."""
+    stamps, ema_landed, advisory_landed, triggers = read_run(brokers, stream)
+    rows, coverage = build_rows(stamps, ema_landed, advisory_landed, triggers)
+    summary = summarize_rows(rows)
+    return summary, coverage, write_outputs(Path(out_dir), rows, summary, coverage)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--out", type=Path, required=True, help="output directory")
+    parser.add_argument("--brokers", default=config.BROKERS,
+                        help="Redpanda address reachable from this host (default %(default)s)")
+    args = parser.parse_args(argv)
+    try:
+        _, _, table = collect(args.brokers, args.out)
+    except (RuntimeError, OSError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    print(table)
+    print(f"Results in {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
