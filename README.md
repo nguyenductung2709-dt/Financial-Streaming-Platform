@@ -138,6 +138,8 @@ Pushes and pull requests run checks based on the changed paths:
 
 | Changes | Checks |
 | --- | --- |
+| Backend/frontend code (except Markdown) or materializer migrations | Dashboard CI: backend unit/PostgreSQL integration tests, frontend regression tests, and flow lifecycle/Make recipe tests |
+| Flow startup/stop/reset scripts and their tests, including `scripts/csv_make_test.py` | Dashboard CI |
 | `services/data-producer/**` (except Markdown) | Producer formatting, lint, tests, and build |
 | `services/materializer/**` (except Markdown) | Materializer formatting, lint, race tests, PostgreSQL integration tests, and build |
 | `services/streaming-processor/**` (except Markdown) | Processor formatting, lint, tests, and assembly verification |
@@ -146,15 +148,20 @@ Pushes and pull requests run checks based on the changed paths:
 | `gen/java/**` | Processor and Protobuf generation |
 | Other files under `gen/**` | Protobuf generation |
 | `go.mod`, `go.sum` | Producer, materializer, and Protobuf generation |
-| `Makefile` | Producer, materializer, processor, and Protobuf generation |
+| `Makefile` | Producer, materializer, processor, Protobuf generation, and dashboard checks |
 | `.githooks/pre-commit` | Producer and materializer checks |
 | `compose.yaml` | Infrastructure Compose configuration validation |
 | A file in `.github/workflows/` | The workflow defined by that file |
 
-Documentation-only changes and changes to local scripts do not trigger these
-checks. Changes spanning multiple areas run all matching workflows.
-The producer, materializer, and infrastructure workflows also support manual runs with
+Documentation-only changes do not trigger these checks. The flow scripts listed
+above trigger Dashboard CI; other local scripts do not trigger these checks.
+Changes spanning multiple areas run all matching workflows.
+The dashboard, producer, materializer, and infrastructure workflows also support manual runs with
 `workflow_dispatch`.
+
+Dashboard CI uses PostgreSQL 18, Python 3.12, and Node.js 22. Database tests use
+disposable schemas; lifecycle tests use local service fixtures. These checks do
+not start the full Docker stack or exercise the dashboard in a browser.
 
 Materializer CI uses a PostgreSQL 18 service container for the database integration
 tests. Each test creates and removes its own schema. Unit tests run separately
