@@ -172,7 +172,7 @@ def main():
             for cleanup in (lambda: containers.stop_container(producer_name), materializer.stop):
                 try:
                     cleanup()
-                except (subprocess.CalledProcessError, OSError) as error:
+                except (subprocess.SubprocessError, OSError) as error:
                     print(f"Cleanup failed: {error}", file=sys.stderr)
 
 

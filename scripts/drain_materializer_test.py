@@ -12,6 +12,7 @@ Kafka offsets reader is exercised with a stubbed confluent_kafka module.
 """
 
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -220,6 +221,22 @@ class KafkaOffsetsTest(unittest.TestCase):
         stub, _ = self.stub({EMA: (0, 12)}, {EMA: -1001})
         with mock.patch.dict(sys.modules, {"confluent_kafka": stub}):
             self.assertIsNone(mod.KafkaOffsets("b:1", "g").committed(EMA))
+
+
+class MainTest(unittest.TestCase):
+    def test_starts_the_container_and_drains_it_without_a_database_url(self):
+        mod = load_module()
+        container = mock.MagicMock()
+        with mock.patch.dict(os.environ, {"MATERIALIZER_GROUP_ID": "g"}, clear=True), \
+                mock.patch.object(mod.containers, "MaterializerContainer", return_value=container), \
+                mock.patch.object(mod, "KafkaOffsets") as offsets, \
+                mock.patch.object(mod, "drain") as drain, \
+                mock.patch.object(mod, "flow_lock"):
+            mod.main()
+        container.start.assert_called_once_with()
+        drain.assert_called_once()
+        self.assertIs(drain.call_args.args[0], container)
+        offsets.return_value.close.assert_called_once_with()
 
 
 if __name__ == "__main__":
