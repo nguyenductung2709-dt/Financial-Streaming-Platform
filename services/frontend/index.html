@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trade signals</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <h1>Trade signals</h1>
+      <span id="status" class="status idle">Waiting for symbols…</span>
+    </header>
+
+    <aside class="panel list">
+      <div class="panel-head">
+        <h2>Symbols</h2>
+      </div>
+      <div class="chips">
+        <button class="chip" id="followAll">Follow all</button>
+        <button class="chip" id="unfollowAll">Unfollow all</button>
+      </div>
+      <input class="search" id="search" placeholder="Search symbols" autocomplete="off">
+      <div class="chips" id="chips"></div>
+      <p class="hint" id="hint"></p>
+      <p class="error" id="error" hidden></p>
+      <ul class="rows" id="rows"></ul>
+    </aside>
+
+    <main class="charts">
+      <section class="chart-pane" id="paneA"></section>
+      <section class="chart-pane" id="paneB"></section>
+    </main>
+
+    <aside class="panel feed">
+      <div class="panel-head">
+        <h2>Signals</h2>
+        <div class="chips" id="feedChips">
+          <button class="chip on" data-f="all">All</button>
+          <button class="chip" data-f="buy">Buy</button>
+          <button class="chip" data-f="sell">Sell</button>
+        </div>
+      </div>
+      <ul class="feed-list" id="feedList"></ul>
+    </aside>
+  </div>
+
+  <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js" charset="utf-8"></script>
+  <script src="app.js"></script>
+</body>
+</html>
