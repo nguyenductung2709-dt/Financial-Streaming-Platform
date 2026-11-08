@@ -16,7 +16,7 @@ object EmaWindowMapper {
       .setEma100(result.ema100.toPlainString)
       .build()
 
-  private def timestamp(millis: Long): Timestamp =
+  private[sink] def timestamp(millis: Long): Timestamp =
     Timestamp
       .newBuilder()
       .setSeconds(Math.floorDiv(millis, 1000L))
