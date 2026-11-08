@@ -123,7 +123,7 @@ def main():
     producer_name = f"data-producer-run-{os.getpid()}"
 
     with flow_lock():
-        containers.resolve_inputs(producer_args)  # fail before anything starts or needs cleaning up
+        containers.preflight(producer_args)  # fail before anything starts or needs cleaning up
         try:
             run(["docker", "compose", "up", "-d", "--wait", "--wait-timeout", "120",
                  "postgres", "redpanda-0", "console", "jobmanager", "taskmanager"])

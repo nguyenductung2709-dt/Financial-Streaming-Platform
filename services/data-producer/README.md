@@ -31,7 +31,7 @@ of the complete flow. Print the flags with `make run-data-producer ARGS="-help"`
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-csvPath` | see above | CSV file or directory; repeat for ordered inputs |
-| `-brokers` | `redpanda-0:9092` in the container (`localhost:19092` for a bare binary) | Comma-separated broker addresses |
+| `-brokers` | `redpanda-0:9092` in the container (`localhost:19092` for a bare binary) | Comma-separated broker addresses; a localhost address is rejected, because inside the container it is the container itself |
 | `-topic` | `trade-events` | Topic for events |
 | `-dlqTopic` | `trade-events-dlq` | Topic for rejected rows |
 | `-dlqEnabled` | off | Publish invalid rows to the dead letter topic instead of stopping |
