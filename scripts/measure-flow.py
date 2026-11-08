@@ -16,7 +16,11 @@ comes from Prometheus (Flink and Redpanda metrics), so the monitoring stack must
 be scraping. Everything after `--` goes to the producer container.
 
 Writes timeseries.csv, summary.csv and run.json (see collect-resource-metrics.py)
-plus summary.txt and pipeline.json (event counts, durations, throughput).
+plus summary.txt and pipeline.json (event counts, durations, throughput). The job
+runs with --latency-topic, and once the resources are exported collect-latency.py
+adds latency.csv and latency-summary.csv, the latency table in summary.txt and the
+coverage counts under "latency" in pipeline.json. A latency failure keeps the
+resource results and makes the run exit non-zero.
 """
 
 import argparse
@@ -37,12 +41,15 @@ import containers
 from flow import flow_lock
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "validation"))
+import config  # noqa: E402
 COMPOSE = ["docker", "compose", "-f", "compose.yaml", "-f", "compose.monitoring.yaml"]
 INFRA_SERVICES = ["postgres", "redpanda-0", "console", "jobmanager", "taskmanager"]
 MONITORING_SERVICES = ["docker-stats-exporter", "prometheus", "grafana"]
 RESULT_TOPICS = ("ema-windows", "trade-advisories")
 REQUIRED_JOBS = ("docker", "flink-taskmanager", "redpanda")
 SOURCE_RECORDS = 'sum(flink_taskmanager_job_task_operator_numRecordsIn{operator_name=~"Source.*"})'
+JOB_ARGS = ["--starting-offsets", "earliest", "--latency-topic", config.TOPIC_LATENCY_STAMPS]
 PRODUCER_SUMMARY = re.compile(r"published=(\d+)\s+skipped=(\d+)\s+rejected=(\d+)")
 
 
@@ -54,6 +61,14 @@ def load_collector():
 
 
 collector = load_collector()
+
+
+def load_latency_collector():
+    # Loaded on use: it needs the protobuf bindings, which importing this module does not.
+    spec = importlib.util.spec_from_file_location("collect_latency", ROOT / "scripts/collect-latency.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class Settle:
@@ -233,7 +248,7 @@ def measure(args, producer_args):
 
     with flow_lock():
         try:
-            run([sys.executable, "scripts/submit-flink-job.py", "--timeout", str(args.flink_start_timeout), "--", "--starting-offsets", "earliest"])
+            run([sys.executable, "scripts/submit-flink-job.py", "--timeout", str(args.flink_start_timeout), "--", *JOB_ARGS])
             producer_command = containers.producer_command(producer_args, producer_name, compose=COMPOSE)
             materializer.start()
             started = time.time()
@@ -311,12 +326,30 @@ def export(args, result, producer_args):
     return pipeline, table
 
 
+def add_latency(out_dir, pipeline, table, collect_fn):
+    """Add the latency report to a finished run's results; returns an error message or None.
+
+    collect_fn() -> (summary, coverage, latency_table). On success summary.txt gains
+    the latency table, pipeline.json a "latency" entry with the coverage counts, and
+    the table is printed. On failure the resource results are left untouched.
+    """
+    try:
+        _, coverage, latency_table = collect_fn()
+    except (RuntimeError, OSError) as error:
+        return str(error)
+    (out_dir / "summary.txt").write_text(f"{table}\n\n{latency_table}\n")
+    (out_dir / "pipeline.json").write_text(json.dumps({**pipeline, "latency": coverage}, indent=2) + "\n")
+    print(f"\n{latency_table}\n")
+    return None
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     producer_args = argv[argv.index("--") + 1:] if "--" in argv else []
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", type=Path, default=ROOT / "bin/metrics" / datetime.now().strftime("%Y%m%d-%H%M%S"), help="output directory")
     parser.add_argument("--prometheus-url", default="http://localhost:9090")
+    parser.add_argument("--brokers", default=config.BROKERS, help="Redpanda address reachable from this host, for the latency report")
     parser.add_argument("--idle-seconds", type=float, default=20, help="how long nothing may move before the run counts as finished")
     parser.add_argument("--timeout", type=float, default=3600, help="seconds to wait for the pipeline to settle after the producer exits")
     parser.add_argument("--poll", type=float, default=2, help="seconds between progress checks")
@@ -337,7 +370,12 @@ def main(argv=None):
     print(f"\n{table}\n")
     print(f"Events through Flink: {pipeline['flink_source_records']}  EMA windows: {pipeline['ema_windows']}  advisories: {pipeline['trade_advisories']}")
     print(f"Producer {pipeline['producer_s']}s ({pipeline['producer_events_per_s']} events/s), end to end {pipeline['total_s']}s ({pipeline['end_to_end_events_per_s']} events/s)")
+    latency_error = add_latency(args.out, pipeline, table,
+                                lambda: load_latency_collector().collect(args.brokers, args.out))
     print(f"Results in {args.out}")
+    if latency_error:
+        print(f"Error: the latency report failed: {latency_error}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

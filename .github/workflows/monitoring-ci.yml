@@ -8,6 +8,8 @@ on:
       - 'monitoring/**'
       - 'scripts/collect-resource-metrics.py'
       - 'scripts/collect_resource_metrics_test.py'
+      - 'scripts/collect-latency.py'
+      - 'scripts/collect_latency_test.py'
       - 'scripts/measure-flow.py'
       - 'scripts/measure_flow_test.py'
       - 'scripts/flow.py'
@@ -16,6 +18,10 @@ on:
       - 'scripts/run-producer.py'
       - 'scripts/run_producer_test.py'
       - 'validation/csv_inputs.py'
+      - 'validation/kafka_topics.py'
+      - 'validation/config.py'
+      - 'validation/bindings.py'
+      - 'gen/python/**'
       - '.github/workflows/monitoring-ci.yml'
   pull_request:
     paths:
@@ -24,6 +30,8 @@ on:
       - 'monitoring/**'
       - 'scripts/collect-resource-metrics.py'
       - 'scripts/collect_resource_metrics_test.py'
+      - 'scripts/collect-latency.py'
+      - 'scripts/collect_latency_test.py'
       - 'scripts/measure-flow.py'
       - 'scripts/measure_flow_test.py'
       - 'scripts/flow.py'
@@ -32,6 +40,10 @@ on:
       - 'scripts/run-producer.py'
       - 'scripts/run_producer_test.py'
       - 'validation/csv_inputs.py'
+      - 'validation/kafka_topics.py'
+      - 'validation/config.py'
+      - 'validation/bindings.py'
+      - 'gen/python/**'
       - '.github/workflows/monitoring-ci.yml'
   workflow_dispatch:
 
@@ -61,10 +73,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Install the protobuf runtime for the generated bindings
+        run: pip install "$(grep '^protobuf==' validation/requirements.txt)"
       - name: Run the tests
         run: |
           python3 monitoring/docker-stats-exporter/exporter_test.py
           python3 scripts/collect_resource_metrics_test.py
+          python3 scripts/collect_latency_test.py
+          python3 validation/kafka_topics_test.py
           python3 scripts/measure_flow_test.py
           python3 scripts/containers_test.py
           python3 scripts/run_producer_test.py
