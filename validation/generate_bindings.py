@@ -30,7 +30,7 @@ def main():
     (GEN_DIR / "market" / "__init__.py").touch()
     (GEN_DIR / "market" / "v1" / "__init__.py").touch()
     outputs = [GEN_DIR / "market" / "v1" / f"{stem}_pb2.py"
-               for stem in ("events", "ema", "advisory", "dlq")]
+               for stem in ("events", "ema", "advisory", "dlq", "latency")]
     missing = [p for p in outputs if not p.is_file()]
     assert not missing, f"missing generated bindings: {missing}"
     for p in outputs:

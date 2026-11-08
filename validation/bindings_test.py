@@ -78,5 +78,28 @@ class AdvisoryActionConstantsTest(unittest.TestCase):
         self.assertEqual(bindings.ADVISORY_ACTION_SELL, 2)
 
 
+class StageStampTest(unittest.TestCase):
+    def test_fields_survive_serialization(self):
+        stamp = bindings.StageStamp(
+            symbol="IUSAC.FR",
+            window_end=Timestamp(seconds=1636693500),
+            stage=bindings.STAGE_CROSSOVER_EVALUATED,
+            at=Timestamp(seconds=1636693501, nanos=250_000_000),
+            advisory_emitted=True,
+        )
+        parsed = bindings.StageStamp.FromString(stamp.SerializeToString())
+        self.assertEqual(parsed, stamp)
+        self.assertEqual(parsed.symbol, "IUSAC.FR")
+        self.assertEqual(parsed.window_end.seconds, 1636693500)
+        self.assertEqual(parsed.stage, bindings.STAGE_CROSSOVER_EVALUATED)
+        self.assertEqual(parsed.at.nanos, 250_000_000)
+        self.assertTrue(parsed.advisory_emitted)
+
+    def test_values_match_proto_schema(self):
+        self.assertEqual(bindings.STAGE_WINDOW_FIRED, 1)
+        self.assertEqual(bindings.STAGE_EMA_COMPUTED, 2)
+        self.assertEqual(bindings.STAGE_CROSSOVER_EVALUATED, 3)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

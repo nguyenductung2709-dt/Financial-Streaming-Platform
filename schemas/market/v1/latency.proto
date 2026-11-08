@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package market.v1;
+
+option go_package = "financial-streaming-platform/gen/go/market/v1;marketv1";
+
+import "google/protobuf/timestamp.proto";
+
+// Measurement only: one stamp per pipeline stage and window, published when the
+// processor runs with --latency-topic. Not part of the domain data.
+message StageStamp {
+    string symbol = 1;
+    google.protobuf.Timestamp window_end = 2;  // Exclusive; matches EmaWindow.window_end.
+    Stage stage = 3;
+    google.protobuf.Timestamp at = 4;          // Wall-clock time the stage finished.
+    bool advisory_emitted = 5;                 // Only meaningful for STAGE_CROSSOVER_EVALUATED.
+}
+
+enum Stage {
+    STAGE_UNSPECIFIED = 0;
+    STAGE_WINDOW_FIRED = 1;
+    STAGE_EMA_COMPUTED = 2;
+    STAGE_CROSSOVER_EVALUATED = 3;
+}
