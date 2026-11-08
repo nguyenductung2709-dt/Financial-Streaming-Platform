@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 // Exercise the actual dashboard with deterministic DOM, network, and timers.
-async function dashboard() {
+async function dashboard(storage = {}) {
   const nodes = new Map();
   const timers = new Map();
   const sources = [];
@@ -21,7 +21,10 @@ async function dashboard() {
     URL, URLSearchParams, AbortSignal,
     location: { protocol: 'http:', origin: 'http://localhost:8000' },
     document: { documentElement: node('html'), getElementById: node, querySelectorAll: () => [] },
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: {
+      getItem: (key) => Object.hasOwn(storage, key) ? JSON.stringify(storage[key]) : null,
+      setItem() {},
+    },
     Plotly: { react() {} },
     EventSource: class {
       constructor(url) { this.url = url; this.listeners = {}; sources.push(this); }
@@ -38,7 +41,7 @@ async function dashboard() {
   const source = original.replace(/\}\)\(\);\s*$/, `
     globalThis.review = {state, mergeFeed, renderFeed, push, sync, changed, applySubscription, loadSymbols,
       getPending: () => syncPromise, getBuffer: () => buffer,
-      HISTORY_MAX, BUFFER_MAX};
+      getKnown: () => knownFeedKeys, HISTORY_MAX, BUFFER_MAX};
   })();`);
   assert.notEqual(source, original, 'test harness must expose the dashboard');
   vm.runInNewContext(source, ctx);
@@ -66,6 +69,31 @@ function snapshots(app, windows = [], feed = [], advisories = []) {
     '/api/signals': feed, '/api/symbols': [],
   })[url.pathname] });
 }
+
+test('unfollowed symbols cannot crowd an older followed signal out of the feed', async () => {
+  const app = await dashboard();
+  select(app);
+  app.mergeFeed(Array.from({ length: 300 }, (_, i) => row(15, '1', i)));
+  app.state.watchlist = ['B'];
+  assert.equal(app.mergeFeed([row(15, '1', -1, 'B')]), true);
+  app.renderFeed();
+  assert.equal(app.state.feed.length, 1);
+  assert.equal(app.state.feed[0].symbol, 'B');
+  assert.doesNotMatch(app.node('feedList').innerHTML, /No signals yet/);
+});
+
+test('invalid saved watchlists do not prevent the dashboard from opening', async () => {
+  for (const watchlist of [null, 42, {}, 'A']) {
+    const app = await dashboard({ watchlist });
+    assert.equal(app.state.watchlist.length, 0);
+    assert.equal(app.state.feed.length, 0);
+  }
+});
+
+test('saved watchlists retain unique symbol strings', async () => {
+  const app = await dashboard({ watchlist: ['A', 'A', 42, null, 'B'] });
+  assert.deepEqual(Array.from(app.state.watchlist), ['A', 'B']);
+});
 
 test('authoritative empty snapshots remove deleted windows, advisories, and signals', async () => {
   const app = await dashboard();
@@ -178,6 +206,32 @@ test('late replies for a previous chart selection are discarded', async () => {
   await pending;
   assert.equal(app.state.windows.A, undefined);
   assert.equal(app.state.windows.B[row().window_start].symbol, 'B');
+});
+
+test('chart history and highlight keys are bounded; unfollow evicts caches', async () => {
+  const app = await dashboard();
+  select(app);
+  for (let i = 0; i < app.HISTORY_MAX + 100; i++) {
+    app.push('window', row(15, String(i + 1), i));
+    app.push('advisory', row(15, String(i + 1), i));
+  }
+  app.ctx.flush();
+  assert.equal(Object.keys(app.state.windows.A).length, app.HISTORY_MAX);
+  assert.equal(Object.keys(app.state.advisories.A).length, app.HISTORY_MAX);
+  assert.equal(app.state.windows.A[row().window_start], undefined);
+  assert.ok(app.state.windows.A[row(15, '101', 100).window_start]);
+  assert.ok(app.state.windows.A[row(15, '5100', app.HISTORY_MAX + 99).window_start]);
+  assert.equal(app.state.feed.length, 300);
+  assert.equal(app.state.feed[0].window_start, row(15, '5100', app.HISTORY_MAX + 99).window_start);
+  assert.equal(app.getKnown().size, 300);
+  app.state.watchlist = [];
+  app.state.slot.A = null;
+  app.changed();
+  assert.equal(app.state.windows.A, undefined);
+  assert.equal(app.state.advisories.A, undefined);
+  assert.equal(app.state.feed.length, 0);
+  assert.equal(app.getKnown().size, 0);
+  await app.getPending();
 });
 
 test('closed EventSource messages cannot corrupt the current subscription', async () => {

@@ -53,9 +53,10 @@
     return res.json();
   }
 
+  const savedWatchlist = load("watchlist", []);
   const state = {
     symbols: [],
-    watchlist: [...new Set(load("watchlist", []).filter((s) => typeof s === "string"))], slot: {A: null, B: null,},
+    watchlist: [...new Set((Array.isArray(savedWatchlist) ? savedWatchlist : []).filter((s) => typeof s === "string"))], slot: {A: null, B: null},
     query: "", exchange: "", onlyWatched: false, feedFilter: "all", windows: {}, advisories: {}, feed: [],
   };
 
@@ -70,6 +71,13 @@
   //Refresh the interface and update the backend subscription after a change
   function changed() {
     save("watchlist", state.watchlist);
+    const charts = new Set(charted());
+    for (const bucket of [state.windows, state.advisories]) {
+      for (const symbol of Object.keys(bucket)) {
+        if (!charts.has(symbol)) delete bucket[symbol];
+      }
+    }
+    state.feed = state.feed.filter((row) => state.watchlist.includes(row.symbol));
     renderChips();
     renderList();
     renderFeed();
@@ -444,28 +452,27 @@
 
   // Revisions are decimal strings so comparisons stay exact beyond 2^53.
   const newer = (a, b) => !b || BigInt(a.revision || "0") >= BigInt(b.revision || "0");
+  const bounded = (rows, limit) => [...rows].sort((a, b) =>
+    b.window_start.localeCompare(a.window_start) || a.symbol.localeCompare(b.symbol)
+  ).slice(0, limit);
   const history = (rows) => Object.fromEntries(
-    rows.map((row) => [row.window_start, row])
+    bounded(rows, HISTORY_MAX).map((row) => [row.window_start, row])
   );
 
   //Merge new signals with existing ones and avoid duplicate entries
   function mergeFeed(rows) {
-    const byKey = new Map(state.feed.map((r) => [feedKey(r), r]));
+    const watching = new Set(subscribed());
+    const byKey = new Map(state.feed.filter((r) => watching.has(r.symbol)).map((r) => [feedKey(r), r]));
 
     for (const row of rows) {
-      if (newer(row, byKey.get(feedKey(row)))) {
+      if (watching.has(row.symbol) && newer(row, byKey.get(feedKey(row)))) {
         byKey.set(feedKey(row), row);
       }
     }
 
-    const next = [...byKey.values()]
-      .sort((a, b) =>
-        b.window_start.localeCompare(a.window_start) ||
-        a.symbol.localeCompare(b.symbol)
-      )
-      .slice(0, FEED_MAX);
+    const next = bounded(byKey.values(), FEED_MAX);
 
-    const changed = next.some((row, i) => JSON.stringify(row) !== JSON.stringify(state.feed[i]));
+    const changed = next.length !== state.feed.length || next.some((row, i) => JSON.stringify(row) !== JSON.stringify(state.feed[i]));
     if (!changed) return false;
     state.feed = next;
     return true;
@@ -502,7 +509,7 @@
 
     $("feedList").innerHTML = html;
 
-    items.forEach((r) => knownFeedKeys.add(feedKey(r)));
+    knownFeedKeys = new Set(state.feed.map(feedKey));
 
     if (items.length) feedPrimed = true;
   }
@@ -565,7 +572,14 @@
       }
     }
 
-    if (chartsDirty) updateCharts();
+    if (chartsDirty) {
+      for (const bucket of [state.windows, state.advisories]) {
+        for (const symbol of chartSet) {
+          bucket[symbol] = history(Object.values(bucket[symbol] || {}));
+        }
+      }
+      updateCharts();
+    }
 
     if (feedRows.length && mergeFeed(feedRows)) {
       renderFeed();
