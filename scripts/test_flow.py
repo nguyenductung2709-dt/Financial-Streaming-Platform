@@ -201,6 +201,13 @@ class FlowLifecycleTests(unittest.TestCase):
         self.assertGreater(calls.index(stop), producer)
         self.assertIn(f"data-producer-run-{process.pid}", calls[producer])
 
+    def test_a_loopback_broker_fails_before_anything_starts(self):
+        process = self.run_flow(f"-csvPath={self.csv}", "-brokers=localhost:19092")
+        output, _ = process.communicate(timeout=5)
+        self.assertEqual(process.returncode, 1, output)
+        self.assertIn("container itself", output)
+        self.assertEqual(self.docker_calls(), [])
+
     def test_missing_csv_fails_before_anything_starts(self):
         process = self.run_flow(f"-csvPath={self.root / 'nope.csv'}")
         output, _ = process.communicate(timeout=5)

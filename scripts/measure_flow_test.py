@@ -131,6 +131,13 @@ class CheckInputsWrapperTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r"Cannot use the CSV input.*Nothing was reset\."):
             measure.check_inputs(["-csvPath=/nonexistent/day.csv"])
 
+    def test_a_loopback_broker_says_nothing_was_reset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "a.csv"
+            path.write_text("x")
+            with self.assertRaisesRegex(RuntimeError, r"container itself.*Nothing was reset\."):
+                measure.check_inputs([f"-csvPath={path}", "-brokers=localhost:19092"])
+
     def test_a_good_input_lists_its_files(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "a.csv"
