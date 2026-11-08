@@ -21,13 +21,17 @@ reset_flow = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reset_flow)
 
 FIXTURE = """#!/usr/bin/env python3
+# Fake docker and make: log every call; docker also fakes the producer client,
+# the materializer container (up/ps/kill) and everything else as a no-op.
 import json, os, sys, time
 from pathlib import Path
+
 name = Path(sys.argv[0]).name
+args = sys.argv[1:]
 with open(os.environ['FLOW_TEST_EVENTS'], 'a') as output:
-    output.write(json.dumps({'name': name, 'args': sys.argv[1:], 'pid': os.getpid()}) + '\\n')
+    output.write(json.dumps({'name': name, 'args': args, 'pid': os.getpid()}) + '\\n')
 if name == 'backend-python':
-    if sys.argv[1].endswith('migrate.py'):
+    if args[0].endswith('migrate.py'):
         sys.exit(6 if os.environ.get('FLOW_TEST_FAIL_MIGRATION') else 0)
     if os.environ.get('FLOW_TEST_FAIL_BACKEND'):
         sys.exit(9)
@@ -40,17 +44,42 @@ if name == 'backend-python':
         def log_message(self, *args):
             pass
     HTTPServer(('127.0.0.1', int(os.environ['PORT'])), Health).serve_forever()
-elif name == 'materializer' and not sys.argv[1:]:
-    if os.environ.get('FLOW_TEST_FAIL_MATERIALIZER'):
-        while not Path(os.environ['FLOW_TEST_FAIL_MATERIALIZER']).exists():
-            time.sleep(0.01)
-        sys.exit(7)
-elif name == 'data-producer' and not os.environ.get('FLOW_TEST_FINITE_PRODUCER'):
-    pass
-else:
+if name != 'docker':
     sys.exit(0)
-while True:
-    time.sleep(0.1)
+
+state_file = Path(os.environ['FLOW_TEST_STATE'])
+
+
+def set_state(state, code=0):
+    state_file.write_text(json.dumps({'state': state, 'code': code, 'since': time.time()}))
+
+
+def container():
+    if not state_file.exists():
+        return None
+    state = json.loads(state_file.read_text())
+    if state['state'] == 'running' and os.environ.get('FLOW_TEST_FAIL_MATERIALIZER') and time.time() - state['since'] >= 0.2:
+        return {'State': 'exited', 'ExitCode': 7}
+    return {'State': state['state'], 'ExitCode': state['code']}
+
+
+rest = args[1:] if args[:1] == ['compose'] else args
+if rest[:1] == ['run'] and 'data-producer' in rest:
+    if os.environ.get('FLOW_TEST_FAIL_PRODUCER'):
+        sys.exit(3)
+    if os.environ.get('FLOW_TEST_FINITE_PRODUCER'):
+        sys.exit(0)
+    while True:
+        time.sleep(0.1)
+elif rest[:3] == ['up', '-d', 'materializer']:
+    set_state('running')
+elif rest[:1] == ['ps']:
+    info = container()
+    if info:
+        print(json.dumps({'Service': 'materializer', **info}))
+elif rest[:1] == ['kill']:
+    set_state('exited', 137 if 'SIGKILL' in rest else 0)
+sys.exit(0)
 """
 
 
@@ -59,17 +88,23 @@ class FlowLifecycleTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(prefix="flow-test-")
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        (self.root / "scripts").mkdir()
-        (self.root / "bin").mkdir()
-        shutil.copyfile(Path(flow.__file__), self.root / "scripts/flow.py")
-        shutil.copyfile(Path(flow.__file__).with_name("stop-flow.py"), self.root / "scripts/stop-flow.py")
-        shutil.copyfile(Path(flow.__file__).with_name("reset-flow.py"), self.root / "scripts/reset-flow.py")
-        for name in ("docker", "make", "materializer", "data-producer", "backend-python"):
+        repo = Path(flow.__file__).resolve().parent.parent
+        for name in ("scripts", "validation", "bin"):
+            (self.root / name).mkdir()
+        shutil.copyfile(repo / "scripts/flow.py", self.root / "scripts/flow.py")
+        shutil.copyfile(repo / "scripts/containers.py", self.root / "scripts/containers.py")
+        shutil.copyfile(repo / "scripts/stop-flow.py", self.root / "scripts/stop-flow.py")
+        shutil.copyfile(repo / "scripts/reset-flow.py", self.root / "scripts/reset-flow.py")
+        shutil.copyfile(repo / "validation/csv_inputs.py", self.root / "validation/csv_inputs.py")
+        for name in ("docker", "make", "backend-python"):
             executable = self.root / "bin" / name
             executable.write_text(FIXTURE)
             executable.chmod(0o755)
+        self.csv = self.root / "trades.csv"
+        self.csv.write_text("x")
         self.events_file = self.root / "events.jsonl"
-        self.env = dict(os.environ, FLOW_TEST_EVENTS=str(self.events_file))
+        self.state_file = self.root / "materializer.state"
+        self.env = dict(os.environ, FLOW_TEST_EVENTS=str(self.events_file), FLOW_TEST_STATE=str(self.state_file))
         self.env["PATH"] = str(self.root / "bin") + os.pathsep + self.env["PATH"]
         self.env["BACKEND_PYTHON"] = str(self.root / "bin/backend-python")
         with socket.socket() as sock:
@@ -81,15 +116,26 @@ class FlowLifecycleTests(unittest.TestCase):
             return []
         return [json.loads(line) for line in self.events_file.read_text().splitlines()]
 
+    def docker_calls(self):
+        return [event["args"] for event in self.events() if event["name"] == "docker"]
+
+    def producer_started(self):
+        return any(args[:1] == ["compose"] and "run" in args and "data-producer" in args for args in self.docker_calls())
+
+    def run_flow(self, *producer_args, **env):
+        return subprocess.Popen([sys.executable, str(self.root / "scripts/flow.py"), "--", *producer_args],
+                                env=self.env | env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
     def start(self, **env):
-        process = subprocess.Popen([sys.executable, str(self.root / "scripts/flow.py"), "--", "-maxEvents=10"],
-                                   env=self.env | env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        process = self.run_flow(f"-csvPath={self.csv}", "-maxEvents=10", **env)
         self.addCleanup(self.stop, process)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            if any(event["name"] == "data-producer" for event in self.events()):
+            if self.producer_started():
                 return process
             if process.poll() is not None:
+                if self.producer_started():
+                    return process
                 self.fail(process.communicate()[0])
             time.sleep(0.02)
         self.fail("flow did not start its producer")
@@ -104,21 +150,30 @@ class FlowLifecycleTests(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):
                 os.kill(event["pid"], 0)
 
+    def container_state(self):
+        return json.loads(self.state_file.read_text())["state"]
+
     def test_complete_start_and_signal_shutdown(self):
         process = self.start(FLOW_TEST_FINITE_PRODUCER="1")
         time.sleep(0.3)
         self.assertIsNone(process.poll(), "materializer must keep running after producer completion")
         events = self.events()
-        self.assertIn("postgres", events[0]["args"])
-        self.assertTrue(any(event["name"] == "materializer" and event["args"] == ["-init-db"] for event in events))
+        calls = self.docker_calls()
+        self.assertIn("postgres", calls[0])
+        self.assertIn(["compose", "run", "--rm", "-T", "materializer", "-init-db"], calls)
+        self.assertIn(["compose", "up", "-d", "materializer"], calls)
         self.assertTrue(any(event["name"] == "make" and event["args"] == ["run-streaming-processor"] for event in events))
         migrated = next(i for i, event in enumerate(events) if any(arg.endswith("migrate.py") for arg in event["args"]))
         backend = next(i for i, event in enumerate(events) if any(arg.endswith("main.py") for arg in event["args"]))
-        producer = next(i for i, event in enumerate(events) if event["name"] == "data-producer")
+        producer = next(i for i, event in enumerate(events)
+                        if event["name"] == "docker" and "data-producer" in event["args"] and "run" in event["args"])
         self.assertLess(migrated, backend)
         self.assertLess(backend, producer)
+        self.assertIn(f"{self.csv.resolve()}:/input/00-trades.csv:ro", events[producer]["args"])
+        self.assertEqual(events[producer]["args"][-2:], ["-maxEvents=10", "-csvPath=/input/00-trades.csv"])
         self.stop(process)
         self.assertEqual(process.returncode, 0)
+        self.assertEqual(self.container_state(), "exited")
         self.assert_children_stopped()
 
     def test_materializer_failure_stops_producer(self):
@@ -129,6 +184,29 @@ class FlowLifecycleTests(unittest.TestCase):
         self.assertEqual(process.returncode, 1, output)
         self.assertIn("Materializer exited with status 7", output)
         self.assert_children_stopped()
+
+    def test_producer_failure_is_reported(self):
+        process = self.start(FLOW_TEST_FAIL_PRODUCER="1")
+        output, _ = process.communicate(timeout=5)
+        self.assertEqual(process.returncode, 1, output)
+        self.assertIn("Producer exited with status 3", output)
+
+    def test_abnormal_stop_stops_the_producer_container_by_name(self):
+        process = self.start(FLOW_TEST_FAIL_MATERIALIZER="1")
+        process.communicate(timeout=5)
+        calls = self.docker_calls()
+        stop = ["stop", "-t", "10", f"data-producer-run-{process.pid}"]
+        self.assertIn(stop, calls)
+        producer = next(i for i, args in enumerate(calls) if "data-producer" in args and "run" in args)
+        self.assertGreater(calls.index(stop), producer)
+        self.assertIn(f"data-producer-run-{process.pid}", calls[producer])
+
+    def test_missing_csv_fails_before_anything_starts(self):
+        process = self.run_flow(f"-csvPath={self.root / 'nope.csv'}")
+        output, _ = process.communicate(timeout=5)
+        self.assertEqual(process.returncode, 1, output)
+        self.assertIn("Cannot use the CSV input", output)
+        self.assertEqual(self.docker_calls(), [])
 
     def test_reset_stops_managed_processes_before_taking_lock(self):
         process = self.start()
@@ -143,20 +221,21 @@ class FlowLifecycleTests(unittest.TestCase):
                 self.assertIn("already running", another.stderr)
 
     def test_failed_migration_prevents_publication(self):
-        process = subprocess.run([sys.executable, str(self.root / "scripts/flow.py")],
+        process = subprocess.run([sys.executable, str(self.root / "scripts/flow.py"), "--", f"-csvPath={self.csv}"],
                                  env=self.env | {"FLOW_TEST_FAIL_MIGRATION": "1"},
                                  text=True, capture_output=True, timeout=5)
         self.assertEqual(process.returncode, 1)
-        self.assertFalse(any(event["name"] == "data-producer" for event in self.events()))
+        self.assertTrue(any(event["name"] == "backend-python" for event in self.events()), process.stderr)
+        self.assertFalse(self.producer_started())
         self.assert_children_stopped()
 
     def test_failed_backend_stops_materializer_before_publishing(self):
-        process = subprocess.run([sys.executable, str(self.root / "scripts/flow.py")],
+        process = subprocess.run([sys.executable, str(self.root / "scripts/flow.py"), "--", f"-csvPath={self.csv}"],
                                  env=self.env | {"FLOW_TEST_FAIL_BACKEND": "1"},
                                  text=True, capture_output=True, timeout=5)
         self.assertEqual(process.returncode, 1)
         self.assertIn("Backend exited with status 9", process.stderr)
-        self.assertFalse(any(event["name"] == "data-producer" for event in self.events()))
+        self.assertFalse(self.producer_started())
         self.assert_children_stopped()
 
     def teardown_flow(self, reset):
