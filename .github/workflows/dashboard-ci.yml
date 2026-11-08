@@ -1,0 +1,83 @@
+name: Dashboard CI
+
+on:
+  push:
+    paths:
+      - 'services/backend/**'
+      - 'services/frontend/**'
+      - '!services/backend/**/*.md'
+      - '!services/frontend/**/*.md'
+      - 'services/materializer/migrations/**'
+      - 'scripts/flow.py'
+      - 'scripts/stop-flow.py'
+      - 'scripts/test_flow.py'
+      - 'scripts/reset-flow.py'
+      - 'scripts/reset-flow-data.py'
+      - 'scripts/reset_flow_test.py'
+      - 'scripts/csv_make_test.py'
+      - 'Makefile'
+      - '.github/workflows/dashboard-ci.yml'
+  pull_request:
+    paths:
+      - 'services/backend/**'
+      - 'services/frontend/**'
+      - '!services/backend/**/*.md'
+      - '!services/frontend/**/*.md'
+      - 'services/materializer/migrations/**'
+      - 'scripts/flow.py'
+      - 'scripts/stop-flow.py'
+      - 'scripts/test_flow.py'
+      - 'scripts/reset-flow.py'
+      - 'scripts/reset-flow-data.py'
+      - 'scripts/reset_flow_test.py'
+      - 'scripts/csv_make_test.py'
+      - 'Makefile'
+      - '.github/workflows/dashboard-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: backend_test
+          POSTGRES_USER: financial
+          POSTGRES_PASSWORD: financial_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U financial -d backend_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      BACKEND_TEST_DATABASE_URL: postgresql://financial:financial_test@localhost:5432/backend_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install backend dependencies
+        run: python -m pip install -r services/backend/requirements.txt
+      - name: Backend and PostgreSQL regression tests
+        run: python -m unittest discover -s services/backend -p '*_test.py' -v
+      - name: Dashboard syntax and regression tests
+        run: |
+          node --check services/frontend/app.js
+          node --test services/frontend/app.test.cjs
+      - name: Startup and cleanup lifecycle tests
+        run: |
+          python -m unittest discover -s scripts -p test_flow.py -v
+          python -m unittest discover -s scripts -p reset_flow_test.py -v
+          python -m unittest discover -s scripts -p csv_make_test.py -v

@@ -42,7 +42,8 @@ if name == 'backend-python':
     HTTPServer(('127.0.0.1', int(os.environ['PORT'])), Health).serve_forever()
 elif name == 'materializer' and not sys.argv[1:]:
     if os.environ.get('FLOW_TEST_FAIL_MATERIALIZER'):
-        time.sleep(0.2)
+        while not Path(os.environ['FLOW_TEST_FAIL_MATERIALIZER']).exists():
+            time.sleep(0.01)
         sys.exit(7)
 elif name == 'data-producer' and not os.environ.get('FLOW_TEST_FINITE_PRODUCER'):
     pass
@@ -121,7 +122,9 @@ class FlowLifecycleTests(unittest.TestCase):
         self.assert_children_stopped()
 
     def test_materializer_failure_stops_producer(self):
-        process = self.start(FLOW_TEST_FAIL_MATERIALIZER="1")
+        failure = self.root / "fail-materializer"
+        process = self.start(FLOW_TEST_FAIL_MATERIALIZER=str(failure))
+        failure.touch()
         output, _ = process.communicate(timeout=5)
         self.assertEqual(process.returncode, 1, output)
         self.assertIn("Materializer exited with status 7", output)
