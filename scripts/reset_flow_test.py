@@ -132,11 +132,17 @@ class RecreateTopicsTest(unittest.TestCase):
         expected = []
         for topic in self.mod.TOPICS:
             expected.append([*rpk, "delete", topic, *broker])
+            timestamps = (["-c", "message.timestamp.type=LogAppendTime"]
+                          if topic in ("ema-windows", "trade-advisories") else [])
             expected.append([*rpk, "create", topic, "--partitions", "1",
-                             "--replicas", "1", *broker])
+                             "--replicas", "1", *timestamps, *broker])
         expected.append([*rpk, "describe", *self.mod.TOPICS,
                          "--format", "json", *broker])
         self.assertEqual(runner.commands, expected)
+
+    def test_latency_stamps_is_a_project_topic(self):
+        self.assertEqual(self.mod.TOPICS[-1], "latency-stamps")
+        self.assertEqual(len(self.mod.TOPICS), 5)
 
     def test_passes_on_pristine_topics(self):
         runner = self.recreate({name: [(0, 0)] for name in self.mod.TOPICS})
