@@ -109,6 +109,12 @@ keep track of which migrations have been applied. Container startup does not
 apply migrations automatically. Each migration has an `.up.sql` file to apply
 the change and a `.down.sql` file to reverse it.
 
+The backend requires migrations 002, 003, and 004 for notifications and row
+revisions. Follow the [backend database setup](../backend/README.md) to apply
+missing migrations while preserving existing data. The materializer's
+`-init-db` flag initializes migration 001 only. Roll back newer migrations in
+reverse order before rolling back 001.
+
 To roll back this initial migration, run the following command. It drops all
 three materializer tables and their stored results:
 
