@@ -17,43 +17,50 @@ See the [full flow instructions](../../README.md#run-the-complete-local-flow).
 To run just the materializer, follow these steps.
 
 From the repository root, copy `.env.example` to `.env` once if you do not
-already have one. Edit its `MATERIALIZER_*` settings, then start the local
-services and create the topics:
+already have one, then start the local services and create the topics:
 
 ```sh
 docker compose up -d --wait postgres redpanda-0
 docker compose run --rm create-topic
 ```
 
-Apply the initial migration below once before the first run, then start the
-materializer in its own terminal:
+Apply the initial migration below once before the first run (or run
+`docker compose run --rm materializer -init-db`), then start the materializer in its
+own terminal:
 
 ```sh
 make run-materializer
 ```
 
-The Makefile requires `.env` and loads the materializer settings from it.
-Nonempty `MATERIALIZER_*` variables already set in your environment, or passed
-as Make command-line variables, take precedence over `.env`.
+This builds the image and runs the materializer as a container in the foreground;
+Ctrl+C stops it. The Makefile requires `.env`. Nonempty `MATERIALIZER_*` variables
+already set in your environment, or passed as Make command-line variables, take
+precedence over `.env`.
 
-| Environment variable | `.env.example` value |
+The container runs on the Compose network, so `compose.yaml` supplies its settings:
+
+| Environment variable | In the container |
 | --- | --- |
-| `MATERIALIZER_DATABASE_URL` | `postgresql://financial:financial_dev@localhost:15432/financial_streaming?sslmode=disable` |
-| `MATERIALIZER_BROKERS` | `localhost:19092`; accepts comma-separated addresses |
-| `MATERIALIZER_GROUP_ID` | `materializer` |
+| `MATERIALIZER_DATABASE_URL` | Built from `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` (the `postgres` service's defaults), at `postgres:5432`. Percent-encode URL-reserved characters (`@ : / ? # %`) in `POSTGRES_PASSWORD`; Compose cannot encode them. |
+| `MATERIALIZER_BROKERS` | `redpanda-0:9092` |
+| `MATERIALIZER_GROUP_ID` | `materializer`, or the value from your environment, Make or `.env` |
 
-To customize these settings, edit `.env`, or override a setting for one run:
+The localhost values in `.env.example` (`localhost:15432` and `localhost:19092`) are
+for tools that run on the host, such as the Python validation scripts. Override the
+group for one run:
 
 ```sh
 make run-materializer MATERIALIZER_GROUP_ID=materializer-dev
 ```
 
-`make build-materializer` builds `bin/materializer`. When running that binary
-directly, export `MATERIALIZER_DATABASE_URL` yourself; the binary reads environment
-variables and does not load `.env`. Its broker and group defaults are the same.
+To run the binary on the host instead (for example `go run ./services/materializer`),
+export `MATERIALIZER_DATABASE_URL` yourself; the binary reads environment variables and
+does not load `.env`. Its defaults are `localhost:19092` for the brokers and
+`materializer` for the group.
 
-Update `MATERIALIZER_DATABASE_URL` if you change PostgreSQL's credentials, port,
-or database name. The database URL is never included in startup logs.
+Update `POSTGRES_USER`, `POSTGRES_PASSWORD` or `POSTGRES_DB` (and the matching
+`.env.example` URL for host tools) if you change PostgreSQL's credentials or database
+name. The database URL is never included in startup logs.
 
 Ctrl+C or SIGTERM cancels processing. If the database has already committed the
 current batch, the consumer first attempts to commit its offsets with a separate

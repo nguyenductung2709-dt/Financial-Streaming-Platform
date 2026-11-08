@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'compose.yaml'
+      - '.dockerignore'
       - '.github/workflows/infrastructure-ci.yml'
   pull_request:
     paths:
       - 'compose.yaml'
+      - '.dockerignore'
       - '.github/workflows/infrastructure-ci.yml'
   workflow_dispatch:
 
@@ -22,4 +24,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate Compose configuration
-        run: docker compose -f compose.yaml config --quiet
+        run: docker compose --profile '*' -f compose.yaml config --quiet

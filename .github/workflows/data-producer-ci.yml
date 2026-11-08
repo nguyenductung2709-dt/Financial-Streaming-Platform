@@ -10,6 +10,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
+      - '.dockerignore'
       - '.githooks/pre-commit'
       - '.github/workflows/data-producer-ci.yml'
   pull_request:
@@ -21,6 +22,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
+      - '.dockerignore'
       - '.githooks/pre-commit'
       - '.github/workflows/data-producer-ci.yml'
   workflow_dispatch:
@@ -92,4 +94,7 @@ jobs:
           retention-days: 7
 
       - name: Build producer
-        run: go build -o bin/data-producer ./services/data-producer
+        run: go build -o /dev/null ./services/data-producer
+
+      - name: Build producer image
+        run: docker compose build data-producer
