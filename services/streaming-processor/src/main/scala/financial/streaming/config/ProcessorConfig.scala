@@ -10,7 +10,8 @@ final case class ProcessorConfig(
     sampleLimit: Int = 5,
     bounded: Boolean = false,
     outputTopic: String = "ema-windows",
-    advisoryTopic: String = "trade-advisories"
+    advisoryTopic: String = "trade-advisories",
+    latencyTopic: Option[String] = None
 )
 
 object ProcessorConfig {
@@ -19,6 +20,7 @@ object ProcessorConfig {
     |  --topic <name>                  Input topic (default trade-events)
     |  --output-topic <name>          EMA output topic (default ema-windows)
     |  --advisory-topic <name>         Advisory output topic (default trade-advisories)
+    |  --latency-topic <name>          Publish per-stage latency stamps to this topic (default off)
     |  --group-id <name>               Consumer group (default streaming-processor)
     |  --starting-offsets <mode>       committed, earliest, latest (default committed)
     |  --parallelism <number>          Operator parallelism (default 1)
@@ -43,6 +45,7 @@ object ProcessorConfig {
             "--topic",
             "--output-topic",
             "--advisory-topic",
+            "--latency-topic",
             "--group-id",
             "--starting-offsets",
             "--parallelism",
@@ -63,14 +66,15 @@ object ProcessorConfig {
             val addresses = value.split(",", -1).map(_.trim)
             require(addresses.forall(_.nonEmpty), "brokers must not contain empty addresses")
             cfg.copy(brokers = addresses.mkString(","))
-          case "--topic" | "--output-topic" | "--advisory-topic" =>
+          case "--topic" | "--output-topic" | "--advisory-topic" | "--latency-topic" =>
             require(
               value.matches("[a-zA-Z0-9._-]{1,249}") && value != "." && value != "..",
               "invalid Kafka topic name"
             )
             if (option == "--topic") cfg.copy(topic = value)
             else if (option == "--output-topic") cfg.copy(outputTopic = value)
-            else cfg.copy(advisoryTopic = value)
+            else if (option == "--advisory-topic") cfg.copy(advisoryTopic = value)
+            else cfg.copy(latencyTopic = Some(value))
           case "--group-id"         => cfg.copy(groupId = value)
           case "--starting-offsets" =>
             require(
@@ -99,6 +103,12 @@ object ProcessorConfig {
       cfg.advisoryTopic != cfg.topic && cfg.advisoryTopic != cfg.outputTopic,
       "advisory topic must differ from input and EMA output topics"
     )
+    cfg.latencyTopic.foreach { latency =>
+      require(
+        latency != cfg.topic && latency != cfg.outputTopic && latency != cfg.advisoryTopic,
+        "latency topic must differ from input, EMA output and advisory topics"
+      )
+    }
     cfg
   }
 }

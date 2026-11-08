@@ -9,6 +9,13 @@ class ProcessorConfigSuite extends munit.FunSuite {
     assertEquals(cfg.advisoryTopic, "trade-advisories")
     assert(!cfg.bounded)
   }
+  test("defaults leave latency stamps off") {
+    assertEquals(ProcessorConfig.parse(Array.empty).latencyTopic, None)
+  }
+  test("--latency-topic enables the stamp topic") {
+    val cfg = ProcessorConfig.parse(Array("--latency-topic", "latency-stamps"))
+    assertEquals(cfg.latencyTopic, Some("latency-stamps"))
+  }
   test("explicit replay configuration") {
     val cfg = ProcessorConfig.parse(
       Array(
@@ -88,6 +95,19 @@ class ProcessorConfigSuite extends munit.FunSuite {
       Array("--starting-offsets", "random"),
       Array("--topic", "a", "--topic", "b"),
       Array("--topic", "--bounded"),
+      Array("--latency-topic"),
+      Array("--latency-topic", " "),
+      Array("--latency-topic", ".."),
+      Array("--latency-topic", "contains spaces"),
+      Array("--latency-topic", "a" * 250),
+      Array("--latency-topic", "a", "--latency-topic", "b"),
+      Array("--latency-topic", "trade-events"),
+      Array("--latency-topic", "ema-windows"),
+      Array("--latency-topic", "trade-advisories"),
+      Array("--latency-topic", "same", "--topic", "same"),
+      Array("--topic", "same", "--latency-topic", "same"),
+      Array("--latency-topic", "same", "--output-topic", "same"),
+      Array("--latency-topic", "same", "--advisory-topic", "same"),
       Array("positional")
     )
       .foreach(args => intercept[IllegalArgumentException](ProcessorConfig.parse(args)))
