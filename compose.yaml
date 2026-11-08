@@ -23,6 +23,36 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # Reads ema-windows and trade-advisories into PostgreSQL. Pass -init-db or
+  # -reset-db as the command to run a one-off schema task instead.
+  materializer:
+    build:
+      context: .
+      dockerfile: services/materializer/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-0:
+        condition: service_healthy
+    environment:
+      MATERIALIZER_DATABASE_URL: postgresql://${POSTGRES_USER:-financial}:${POSTGRES_PASSWORD:-financial_dev}@postgres:5432/${POSTGRES_DB:-financial_streaming}?sslmode=disable
+      MATERIALIZER_BROKERS: redpanda-0:9092
+      MATERIALIZER_GROUP_ID: ${MATERIALIZER_GROUP_ID:-materializer}
+    restart: "no"
+
+  # Publishes CSV events. The profile keeps a plain `docker compose up` from
+  # starting it; run it with `make run-data-producer` or `docker compose run`.
+  data-producer:
+    build:
+      context: .
+      dockerfile: services/data-producer/Dockerfile
+    profiles: ["producer"]
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
+    entrypoint: ["/data-producer", "-brokers=redpanda-0:9092"]
+    restart: "no"
+
   redpanda-0:
     image: docker.redpanda.com/redpandadata/redpanda:v26.2.3
     command:
