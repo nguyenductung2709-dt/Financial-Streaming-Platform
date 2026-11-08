@@ -55,7 +55,7 @@ close. Producer, Flink and Redpanda are containers on one host, so they share on
 
 | Stage | Definition |
 | --- | --- |
-| `ingest_to_fire` | t1 - t0: Kafka and Flink queueing, plus up to 200 ms of Flink's periodic watermark interval. Grows with load |
+| `ingest_to_fire` | t1 - t0: Kafka and Flink queueing, plus up to 200 ms of Flink's periodic watermark interval. Rises when the pipeline falls behind; below that it is dominated by the watermark interval |
 | `ema_compute` | t2 - t1 |
 | `advisory_compute` | t3 - t2 |
 | `ema_publish` | t4e - t2: sink serialization, producer batching, broker append |
@@ -81,8 +81,12 @@ Things to know when reading the numbers:
 
 - Stamps have 1 ms resolution, so sub-millisecond stages such as `ema_compute` mostly
   read 0 to 2 ms.
-- `RATE=0` (unlimited) lets the producer outrun the pipeline, so the figures measure the
-  backlog. Use a paced `RATE` for steady-state latency.
+- The producer publishes synchronously and tops out near 4.7k events/s; the pipeline kept
+  up with that (it settled within 2 to 4 s of the producer finishing), so even `RATE=0`
+  measured steady-state latency. In a 1,000 vs 20,000 events/s sweep `ingest_to_fire` was
+  lower at the higher rate, while the tails of `ema_compute`, `advisory_compute` and the
+  end-to-end stages were higher. A faster producer (issue #60) that outruns the pipeline
+  would make the figures measure backlog instead.
 - A bounded run flushes its last windows without a trigger event. They are counted as
   `flushed` in the coverage line and left out of the statistics.
 - `ema-windows` and `trade-advisories` must be created with `message.timestamp.type=LogAppendTime`
