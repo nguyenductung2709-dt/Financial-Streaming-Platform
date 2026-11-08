@@ -169,11 +169,7 @@ def main():
                         pass
                     child.wait()
             # A killed `compose run` client leaves its container running, so stop it by name.
-            for cleanup in (lambda: containers.stop_container(producer_name), materializer.stop):
-                try:
-                    cleanup()
-                except (subprocess.SubprocessError, OSError) as error:
-                    print(f"Cleanup failed: {error}", file=sys.stderr)
+            containers.stop_run(producer_name, materializer)
 
 
 if __name__ == "__main__":

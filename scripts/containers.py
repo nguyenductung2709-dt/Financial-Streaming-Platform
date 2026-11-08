@@ -106,6 +106,19 @@ def stop_container(name, timeout=10, run=subprocess.run):
     run(["docker", "stop", "-t", str(timeout), name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
+def stop_run(producer_name, materializer, stop_producer=stop_container):
+    """Stop what a flow started: the producer container by name, then the materializer.
+
+    A cleanup that fails is reported on stderr and does not skip the other step
+    or hide the error that ended the run.
+    """
+    for cleanup in (lambda: stop_producer(producer_name), materializer.stop):
+        try:
+            cleanup()
+        except (subprocess.SubprocessError, OSError) as error:
+            print(f"Cleanup failed: {error}", file=sys.stderr)
+
+
 def materializer_command(*args, compose=COMPOSE):
     """`docker compose run` for a one-off materializer task such as -init-db or -reset-db."""
     return [*compose, "run", "--rm", "-T", "materializer", *args]

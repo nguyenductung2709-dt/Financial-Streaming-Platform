@@ -2,17 +2,18 @@
 """Run the complete pipeline once and export its resource usage.
 
 Starts the infrastructure and the monitoring stack, resets the flow, submits the
-Flink job, then runs the materializer and the producer while timing the run
-itself:
+Flink job, then runs the materializer and the producer (both containers) while
+timing the run itself:
 
-  start  just before the producer launches
+  start  just before the producer container launches (so it includes the
+         container's startup)
   end    the last moment anything still moved: Flink's source consumed a record,
          ema-windows or trade-advisories grew, or the materializer committed
 
 The run is finished once the producer has exited and nothing has moved for
 --idle-seconds with the materializer caught up on both result topics. Progress
 comes from Prometheus (Flink and Redpanda metrics), so the monitoring stack must
-be scraping. Everything after `--` goes to bin/data-producer.
+be scraping. Everything after `--` goes to the producer container.
 
 Writes timeseries.csv, summary.csv and run.json (see collect-resource-metrics.py)
 plus summary.txt and pipeline.json (event counts, durations, throughput).
@@ -32,14 +33,15 @@ import sys
 import threading
 import time
 
+import containers
 from flow import flow_lock
 
 ROOT = Path(__file__).resolve().parent.parent
 COMPOSE = ["docker", "compose", "-f", "compose.yaml", "-f", "compose.monitoring.yaml"]
 INFRA_SERVICES = ["postgres", "redpanda-0", "console", "jobmanager", "taskmanager"]
-MONITORING_SERVICES = ["docker-stats-exporter", "process-exporter", "prometheus", "grafana"]
+MONITORING_SERVICES = ["docker-stats-exporter", "prometheus", "grafana"]
 RESULT_TOPICS = ("ema-windows", "trade-advisories")
-REQUIRED_JOBS = ("docker", "process", "flink-taskmanager", "redpanda")
+REQUIRED_JOBS = ("docker", "flink-taskmanager", "redpanda")
 SOURCE_RECORDS = 'sum(flink_taskmanager_job_task_operator_numRecordsIn{operator_name=~"Source.*"})'
 PRODUCER_SUMMARY = re.compile(r"published=(\d+)\s+skipped=(\d+)\s+rejected=(\d+)")
 
@@ -125,8 +127,7 @@ def format_table(rows):
             cell(value(metrics, "network_receive_bytes_per_s", "total"), mib), cell(value(metrics, "network_transmit_bytes_per_s", "total"), mib),
             cell(value(metrics, "block_read_bytes_per_s", "total"), mib), cell(value(metrics, "block_write_bytes_per_s", "total"), mib),
         ]
-        lines.append(f"{component + (' *' if kind == 'host' else ''):<18}" + "".join(f"{c:>9}" for c in cells))
-    lines.append("* runs on the host; per-process network I/O is not available")
+        lines.append(f"{component:<18}" + "".join(f"{c:>9}" for c in cells))
     return "\n".join(lines)
 
 
@@ -155,43 +156,12 @@ class Prometheus:
         return pipeline_sample(self.scalar(SOURCE_RECORDS), ends, committed), ends
 
 
-def csv_inputs(producer_args):
-    """The -csvPath values among the producer arguments, in order."""
-    values = []
-    for index, arg in enumerate(producer_args):
-        name, separator, value = arg.partition("=")
-        if name in ("-csvPath", "--csvPath"):
-            if separator:
-                values.append(value)
-            elif index + 1 < len(producer_args):
-                values.append(producer_args[index + 1])
-    return values
-
-
 def check_inputs(producer_args):
-    """Resolve the CSV inputs like the producer does, before anything is reset.
-
-    Rejects a missing or dangling path, and two inputs that are the same file
-    (for example an alias symlink next to the file it points to), which the
-    producer would replay twice.
-    """
-    inputs = csv_inputs(producer_args)
-    if not inputs:
-        return []
-    sys.path.insert(0, str(ROOT / "validation"))
-    from csv_inputs import resolve_csv_paths
+    """Resolve the CSV inputs like the producer does, before anything is reset."""
     try:
-        files = resolve_csv_paths(inputs)
-    except (ValueError, OSError) as error:
-        raise RuntimeError(f"Cannot use the CSV input: {error}. Nothing was reset.")
-    seen = {}
-    for path in files:
-        real = path.resolve()
-        if real in seen:
-            raise RuntimeError(f"{seen[real]} and {path} are the same file ({real}) and would be replayed twice; "
-                               "list each file once, e.g. CSV=\"dataset/day08.csv dataset/day09.csv\". Nothing was reset.")
-        seen[real] = path
-    return files
+        return containers.resolve_inputs(producer_args, ROOT)
+    except RuntimeError as error:
+        raise RuntimeError(f"{str(error).rstrip('.')}. Nothing was reset.")
 
 
 def run(command, **kwargs):
@@ -244,6 +214,8 @@ def stop_children(children):
 def measure(args, producer_args):
     prometheus = Prometheus(args.prometheus_url)
     group = os.environ.get("MATERIALIZER_GROUP_ID", "materializer")
+    materializer = containers.MaterializerContainer(compose=COMPOSE)
+    producer_name = f"data-producer-run-{os.getpid()}"
     children = []
     producer_output = deque(maxlen=200)  # only the final summary line is needed
 
@@ -262,10 +234,10 @@ def measure(args, producer_args):
     with flow_lock():
         try:
             run([sys.executable, "scripts/submit-flink-job.py", "--timeout", str(args.flink_start_timeout), "--", "--starting-offsets", "earliest"])
+            producer_command = containers.producer_command(producer_args, producer_name, compose=COMPOSE)
+            materializer.start()
             started = time.time()
-            materializer = subprocess.Popen([str(ROOT / "bin/materializer")], cwd=ROOT, start_new_session=True)
-            children.append(materializer)
-            producer = subprocess.Popen([str(ROOT / "bin/data-producer"), *producer_args], cwd=ROOT, start_new_session=True,
+            producer = subprocess.Popen(producer_command, cwd=ROOT, start_new_session=True,
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             children.append(producer)
             threading.Thread(target=echo, args=(producer.stdout,), daemon=True).start()
@@ -297,6 +269,7 @@ def measure(args, producer_args):
                 time.sleep(args.poll)
         finally:
             stop_children(children)
+            containers.stop_run(producer_name, materializer)
 
     end = settle.last_change
     time.sleep(args.scrape_grace)
@@ -355,9 +328,6 @@ def main(argv=None):
     args = parser.parse_args(argv[:argv.index("--")] if "--" in argv else argv)
     args.out = args.out.resolve()
 
-    for binary in ("bin/materializer", "bin/data-producer"):
-        if not (ROOT / binary).is_file():
-            raise RuntimeError(f"{binary} is missing; run make build-materializer build-data-producer")
     files = check_inputs(producer_args)
     if files:
         print(f"Input: {len(files)} file(s): {', '.join(str(path) for path in files)}", flush=True)
