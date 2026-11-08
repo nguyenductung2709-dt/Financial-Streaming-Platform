@@ -51,7 +51,7 @@ def script_follows_override(script, overrides, expression):
     as `module` - the pattern scripts/*_test.py use - so `expression`
     references it as `module` (e.g. "module.REST_URL").  The script's own
     directory goes on sys.path last, as when Python runs the script, so
-    its sibling imports (reset-flow.py's `from flow import flow_lock`)
+    its sibling imports (reset-flow-data.py's `from flow import flow_lock`)
     resolve without shadowing validation/'s `config`."""
     lines = ["import sys", "import importlib.util",
              "from decimal import Decimal",
@@ -210,7 +210,7 @@ class KafkaTopicsFollowsConfigTest(unittest.TestCase):
 
 
 class FlowScriptsFollowsConfigTest(unittest.TestCase):
-    RESET = Path(__file__).resolve().parent.parent / "scripts" / "reset-flow.py"
+    RESET = Path(__file__).resolve().parent.parent / "scripts" / "reset-flow-data.py"
     SUBMIT = (Path(__file__).resolve().parent.parent / "scripts"
               / "submit-flink-job.py")
     DRAIN = (Path(__file__).resolve().parent.parent / "scripts"

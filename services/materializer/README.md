@@ -9,8 +9,9 @@ executable are implemented.
 
 To start the complete producer → Flink → materializer → PostgreSQL flow, use
 `make run-flow` from the repository root. It starts the local infrastructure and
-creates the initial tables if missing. `make reset-flow` stops the managed flow
-and clears its topic records, materializer group offsets, and database results.
+creates the initial tables if missing. `make reset-flow` stops managed processes,
+removes the local Compose containers, and deletes PostgreSQL, broker storage,
+and Flink checkpoints. The next startup recreates the infrastructure and schema.
 See the [full flow instructions](../../README.md#run-the-complete-local-flow).
 
 To run just the materializer, follow these steps.
@@ -109,11 +110,12 @@ keep track of which migrations have been applied. Container startup does not
 apply migrations automatically. Each migration has an `.up.sql` file to apply
 the change and a `.down.sql` file to reverse it.
 
-The backend requires migrations 002, 003, and 004 for notifications and row
-revisions. Follow the [backend database setup](../backend/README.md) to apply
-missing migrations while preserving existing data. The materializer's
-`-init-db` flag initializes migration 001 only. Roll back newer migrations in
-reverse order before rolling back 001.
+The live dashboard also requires migrations 002, 003, and 004. Apply only missing
+migrations, in order, following the [backend setup](../backend/README.md).
+The materializer's `-init-db` flag initializes migration 001 only. `make run-flow`
+also runs the backend's setup helper to apply missing migrations through 004,
+while preserving existing results. Roll back newer migrations in reverse order before
+rolling back 001.
 
 To roll back this initial migration, run the following command. It drops all
 three materializer tables and their stored results:

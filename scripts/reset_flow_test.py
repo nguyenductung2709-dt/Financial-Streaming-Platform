@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for reset-flow.py's topic recreation.
+"""Tests for the internal validation reset's topic recreation.
 
 recreate_topics is exercised with a fake runner standing in for
 subprocess.run: every project topic must be deleted and recreated with
@@ -27,7 +27,7 @@ import json
 from pathlib import Path
 import unittest
 
-SCRIPT = Path(__file__).resolve().parent / "reset-flow.py"
+SCRIPT = Path(__file__).resolve().parent / "reset-flow-data.py"
 
 
 def load_module():
