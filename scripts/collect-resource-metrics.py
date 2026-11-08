@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Export CPU, memory, network I/O and block I/O for a time window from Prometheus.
 
-Containers come from the docker-stats-exporter and the host-side producer and
-materializer from process-exporter (see compose.monitoring.yaml). Writes
+Every component is a container, read from the docker-stats-exporter (see
+compose.monitoring.yaml). Writes
 
   timeseries.csv  every sample: offset_s,component,kind,metric,value
   summary.csv     per component and metric: avg, max, and the total moved
@@ -22,7 +22,6 @@ import urllib.request
 
 # (metric, kind, label identifying the component, total query or None, PromQL with {w} = rate window)
 DOCKER = "docker_container"
-PROCESS = "namedprocess_namegroup"
 METRICS = [
     ("cpu_cores", "docker", "service", "sum by (service) (rate(%s_cpu_usage_seconds_total[{w}]))" % DOCKER,
      "sum by (service) (increase(%s_cpu_usage_seconds_total[{d}]))" % DOCKER),
@@ -35,16 +34,9 @@ METRICS = [
      "sum by (service) (increase(%s_block_read_bytes_total[{d}]))" % DOCKER),
     ("block_write_bytes_per_s", "docker", "service", "sum by (service) (rate(%s_block_write_bytes_total[{w}]))" % DOCKER,
      "sum by (service) (increase(%s_block_write_bytes_total[{d}]))" % DOCKER),
-    ("cpu_cores", "host", "groupname", "sum by (groupname) (rate(%s_cpu_seconds_total[{w}]))" % PROCESS,
-     "sum by (groupname) (increase(%s_cpu_seconds_total[{d}]))" % PROCESS),
-    ("memory_bytes", "host", "groupname", 'sum by (groupname) (%s_memory_bytes{memtype="resident"})' % PROCESS, None),
-    ("block_read_bytes_per_s", "host", "groupname", "sum by (groupname) (rate(%s_read_bytes_total[{w}]))" % PROCESS,
-     "sum by (groupname) (increase(%s_read_bytes_total[{d}]))" % PROCESS),
-    ("block_write_bytes_per_s", "host", "groupname", "sum by (groupname) (rate(%s_write_bytes_total[{w}]))" % PROCESS,
-     "sum by (groupname) (increase(%s_write_bytes_total[{d}]))" % PROCESS),
 ]
 # The monitoring stack's own containers would otherwise clutter the report tables.
-DEFAULT_EXCLUDE = ("prometheus", "grafana", "docker-stats-exporter", "process-exporter")
+DEFAULT_EXCLUDE = ("prometheus", "grafana", "docker-stats-exporter")
 # Prometheus rejects range queries with more than 11000 points.
 MAX_POINTS = 10000
 

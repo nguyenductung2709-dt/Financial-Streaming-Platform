@@ -9,12 +9,6 @@ scrape_configs:
     static_configs:
       - targets: ["docker-stats-exporter:9101"]
 
-  # Host processes (data-producer, materializer).
-  - job_name: process
-    scrape_interval: 2s
-    static_configs:
-      - targets: ["process-exporter:9256"]
-
   # Flink exposes these through its bundled Prometheus reporter (see compose.yaml).
   - job_name: flink-jobmanager
     static_configs:
