@@ -1,5 +1,8 @@
 # Financial-Streaming-Platform
 
+The [backend and dashboard setup](services/backend/README.md) explains how to
+apply the live-notification migrations and serve the dashboard on port 8000.
+
 ## Development setup
 
 After cloning, activate the git hooks once:
@@ -32,11 +35,13 @@ Copy `.env.example` to `.env` once, and check the `POSTGRES_*` and
 make run-flow
 ```
 
-This builds the Go producer and materializer, starts PostgreSQL, Redpanda, the
-Redpanda console, and Flink, creates the topics, initializes missing materializer
-tables, submits the processor, and runs the producer and materializer together.
-Existing tables and stored results are preserved on startup. A partially created
-materializer schema causes startup to stop for manual repair.
+This builds the Go producer and materializer, prepares the backend's `.venv`,
+starts PostgreSQL, Redpanda, the Redpanda console, and Flink, creates the topics,
+applies missing database migrations, submits the processor, and supervises the
+producer, materializer, and backend together. The dashboard is available at
+<http://localhost:8000>; publication starts only after its backend is healthy.
+Startup preserves stored results and complete existing migrations. A partially
+installed migration causes startup to stop for manual repair.
 
 For a limited producer run:
 
@@ -44,8 +49,9 @@ For a limited producer run:
 make run-flow PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
 ```
 
-The materializer keeps running after the producer finishes so it can consume
-remaining and future results. Ctrl+C stops the managed producer and materializer.
+The materializer and dashboard keep running after the producer finishes so they
+can consume and display remaining and future results. Ctrl+C stops all managed
+local processes.
 Containers and the Flink job remain running. Before a fresh run, use:
 
 ```sh
@@ -53,17 +59,30 @@ make reset-flow
 make run-flow
 ```
 
-`reset-flow` stops a flow started by `run-flow`, cancels the processor job, empties
-all four project topics, removes the configured materializer group's offsets,
-and clears `symbols`, `ema_windows`, and `trade_advisories` in the configured
-database. This permanently removes those records. Containers, schema, topic
-settings, and checkpoint files are preserved. Stop separately launched producer
-or materializer processes before resetting.
+`reset-flow` stops the managed producer, materializer, and backend, removes the
+Compose containers, and permanently deletes this project's local PostgreSQL,
+broker data (including topics and consumer offsets), and Flink checkpoints.
+The next `make run-flow` recreates the infrastructure and schema. Stop separately
+launched producers and materializers before resetting. Reset works without a
+`.env` and does not build or start services first.
 
-Both commands load `.env`; explicit `MATERIALIZER_*` environment or Make
-command-line overrides take precedence. The complete flow uses local Compose
+To stop local processes and all Compose containers while keeping data:
+
+```sh
+make stop-flow
+```
+
+Use `BACKEND_PORT=8001` to change the dashboard port, or `BACKEND_VENV=/path/to/venv`
+to choose its Python environment. `make run-backend` applies missing migrations
+and starts only the dashboard when PostgreSQL is already available.
+
+`run-flow` and the backend commands load `.env`; explicit `MATERIALIZER_*`
+environment or Make command-line overrides take precedence. The complete flow uses local Compose
 infrastructure, so keep the materializer URL and broker addresses pointed at
 those services.
+
+`validate-flow` uses its own internal data reset so containers and checkpoints
+stay available during automated validation.
 
 Run the flow lifecycle tests with:
 

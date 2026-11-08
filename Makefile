@@ -15,6 +15,10 @@ PRODUCER_CSV_ARGS = $(foreach path,$(CSV),$(call shell-quote,-csvPath=$(path)))
 # 1 also checks the materializer's PostgreSQL tables against the topics (needs .env);
 # validate-flow runs drain-materializer first so the database is complete.
 DB_CHECK ?= 1
+BACKEND_VENV ?= .venv
+BACKEND_PYTHON := $(abspath $(BACKEND_VENV))/bin/python
+BACKEND_HOST ?= 127.0.0.1
+BACKEND_PORT ?= 8000
 
 # Load the same settings for the standalone materializer and the complete flow.
 define materializer-env
@@ -38,6 +42,21 @@ endef
 	formatall format-data-producer format-materializer format-streaming-processor lint-streaming-processor \
 	generate-protobuf generate-python-protobuf setup-hooks run-postgres postgres-shell
 
+.PHONY: setup-backend migrate-backend run-backend stop-flow
+
+setup-backend: $(BACKEND_VENV)/.backend-requirements ## Prepare the backend virtual environment and install its dependencies
+
+$(BACKEND_VENV)/.backend-requirements: services/backend/requirements.txt
+	@test -x $(call shell-quote,$(BACKEND_PYTHON)) || python3 -m venv $(call shell-quote,$(BACKEND_VENV))
+	$(call shell-quote,$(BACKEND_PYTHON)) -m pip install -r services/backend/requirements.txt
+	@touch $(call shell-quote,$@)
+
+migrate-backend: setup-backend ## Apply missing database migrations safely; PostgreSQL must be running
+	@$(materializer-env) exec $(call shell-quote,$(BACKEND_PYTHON)) services/backend/migrate.py
+
+run-backend: migrate-backend ## Apply missing migrations and serve the dashboard on port 8000
+	@$(materializer-env) HOST=$(call shell-quote,$(BACKEND_HOST)) PORT=$(call shell-quote,$(BACKEND_PORT)) exec $(call shell-quote,$(BACKEND_PYTHON)) services/backend/main.py
+
 help: ## Show command usage; also displayed by plain make
 	@printf 'Run from the repository root: make <target>\n\nCommands:\n\n'
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  make %s\n    %s\n\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -50,6 +69,7 @@ help: ## Show command usage; also displayed by plain make
 		'Requirements:' \
 		'  Producer: Go; race tests also require cgo and a C compiler.' \
 		'  Processor: Java 17 and sbt.' \
+		'  Dashboard: Python 3.12; first start installs backend dependencies into .venv.' \
 		'  Code generation: protoc and protoc-gen-go (see schemas/market/v1/README.md).' \
 		'  Publishing: a running broker, existing topics, and an input CSV.'
 
@@ -122,7 +142,8 @@ validate-flow: ## Full validation run; CSV=file, directory, or "file1 file2" req
 	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make validate-flow CSV=dataset/debs2022-gc-trading-day-08-11-21.csv))
 	$(if $(strip $(MAX_EVENTS)),,$(MAKE) generate-reference REFERENCE_DIR=$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 	$(MAKE) infra-up
-	$(MAKE) reset-flow
+	$(MAKE) build-materializer
+	@$(materializer-env) exec python3 scripts/reset-flow-data.py
 	$(MAKE) run-data-producer ARGS=$(call shell-quote,$(PRODUCER_CSV_ARGS) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS)))
 	$(MAKE) run-bounded-processor
 	$(if $(filter 1,$(DB_CHECK)),$(MAKE) drain-materializer)
@@ -135,16 +156,19 @@ test-validation: ## Run all Python validation and flow tests
 	done
 
 # Example: make run-flow PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
-run-flow: build-data-producer build-materializer ## Start all local services, initialize PostgreSQL, and run the producer and materializer; use PRODUCER_ARGS="..."
+run-flow: build-data-producer build-materializer setup-backend ## Start infrastructure, migrate PostgreSQL, and supervise producer, materializer, and dashboard; use PRODUCER_ARGS="..."
 	@if [ -n "$(filter --bounded,$(FLINK_ARGS))" ]; then \
 		echo "run-flow needs a continuous Flink job; remove --bounded from FLINK_ARGS." >&2; \
 		exit 1; \
 	fi
-	@$(materializer-env) exec python3 scripts/flow.py -- $(PRODUCER_ARGS)
+	@$(materializer-env) export BACKEND_PYTHON=$(call shell-quote,$(BACKEND_PYTHON)) BACKEND_HOST=$(call shell-quote,$(BACKEND_HOST)) BACKEND_PORT=$(call shell-quote,$(BACKEND_PORT)); exec python3 scripts/flow.py -- $(PRODUCER_ARGS)
 
-# This permanently clears project topic records and materialized database results.
-reset-flow: build-materializer ## Stop the managed flow, cancel Flink, recreate the project topics empty, and clear consumer offsets and PostgreSQL results
-	@$(materializer-env) exec python3 scripts/reset-flow.py
+# Full local cleanup: removes PostgreSQL, broker storage, and Flink checkpoints.
+reset-flow: ## Stop managed processes and containers, then permanently delete all local Compose data and checkpoints
+	python3 scripts/reset-flow.py
+
+stop-flow: ## Stop managed local processes and Compose containers; preserve data and checkpoints
+	python3 scripts/stop-flow.py
 
 formatall: format-data-producer format-materializer format-streaming-processor ## Format Go sources, Scala sources, and sbt build files
 

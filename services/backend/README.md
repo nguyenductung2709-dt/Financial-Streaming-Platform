@@ -1,4 +1,4 @@
-# Backend database setup
+# Backend and dashboard
 
 The backend reads the materializer's PostgreSQL result tables. Its notification
 and revision queries require migrations 001 through 004:
@@ -14,6 +14,57 @@ Revision values are returned as strings so JavaScript can compare them exactly.
 An advisory's revision includes changes to its joined EMA window. Symbols have
 no revision field because each row contains only its identifier. Migration 004
 adds revision columns, a shared sequence, and update triggers.
+
+## Run the application
+
+From the repository root, create `.env` from `.env.example` if needed, check
+its PostgreSQL/materializer settings, and place the CSV input under `dataset/`.
+Then run:
+
+```sh
+make run-flow
+```
+
+This builds the Go services, prepares the backend Python environment, starts
+Compose infrastructure and Flink, creates topics, and applies missing migrations.
+It starts the materializer and backend, verifies that `/api/health` belongs to
+that backend process, and only then starts publishing events. The dashboard is
+available at <http://localhost:8000>. The materializer and dashboard remain
+running after a finite producer run finishes.
+
+Ctrl+C stops the managed local processes. For complete local cleanup:
+
+```sh
+make reset-flow
+```
+
+Reset first stops the managed flow, then removes Compose containers and volumes.
+It permanently deletes the local PostgreSQL database, broker data, and Flink
+checkpoints. It works without `.env` or a backend environment and does not start
+services. The next `make run-flow` recreates the infrastructure and schema.
+Stop separately launched producers and materializers before resetting.
+
+Use `make stop-flow` to stop the managed processes and containers while preserving
+volumes. Set `BACKEND_PORT=8001` to choose a different dashboard port, or
+`BACKEND_VENV=/path/to/venv` to choose its Python environment. Backend dependencies
+are installed on first use and when `services/backend/requirements.txt` changes.
+
+To start only the dashboard with PostgreSQL available:
+
+```sh
+make run-backend
+```
+
+`make migrate-backend` only applies missing migrations. Both commands prepare the
+backend environment and load `.env`; exported `MATERIALIZER_DATABASE_URL` settings
+take precedence. The [frontend documentation](../frontend/README.md) explains
+snapshot recovery, live updates, and browser cache limits.
+
+Startup and cleanup lifecycle tests use disposable processes and service fixtures:
+
+```sh
+python3 -m unittest discover -s scripts -p test_flow.py -v
+```
 
 ## Apply missing migrations
 

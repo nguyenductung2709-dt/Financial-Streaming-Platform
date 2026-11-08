@@ -37,6 +37,18 @@ class CsvMakeTest(unittest.TestCase):
         self.assertEqual(commands[0][1:3], ["-csvPath=z.csv", "-csvPath=a.csv"])
         self.assertIn("-maxEvents=3", commands[0])
 
+    def test_validation_uses_internal_reset_without_removing_infrastructure(self):
+        result = subprocess.run(
+            ["make", "--no-print-directory", "-n", "validate-flow", "CSV=dataset", "DB_CHECK=0"],
+            cwd=ROOT, text=True, capture_output=True, check=True)
+        self.assertIn("scripts/reset-flow-data.py", result.stdout)
+        self.assertNotIn("scripts/reset-flow.py", result.stdout)
+
+    def test_public_reset_requires_no_build_or_backend_environment(self):
+        result = subprocess.run(["make", "--no-print-directory", "-n", "reset-flow"],
+                                cwd=ROOT, text=True, capture_output=True, check=True)
+        self.assertEqual(shlex.split(result.stdout), ["python3", "scripts/reset-flow.py"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
