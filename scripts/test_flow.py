@@ -301,7 +301,7 @@ class ResetSafetyTests(unittest.TestCase):
         # Topics are recreated (rpk topic delete, then create), not trimmed in place.
         deletes = [i for i, command in enumerate(calls) if "topic" in command and "delete" in command]
         reset = next(i for i, command in enumerate(calls) if "-reset-db" in command)
-        self.assertEqual(len(deletes), 4)
+        self.assertEqual(len(deletes), len(reset_flow.TOPICS))
         self.assertLess(cancel, min(deletes))
         self.assertLess(max(deletes), reset)
         self.assertIn(["docker", "compose", "run", "--rm", "-T", "materializer", "-reset-db"], calls)

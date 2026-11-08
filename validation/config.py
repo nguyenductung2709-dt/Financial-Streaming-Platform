@@ -51,6 +51,12 @@ TOPIC_EVENTS = "trade-events"     # compose.yaml / producer / processor
 TOPIC_DLQ = "trade-events-dlq"
 TOPIC_EMA_WINDOWS = "ema-windows"
 TOPIC_TRADE_ADVISORIES = "trade-advisories"
+TOPIC_LATENCY_STAMPS = "latency-stamps"  # processor --latency-topic; measurement only
+# Output topics created with the broker's append time as the record timestamp: the
+# processor writes event time otherwise, and the latency collector reads the
+# timestamp as the moment a result landed.
+LOG_APPEND_TIME_TOPICS = (TOPIC_EMA_WINDOWS, TOPIC_TRADE_ADVISORIES)
+LOG_APPEND_TIME_CONFIG = "message.timestamp.type=LogAppendTime"
 FLINK_REST_URL = "http://localhost:8081"  # compose.yaml jobmanager REST
 FLINK_JOB_NAME = "market-price-event-consumer"
 KAFKA_POLL_TIMEOUT_S = 1.0        # kafka_topics.consume_all poll
