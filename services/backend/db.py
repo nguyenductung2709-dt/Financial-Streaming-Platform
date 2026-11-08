@@ -68,7 +68,7 @@ async def fetch(sql, params=None):
 
 
 class SchemaNotReady(RuntimeError):
-    """The backend's manually applied schema prerequisites are missing."""
+    """The database objects required by the backend are missing or disabled."""
 
 
 async def check_schema(query=None):
@@ -144,7 +144,7 @@ async def get_advisories(symbols, start, end, limit):
     time_filter("a.window_start", start, end, where, params)
     rows = await fetch(
         f"SELECT {ADVISORY_COLS} FROM {ADVISORY_FROM}{where_clause(where)} "
-        "ORDER BY a.window_start DESC LIMIT %s", params + [limit])
+        "ORDER BY a.window_start DESC, a.symbol LIMIT %s", params + [limit])
     return [shape(r) for r in rows]
 
 
@@ -173,14 +173,31 @@ async def get_signals(symbols, limit):
     return await get_advisories(symbols, None, None, limit)
 
 
-#Get EMA windows and advisories created after the given time, for SSE reconnections
-async def get_catchup(symbols, since, limit=5000):
-    windows = await fetch(
-        f"SELECT {WINDOW_COLS} FROM ema_windows "
-        "WHERE symbol = ANY(%s) AND window_start > %s ORDER BY window_start LIMIT %s",
-        [symbols, since, limit])
-    advisories = await fetch(
-        f"SELECT {ADVISORY_COLS} FROM {ADVISORY_FROM} "
-        "WHERE a.symbol = ANY(%s) AND a.window_start > %s ORDER BY a.window_start LIMIT %s",
-        [symbols, since, limit])
-    return [shape(r) for r in windows], [shape(r) for r in advisories]
+# Stream history in deterministic pages, including ties across symbols.
+# `since` filters trading-window time; it is not a cursor for row corrections.
+async def iter_catchup(symbols, since, page_size=5000):
+    if page_size < 1:
+        raise ValueError("page_size must be positive")
+    if not symbols:
+        return
+    for kind, cols, source, prefix in (
+        ("window", WINDOW_COLS, "ema_windows", ""),
+        ("advisory", ADVISORY_COLS, ADVISORY_FROM, "a."),
+    ):
+        cursor = None
+        while True:
+            params = [symbols, since]
+            after = ""
+            if cursor is not None:
+                after = f" AND ({prefix}window_start, {prefix}symbol) > (%s, %s)"
+                params.extend(cursor)
+            rows = await fetch(
+                f"SELECT {cols} FROM {source} WHERE {prefix}symbol = ANY(%s) "
+                f"AND {prefix}window_start > %s{after} "
+                f"ORDER BY {prefix}window_start, {prefix}symbol LIMIT %s",
+                params + [page_size])
+            for row in rows:
+                yield kind, shape(row)
+            if len(rows) < page_size:
+                break
+            cursor = (rows[-1]["window_start"], rows[-1]["symbol"])
