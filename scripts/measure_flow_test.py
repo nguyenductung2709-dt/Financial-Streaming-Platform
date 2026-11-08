@@ -5,6 +5,7 @@ import importlib.util
 from pathlib import Path
 import signal
 import sys
+import tempfile
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -107,19 +108,40 @@ class PrometheusTest(unittest.TestCase):
 
 
 class FormatTableTest(unittest.TestCase):
-    def test_one_line_per_component_with_mib_and_host_marker(self):
+    def test_one_line_per_component_with_mib(self):
         mib = 1024 * 1024
         rows = [
             {"component": "taskmanager", "kind": "docker", "metric": "cpu_cores", "avg": "0.5", "max": "1.5", "total": "30"},
             {"component": "taskmanager", "kind": "docker", "metric": "memory_bytes", "avg": str(100 * mib), "max": str(200 * mib), "total": ""},
             {"component": "taskmanager", "kind": "docker", "metric": "network_receive_bytes_per_s", "avg": "1", "max": "1", "total": str(5 * mib)},
-            {"component": "data-producer", "kind": "host", "metric": "cpu_cores", "avg": "0.25", "max": "0.3", "total": "10"},
+            {"component": "data-producer", "kind": "docker", "metric": "cpu_cores", "avg": "0.25", "max": "0.3", "total": "10"},
         ]
-        lines = measure.format_table(rows).splitlines()
+        table = measure.format_table(rows)
+        lines = table.splitlines()
         task = next(line for line in lines if line.startswith("taskmanager"))
         self.assertEqual(task.split(), ["taskmanager", "0.500", "1.500", "100", "200", "5.0", "-", "-", "-"])
-        host = next(line for line in lines if line.startswith("data-producer"))
-        self.assertEqual(host.split()[:3], ["data-producer", "*", "0.250"])
+        producer = next(line for line in lines if line.startswith("data-producer"))
+        self.assertEqual(producer.split()[:3], ["data-producer", "0.250", "0.300"])
+        self.assertNotIn("*", table)
+        self.assertNotIn("runs on the host", table)
+
+
+class CheckInputsWrapperTest(unittest.TestCase):
+    def test_a_bad_input_says_nothing_was_reset(self):
+        with self.assertRaisesRegex(RuntimeError, r"Cannot use the CSV input.*Nothing was reset\."):
+            measure.check_inputs(["-csvPath=/nonexistent/day.csv"])
+
+    def test_a_good_input_lists_its_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "a.csv"
+            path.write_text("x")
+            self.assertEqual(measure.check_inputs([f"-csvPath={path}"]), [path])
+
+
+class MonitoringSetTest(unittest.TestCase):
+    def test_no_host_process_exporter_is_started_or_required(self):
+        self.assertNotIn("process", measure.REQUIRED_JOBS)
+        self.assertNotIn("process-exporter", measure.MONITORING_SERVICES)
 
 
 class RaiseOnSigtermTest(unittest.TestCase):
