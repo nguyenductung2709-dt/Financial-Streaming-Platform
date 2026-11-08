@@ -19,22 +19,22 @@ class CsvMakeTest(unittest.TestCase):
             check=True)
         return [shlex.split(line) for line in result.stdout.splitlines()
                 if line.startswith(("python3 validation/generate_validation_data.py",
-                                    "./bin/data-producer "))]
+                                    "python3 scripts/run-producer.py "))]
 
     def test_both_tools_receive_the_same_explicit_file_order(self):
         reference, producer = self.commands("z.csv a.csv")
         self.assertEqual(reference[2:6], ["--csv", "z.csv", "--csv", "a.csv"])
-        self.assertEqual(producer[1:3], ["-csvPath=z.csv", "-csvPath=a.csv"])
+        self.assertEqual(producer[2:4], ["-csvPath=z.csv", "-csvPath=a.csv"])
 
     def test_directory_is_forwarded_to_both_native_readers(self):
         reference, producer = self.commands("dataset")
         self.assertEqual(reference[2:4], ["--csv", "dataset"])
-        self.assertEqual(producer[1], "-csvPath=dataset")
+        self.assertEqual(producer[2], "-csvPath=dataset")
 
     def test_max_events_skips_reference_and_keeps_all_producer_inputs(self):
         commands = self.commands("z.csv a.csv", "MAX_EVENTS=3")
         self.assertEqual(len(commands), 1)
-        self.assertEqual(commands[0][1:3], ["-csvPath=z.csv", "-csvPath=a.csv"])
+        self.assertEqual(commands[0][2:4], ["-csvPath=z.csv", "-csvPath=a.csv"])
         self.assertIn("-maxEvents=3", commands[0])
 
     def test_validation_uses_internal_reset_without_removing_infrastructure(self):
