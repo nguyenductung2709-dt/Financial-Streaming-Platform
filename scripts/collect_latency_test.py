@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """Tests for collect-latency.py: the trigger scan, the join and the statistics."""
 
+import contextlib
+import csv
 import importlib.util
+import inspect
+import io
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
+
+from google.protobuf.timestamp_pb2 import Timestamp
 
 SCRIPT = Path(__file__).resolve().parent / "collect-latency.py"
 
@@ -16,6 +24,8 @@ def load_module():
 
 
 collector = load_module()
+import bindings  # noqa: E402  (collect-latency.py put validation/ on sys.path)
+import config  # noqa: E402
 
 WINDOW = 300_000
 ALLOWANCE = 70_000
@@ -181,6 +191,156 @@ class StageNamesTest(unittest.TestCase):
         self.assertEqual(collector.STAGES, (
             "ingest_to_fire", "ema_compute", "advisory_compute", "ema_publish",
             "advisory_publish", "end_to_end_ema", "end_to_end_advisory"))
+
+
+E = 1_636_693_500_000  # a window end: a multiple of WINDOW
+BASE = 1_700_000_000_000  # wall-clock base for the stamps
+
+
+def ts(ms):
+    return Timestamp(seconds=ms // 1000, nanos=ms % 1000 * 1_000_000)
+
+
+def stamp_record(stage, at, advisory=False, symbol="IUSAC.FR"):
+    return bindings.StageStamp(symbol=symbol, window_end=ts(E), stage=stage, at=ts(at),
+                               advisory_emitted=advisory).SerializeToString()
+
+
+def fake_stream(topics):
+    """stream(brokers, topic) over {topic: [(value_bytes, timestamp_ms)]}."""
+    def stream(brokers, topic):
+        return iter([(offset, value, stamp) for offset, (value, stamp) in enumerate(topics[topic])])
+    return stream
+
+
+def full_run(advisory=True):
+    ema = bindings.EmaWindow(symbol="IUSAC.FR", window_end=ts(E)).SerializeToString()
+    advice = bindings.TradeAdvisory(
+        ema_window=bindings.EmaWindow(symbol="IUSAC.FR", window_end=ts(E))).SerializeToString()
+
+    def event(trade_time_ms):
+        return bindings.PriceEvent(symbol="IUSAC.FR", trade_time=ts(trade_time_ms)).SerializeToString()
+
+    return {
+        config.TOPIC_LATENCY_STAMPS: [
+            (stamp_record(bindings.STAGE_WINDOW_FIRED, BASE + 1500), 0),
+            (stamp_record(bindings.STAGE_EMA_COMPUTED, BASE + 1502), 0),
+            (stamp_record(bindings.STAGE_CROSSOVER_EVALUATED, BASE + 1503, advisory), 0)],
+        config.TOPIC_EMA_WINDOWS: [(ema, BASE + 1510)],
+        config.TOPIC_TRADE_ADVISORIES: [(advice, BASE + 1512)] if advisory else [],
+        config.TOPIC_EVENTS: [(event(E - 60_000), BASE + 1000), (event(E + 70_000), BASE + 1400)],
+    }
+
+
+class ReadRunTest(unittest.TestCase):
+    def test_stage_stamps_decode_to_millisecond_stamps(self):
+        stamps, _, _, _ = collector.read_run("b", fake_stream(full_run()))
+        self.assertEqual(stamps, [
+            collector.Stamp("IUSAC.FR", E, "fired", BASE + 1500, False),
+            collector.Stamp("IUSAC.FR", E, "ema", BASE + 1502, False),
+            collector.Stamp("IUSAC.FR", E, "crossover", BASE + 1503, True)])
+
+    def test_landed_times_use_the_record_timestamp_and_embedded_window_key(self):
+        _, ema_landed, advisory_landed, _ = collector.read_run("b", fake_stream(full_run()))
+        self.assertEqual(ema_landed, [("IUSAC.FR", E, BASE + 1510)])
+        self.assertEqual(advisory_landed, [("IUSAC.FR", E, BASE + 1512)])
+
+    def test_the_trigger_is_the_event_that_reaches_the_threshold(self):
+        *_, triggers = collector.read_run("b", fake_stream(full_run()))
+        self.assertEqual(triggers, {E: BASE + 1400})
+
+    def test_trade_events_are_streamed_into_the_trigger_scan(self):
+        seen = []
+
+        def spy(events, window_ms, out_of_orderness_ms):
+            seen.append((inspect.isgenerator(events), window_ms, out_of_orderness_ms))
+            return {}
+
+        with mock.patch.object(collector, "trigger_times", side_effect=spy):
+            collector.read_run("b", fake_stream(full_run()))
+        self.assertEqual(seen, [(True, config.WINDOW_MS, config.OUT_OF_ORDERNESS_MS)])
+
+    def test_empty_stamps_name_the_flag(self):
+        topics = full_run()
+        topics[config.TOPIC_LATENCY_STAMPS] = []
+        with self.assertRaisesRegex(collector.LatencyError, "--latency-topic latency-stamps"):
+            collector.read_run("b", fake_stream(topics))
+
+
+class CollectTest(unittest.TestCase):
+    def test_outputs_have_the_documented_columns_and_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            summary, coverage, table = collector.collect("b", Path(directory), fake_stream(full_run()))
+            with open(Path(directory) / "latency.csv", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            with open(Path(directory) / "latency-summary.csv", newline="") as handle:
+                summary_rows = list(csv.DictReader(handle))
+        self.assertEqual(list(rows[0]), [
+            "symbol", "window_end_ms", "t0_ms", "t1_ms", "t2_ms", "t3_ms", "t4e_ms",
+            "advisory_emitted", "t4a_ms", *collector.STAGES])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["symbol"], "IUSAC.FR")
+        self.assertEqual(rows[0]["t0_ms"], str(BASE + 1400))
+        self.assertEqual(rows[0]["advisory_emitted"], "true")
+        self.assertEqual(rows[0]["ingest_to_fire"], "100")
+        self.assertEqual(rows[0]["end_to_end_ema"], "110")
+        self.assertEqual(rows[0]["end_to_end_advisory"], "112")
+        self.assertEqual(list(summary_rows[0]),
+                         ["stage", "count", "mean_ms", "p50_ms", "p95_ms", "p99_ms", "max_ms"])
+        self.assertEqual([row["stage"] for row in summary_rows], list(collector.STAGES))
+        by_stage = {row["stage"]: row for row in summary_rows}
+        self.assertEqual(by_stage["ema_compute"]["count"], "1")
+        self.assertEqual(float(by_stage["ema_compute"]["p50_ms"]), 2.0)
+        self.assertEqual(coverage["measured"], 1)
+        self.assertEqual([item["stage"] for item in summary], list(collector.STAGES))
+        self.assertIn("ingest_to_fire", table)
+
+    def test_advisory_columns_are_blank_without_an_advisory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            collector.collect("b", Path(directory), fake_stream(full_run(advisory=False)))
+            with open(Path(directory) / "latency.csv", newline="") as handle:
+                row = next(csv.DictReader(handle))
+            with open(Path(directory) / "latency-summary.csv", newline="") as handle:
+                by_stage = {r["stage"]: r for r in csv.DictReader(handle)}
+        self.assertEqual(row["advisory_emitted"], "false")
+        self.assertEqual((row["t4a_ms"], row["advisory_publish"], row["end_to_end_advisory"]),
+                         ("", "", ""))
+        self.assertEqual(by_stage["end_to_end_advisory"]["count"], "0")
+        self.assertEqual(by_stage["end_to_end_advisory"]["p50_ms"], "")
+
+
+class FormatTableTest(unittest.TestCase):
+    COVERAGE = {"measured": 3, "flushed": 1, "missing_stage": 0, "duplicates": 2,
+                "advisories": 1, "advisory_stamps": 1, "advisory_records": 1}
+
+    def test_footer_lists_the_coverage(self):
+        table = collector.format_table(collector.summarize_rows([]), self.COVERAGE)
+        for text in ("measured 3", "flushed 1", "duplicates 2"):
+            self.assertIn(text, table)
+        self.assertNotIn("mismatch", table)
+
+    def test_footer_flags_an_advisory_count_mismatch(self):
+        table = collector.format_table(
+            collector.summarize_rows([]), {**self.COVERAGE, "advisory_records": 0})
+        self.assertIn("mismatch", table)
+
+
+class MainTest(unittest.TestCase):
+    def test_main_reports_errors_with_status_1(self):
+        errors = io.StringIO()
+        with mock.patch.object(collector, "collect", side_effect=collector.LatencyError("boom")):
+            with contextlib.redirect_stderr(errors):
+                status = collector.main(["--out", "/tmp/never-written"])
+        self.assertEqual(status, 1)
+        self.assertIn("Error: boom", errors.getvalue())
+
+    def test_main_prints_the_table_and_succeeds(self):
+        out = io.StringIO()
+        with mock.patch.object(collector, "collect", return_value=([], {}, "THE TABLE")):
+            with contextlib.redirect_stdout(out):
+                status = collector.main(["--out", "/tmp/never-written", "--brokers", "x:1"])
+        self.assertEqual(status, 0)
+        self.assertIn("THE TABLE", out.getvalue())
 
 
 if __name__ == "__main__":
