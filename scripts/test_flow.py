@@ -258,7 +258,8 @@ class FlowLifecycleTests(unittest.TestCase):
 
 
 class ResetSafetyTests(unittest.TestCase):
-    def test_reset_cancels_flink_before_clearing_topics_and_database(self):
+    def reset_and_record(self):
+        """Run reset() against stand-ins and return every command it executed, in order."""
         calls = []
 
         def execute(command, **kwargs):
@@ -285,6 +286,10 @@ class ResetSafetyTests(unittest.TestCase):
                     with patch.object(reset_flow, "get_json", side_effect=job):
                         with patch.object(reset_flow.subprocess, "run", side_effect=execute):
                             reset_flow.reset()
+        return calls
+
+    def test_reset_cancels_flink_before_clearing_topics_and_database(self):
+        calls = self.reset_and_record()
         cancel = next(i for i, command in enumerate(calls) if "cancel" in command)
         # Topics are recreated (rpk topic delete, then create), not trimmed in place.
         deletes = [i for i, command in enumerate(calls) if "topic" in command and "delete" in command]
@@ -292,6 +297,13 @@ class ResetSafetyTests(unittest.TestCase):
         self.assertEqual(len(deletes), 4)
         self.assertLess(cancel, min(deletes))
         self.assertLess(max(deletes), reset)
+        self.assertIn(["docker", "compose", "run", "--rm", "-T", "materializer", "-reset-db"], calls)
+
+    def test_reset_stops_the_materializer_container_before_the_group_check(self):
+        calls = self.reset_and_record()
+        stop = calls.index(["docker", "compose", "stop", "materializer"])
+        group_list = next(i for i, command in enumerate(calls) if "rpk" in command and "group" in command and "list" in command)
+        self.assertLess(stop, group_list)
 
     def test_active_external_materializer_prevents_data_clear(self):
         calls = []
