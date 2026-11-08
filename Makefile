@@ -21,7 +21,7 @@ BACKEND_HOST ?= 127.0.0.1
 BACKEND_PORT ?= 8000
 PROMETHEUS_URL ?= http://localhost:9090
 COMPOSE_MONITORING = docker compose -f compose.yaml -f compose.monitoring.yaml
-MONITORING_SERVICES = docker-stats-exporter process-exporter prometheus grafana
+MONITORING_SERVICES = docker-stats-exporter prometheus grafana
 OUT ?= bin/metrics/$(shell date +%Y%m%d-%H%M%S)
 
 # Load the same settings for the standalone materializer and the complete flow.
@@ -69,10 +69,11 @@ help: ## Show command usage; also displayed by plain make
 		'Producer arguments (pass flags through ARGS):' \
 		'  make run-data-producer ARGS="-help"' \
 		'  make run-data-producer ARGS="-dlqEnabled -maxEvents=100"' \
-		'  make run-data-producer ARGS="-csvPath=/path/to/trades.csv -brokers=localhost:19092"' \
+		'  make run-data-producer ARGS="-csvPath=/path/to/trades.csv -rate=1000"' \
 		'' \
 		'Requirements:' \
-		'  Producer: Go; race tests also require cgo and a C compiler.' \
+		'  Producer and materializer: Docker with Compose. Go is needed for tests and formatting;' \
+		'  race tests also require cgo and a C compiler.' \
 		'  Processor: Java 17 and sbt.' \
 		'  Dashboard: Python 3.12; first start installs backend dependencies into .venv.' \
 		'  Code generation: protoc and protoc-gen-go (see schemas/market/v1/README.md).' \
@@ -99,19 +100,17 @@ measure-flow: build-data-producer build-materializer build-streaming-processor #
 	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make measure-flow CSV=dataset/day08.csv MAX_EVENTS=1000000))
 	@$(materializer-env) exec python3 scripts/measure-flow.py --prometheus-url $(call shell-quote,$(PROMETHEUS_URL)) --out $(call shell-quote,$(OUT)) --label rate=$(RATE) $(if $(strip $(MAX_EVENTS)),--label max_events=$(MAX_EVENTS)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label))) -- $(PRODUCER_CSV_ARGS) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))
 
-build-data-producer: ## Compile the Go producer to bin/data-producer
-	mkdir -p bin
-	go build -o bin/data-producer ./services/data-producer
+build-data-producer: ## Build the data producer image
+	docker compose build data-producer
 
 test-data-producer: ## Run uncached Go tests with race detection, a 2m timeout, and coverage.out
 	go test -race -count=1 -timeout=2m -coverprofile=coverage.out ./services/data-producer
 
-run-data-producer: build-data-producer ## Build and publish CSV events; use ARGS="..." for producer flags
-	./bin/data-producer $(ARGS)
+run-data-producer: build-data-producer ## Build the image and publish CSV events from the producer container; use ARGS="..." for producer flags
+	python3 scripts/run-producer.py $(ARGS)
 
-build-materializer: ## Compile the Go materializer to bin/materializer
-	mkdir -p bin
-	go build -o bin/materializer ./services/materializer
+build-materializer: ## Build the materializer image
+	docker compose build materializer
 
 test-materializer: ## Run materializer race tests and write bin/materializer-coverage.out
 	mkdir -p bin
@@ -120,8 +119,8 @@ test-materializer: ## Run materializer race tests and write bin/materializer-cov
 test-materializer-integration: ## Run PostgreSQL integration tests; requires MATERIALIZER_TEST_DATABASE_URL
 	go test -race -count=1 -timeout=2m -tags integration ./services/materializer/internal/data
 
-run-materializer: build-materializer ## Build and run using .env; copy .env.example once to configure
-	@$(materializer-env) exec ./bin/materializer
+run-materializer: build-materializer ## Build and run the materializer container in the foreground (Ctrl+C stops it); copy .env.example once to configure
+	@$(materializer-env) exec docker compose up materializer
 
 build-streaming-processor: ## Assemble and verify the deployment JAR, then copy it to bin/streaming-processor.jar
 	cd services/streaming-processor && sbt verifyAssembly
@@ -170,7 +169,7 @@ validate-flow: ## Full validation run; CSV=file, directory, or "file1 file2" req
 	$(MAKE) compare-flow REFERENCE_DIR=$(if $(strip $(MAX_EVENTS)),,$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 
 test-validation: ## Run all Python validation and flow tests
-	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py scripts/collect_resource_metrics_test.py scripts/measure_flow_test.py monitoring/docker-stats-exporter/exporter_test.py; do \
+	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py scripts/collect_resource_metrics_test.py scripts/measure_flow_test.py scripts/containers_test.py scripts/run_producer_test.py monitoring/docker-stats-exporter/exporter_test.py; do \
 		echo "== $$t"; \
 		python3 $$t || exit 1; \
 	done
