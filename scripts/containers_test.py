@@ -156,6 +156,11 @@ class ProducerCommandTest(DirectoryTestCase):
         self.assertNotIn("-v", command)
         self.assertEqual(command[-2:], ["data-producer", "-help"])
 
+    def test_a_loopback_broker_is_rejected_when_building_the_command(self):
+        self.touch("a.csv")
+        with self.assertRaisesRegex(RuntimeError, "container itself"):
+            self.command(["-csvPath=a.csv", "-brokers=localhost:19092"])
+
     def test_colon_in_a_path_is_rejected(self):
         path = self.touch("a:b.csv")
         with self.assertRaisesRegex(RuntimeError, ":"):
@@ -165,6 +170,42 @@ class ProducerCommandTest(DirectoryTestCase):
         path = self.touch("my file.csv")
         command = self.command([f"-csvPath={path}"])
         self.assertEqual(self.mounts(command), [f"{path.resolve()}:/input/00-my_file.csv:ro"])
+
+
+class CheckBrokersTest(unittest.TestCase):
+    def test_loopback_addresses_are_rejected(self):
+        for value in ("localhost:19092", "LOCALHOST:1", "127.0.0.1:19092", "127.0.1.1:9092", "[::1]:9092",
+                      "0.0.0.0:9092", "redpanda-0:9092,localhost:9092"):
+            with self.assertRaisesRegex(RuntimeError, "container itself"):
+                containers.check_brokers([f"-brokers={value}"])
+
+    def test_every_flag_form_is_checked(self):
+        for args in (["-brokers", "localhost:1"], ["--brokers=localhost:1"], ["--brokers", "localhost:1"]):
+            with self.assertRaisesRegex(RuntimeError, "container itself"):
+                containers.check_brokers(args)
+
+    def test_other_addresses_are_accepted(self):
+        for value in ("redpanda-0:9092", "broker.example.com:9092", "10.0.0.5:9092", "redpanda-0:9092,redpanda-1:9092"):
+            containers.check_brokers([f"-brokers={value}"])
+        containers.check_brokers(["-rate=5"])
+
+    def test_help_skips_the_check(self):
+        containers.check_brokers(["-help", "-brokers=localhost:1"])
+
+
+class PreflightTest(DirectoryTestCase):
+    def test_returns_the_files_when_everything_is_usable(self):
+        path = self.touch("a.csv")
+        self.assertEqual(containers.preflight([f"-csvPath={path}", "-brokers=redpanda-0:9092"], base=self.dir), [path])
+
+    def test_rejects_a_loopback_broker_before_looking_at_files(self):
+        path = self.touch("a.csv")
+        with self.assertRaisesRegex(RuntimeError, "container itself"):
+            containers.preflight([f"-csvPath={path}", "-brokers=localhost:19092"], base=self.dir)
+
+    def test_rejects_a_missing_csv(self):
+        with self.assertRaisesRegex(RuntimeError, "Cannot use the CSV input"):
+            containers.preflight(["-csvPath=nope.csv"], base=self.dir)
 
 
 class StopContainerTest(unittest.TestCase):

@@ -157,9 +157,9 @@ class Prometheus:
 
 
 def check_inputs(producer_args):
-    """Resolve the CSV inputs like the producer does, before anything is reset."""
+    """Check the producer arguments (CSV inputs, broker addresses) before anything is reset."""
     try:
-        return containers.resolve_inputs(producer_args, ROOT)
+        return containers.preflight(producer_args, ROOT)
     except RuntimeError as error:
         raise RuntimeError(f"{str(error).rstrip('.')}. Nothing was reset.")
 

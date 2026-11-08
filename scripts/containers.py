@@ -17,17 +17,20 @@ COMPOSE = ["docker", "compose"]
 DEFAULT_CSV = "dataset/debs2022-gc-trading-day-12-11-21.csv"
 HELP_FLAGS = ("-h", "-help", "--help")
 CSV_FLAGS = ("-csvPath", "--csvPath")
+BROKER_FLAGS = ("-brokers", "--brokers")
+# Inside the container these name the container itself, not the machine Redpanda is published on.
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 INPUT_DIR = "/input"
 UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 # Exit status reported for a materializer container that was started and then disappeared.
 VANISHED = -1
 
 
-def split_csv_args(producer_args):
-    """(the -csvPath values in order, the other arguments in order).
+def split_flag(producer_args, flags):
+    """(the values of the given flag in order, the other arguments in order).
 
-    Accepts -csvPath=x, -csvPath x and the double-dash forms. A -csvPath with no
-    value stays among the other arguments so the producer reports it itself.
+    Accepts -flag=x, -flag x and the double-dash forms. A flag with no value
+    stays among the other arguments so the producer reports it itself.
     """
     values, rest = [], []
     skip = False
@@ -36,7 +39,7 @@ def split_csv_args(producer_args):
             skip = False
             continue
         name, separator, value = arg.partition("=")
-        if name not in CSV_FLAGS:
+        if name not in flags:
             rest.append(arg)
         elif separator:
             values.append(value)
@@ -46,6 +49,11 @@ def split_csv_args(producer_args):
         else:
             rest.append(arg)
     return values, rest
+
+
+def split_csv_args(producer_args):
+    """(the -csvPath values in order, the other arguments in order)."""
+    return split_flag(producer_args, CSV_FLAGS)
 
 
 def csv_inputs(producer_args):
@@ -79,6 +87,34 @@ def resolve_inputs(producer_args, base=ROOT):
     return files
 
 
+def check_brokers(producer_args):
+    """Reject a -brokers address that is loopback: in the container it is the container itself.
+
+    The container already defaults to redpanda-0:9092, so the old host-side
+    `-brokers=localhost:19092` would only fail later with a connection timeout.
+    """
+    if any(arg in HELP_FLAGS for arg in producer_args):
+        return
+    for value in split_flag(producer_args, BROKER_FLAGS)[0]:
+        for address in value.split(","):
+            address = address.strip()
+            host = address[1:address.index("]")] if address.startswith("[") and "]" in address else address.rsplit(":", 1)[0]
+            if host.lower() in LOOPBACK_HOSTS or host.startswith("127."):
+                raise RuntimeError(
+                    f"-brokers {address} points at the producer container itself: inside the container localhost is not "
+                    "your machine. Drop -brokers (the container's default is redpanda-0:9092) or use a Compose service address.")
+
+
+def preflight(producer_args, base=ROOT):
+    """Check what can be checked about the producer arguments before anything starts.
+
+    The broker addresses and the CSV inputs; returns the CSV files. (A path that
+    cannot be mounted is only found when the command is built.)
+    """
+    check_brokers(producer_args)
+    return resolve_inputs(producer_args, base)
+
+
 def producer_command(producer_args, name, compose=COMPOSE, base=ROOT):
     """`docker compose run` for the producer container with every CSV input mounted read-only.
 
@@ -87,7 +123,7 @@ def producer_command(producer_args, name, compose=COMPOSE, base=ROOT):
     it can be stopped later: a killed `compose run` client leaves it running.
     """
     prefix = [*compose, "run", "--rm", "-T", "--name", name]
-    files = resolve_inputs(producer_args, base)
+    files = preflight(producer_args, base)
     if not files:
         return [*prefix, "data-producer", *producer_args]
     mounts, targets = [], []
