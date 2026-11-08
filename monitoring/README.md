@@ -1,7 +1,8 @@
 # Resource monitoring
 
-Collects CPU, memory, network I/O and block I/O for the whole pipeline, for the
-report's performance evaluation (issue #49). It lives in `compose.monitoring.yaml`,
+Collects CPU, memory, network I/O and block I/O for the whole pipeline (issue #49)
+and the latency of every EMA window and trade advisory (issue #48), for the report's
+performance evaluation. The resource monitoring lives in `compose.monitoring.yaml`,
 so the default `compose.yaml` stays light.
 
 ## Measure a run
@@ -20,10 +21,12 @@ in the 2M-event run, with no plateau observed).
 
 | File | Content |
 | --- | --- |
-| `summary.txt` | Table per component: CPU and memory (average, maximum), bytes moved |
+| `summary.txt` | Table per component: CPU and memory (average, maximum), bytes moved; then the latency table |
 | `summary.csv` | The same per component and metric: `avg`, `max`, `total` |
 | `timeseries.csv` | Every sample: `offset_s,component,kind,metric,value` |
-| `pipeline.json` | Event counts, durations, producer and end-to-end events per second |
+| `pipeline.json` | Event counts, durations, producer and end-to-end events per second, and the `latency` coverage counts |
+| `latency.csv` | One row per EMA window: the wall-clock moments and the seven latency stages ([Latency](#latency)) |
+| `latency-summary.csv` | Per stage: `count`, `mean_ms`, `p50_ms`, `p95_ms`, `p99_ms`, `max_ms` |
 | `run.json` | Window, sampling settings, labels, producer arguments |
 
 Other targets: `make monitoring-up` / `make monitoring-down` (Prometheus on
@@ -32,6 +35,62 @@ Other targets: `make monitoring-up` / `make monitoring-down` (Prometheus on
 data stays in Prometheus for 30 days. `START` and `END` without a UTC offset are
 read as UTC. `measure-flow` prints its start as epoch seconds. Change the URL with
 `PROMETHEUS_URL=http://localhost:<port>` when `PROMETHEUS_PORT` is overridden.
+
+## Latency
+
+`measure-flow` also reports how long the pipeline takes to produce each EMA window and
+trade advisory. It starts the Flink job with `--latency-topic latency-stamps`, so three
+operators stamp the wall-clock time they finish a window; afterwards
+`scripts/collect-latency.py` joins those stamps with the broker's append time on the
+output topics and with the moment the producer published the event that let the window
+close. Producer, Flink and Redpanda are containers on one host, so they share one clock.
+
+| Moment | What happened | Where it comes from |
+| --- | --- | --- |
+| t0 | The trigger event was published: the first event in `trade-events` whose `trade_time` reaches `window_end` plus the 70 s out-of-orderness allowance | `trade-events` record timestamp, rebuilt by the collector with the watermark rule |
+| t1 | Flink fired the window | stamp in `latency-stamps` |
+| t2 | Flink computed the EMA | stamp in `latency-stamps` |
+| t3 | Flink evaluated the crossover, for every window (advisories themselves are rare) | stamp in `latency-stamps` |
+| t4e / t4a | The EMA / advisory landed on `ema-windows` / `trade-advisories` | the topics' broker append time (`LogAppendTime`) |
+
+| Stage | Definition |
+| --- | --- |
+| `ingest_to_fire` | t1 - t0: Kafka and Flink queueing, plus up to 200 ms of Flink's periodic watermark interval. Grows with load |
+| `ema_compute` | t2 - t1 |
+| `advisory_compute` | t3 - t2 |
+| `ema_publish` | t4e - t2: sink serialization, producer batching, broker append |
+| `advisory_publish` | t4a - t3, for windows that emitted an advisory |
+| `end_to_end_ema` | t4e - t0 |
+| `end_to_end_advisory` | t4a - t0, for windows that emitted an advisory |
+
+The wait for the watermark (a window fires 70 s of event time after it ends) is set by the
+data and is not counted. Gaps between stamps include queueing behind earlier records:
+they measure latency, not service time.
+
+```sh
+make collect-latency OUT=bin/metrics/<run>     # a run that already finished (topics intact)
+make sweep-flow RATES="500 1000 2000" CSV=dataset/<file>.csv MAX_EVENTS=1000000
+```
+
+`collect-latency` reads the topics, so it works until the next `reset-flow`. `sweep-flow`
+runs `measure-flow` once per rate into `<out>/rate-<rate>/` (each run resets the flow first)
+and writes `sweep-summary.csv` with the percentiles and throughput of every rate and stage;
+it stops at the first failed run and keeps the earlier ones.
+
+Things to know when reading the numbers:
+
+- Stamps have 1 ms resolution, so sub-millisecond stages such as `ema_compute` mostly
+  read 0 to 2 ms.
+- `RATE=0` (unlimited) lets the producer outrun the pipeline, so the figures measure the
+  backlog. Use a paced `RATE` for steady-state latency.
+- A bounded run flushes its last windows without a trigger event. They are counted as
+  `flushed` in the coverage line and left out of the statistics.
+- `ema-windows` and `trade-advisories` must be created with `message.timestamp.type=LogAppendTime`
+  (`create-topic` and `reset-flow` do this). The collector refuses topics that were not and tells
+  you to run `make reset-flow`.
+- The collector reads `trade-events` and refuses topics with more than one partition,
+  because the trigger rule assumes one partition and parallelism 1 (issue #38).
+- Duplicates from at-least-once delivery keep the first occurrence and are counted.
 
 ## Where the numbers come from
 
@@ -81,7 +140,6 @@ written and committed, not when every input window closed.
 
 ## Limits
 
-- Latency is not measured here (issue #48); this covers throughput and resources.
 - The producer is a one-off container that exists only while it runs, and the exporter
   scrapes every 2 s, so its last second or two of CPU and network is not seen. Totals
   are accurate to about one scrape interval.

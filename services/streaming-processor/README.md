@@ -131,6 +131,7 @@ docker compose logs -f taskmanager | rg 'EmaWindow symbol=|TradeAdvisory symbol=
 | `--topic` | `trade-events` | Topic containing raw PriceEvent Protobuf values |
 | `--output-topic` | `ema-windows` | Topic for raw EmaWindow Protobuf values |
 | `--advisory-topic` | `trade-advisories` | Topic for raw TradeAdvisory Protobuf values |
+| `--latency-topic` | Off | Topic for raw StageStamp Protobuf values; setting it turns on per-stage latency stamps (see [monitoring](../../monitoring/README.md#latency)) |
 | `--group-id` | `streaming-processor` | Kafka consumer group |
 | `--starting-offsets` | `committed` | `committed`, `earliest`, or `latest` |
 | `--parallelism` | `1` | Parallel instances per operator |

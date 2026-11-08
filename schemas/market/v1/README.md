@@ -9,6 +9,7 @@ source of truth; regenerate language bindings rather than editing generated code
 | [dlq.proto](dlq.proto) | `market.v1.RejectedRow` | `trade-events-dlq` |
 | [ema.proto](ema.proto) | `market.v1.EmaWindow` | `ema-windows` (planned output) |
 | [advisory.proto](advisory.proto) | `market.v1.TradeAdvisory` | `trade-advisories` (planned output) |
+| [latency.proto](latency.proto) | `market.v1.StageStamp` | `latency-stamps` (measurement only, not domain data) |
 
 `EmaWindow` represents one symbol's completed window: `[window_start, window_end)`.
 The closing price uses integer micros; EMA values use plain decimal strings in
@@ -48,7 +49,7 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
 ```
 
 From the repository root, regenerate Go and Java code for **all `.proto` files** under
-`schemas`, including `events.proto`, `dlq.proto`, `ema.proto`, and `advisory.proto`:
+`schemas`, including `events.proto`, `dlq.proto`, `ema.proto`, `advisory.proto`, and `latency.proto`:
 
 ```sh
 make generate-protobuf
