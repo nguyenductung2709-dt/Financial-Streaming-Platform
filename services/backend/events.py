@@ -13,6 +13,7 @@ KEEPALIVE_SECONDS = 15
 #Store connected clients by symbol
 subscribers = {}  # symbol -> set of asyncio.Queue
 all_subscribers = set()
+listener_ready = asyncio.Event()
 
 #Add a message to a client's queue, requesting a resync if it is full
 def offer(queue, msg):
@@ -28,7 +29,7 @@ def offer(queue, msg):
 def dispatch_msg(msg):
     queues = set(subscribers.get(msg.get("symbol"), ()))
 
-    if msg.get("kind") == "symbol":
+    if msg.get("kind") in {"symbol", "resync", "status"}:
         queues.update(all_subscribers)
 
     for queue in queues:
@@ -37,11 +38,10 @@ def dispatch_msg(msg):
 
 #Tell all connected clients to reload data after a listener reconnects
 def broadcast_resync():
-    queues = set(all_subscribers)
-    for subscribed in subscribers.values():
-        queues.update(subscribed)
-
-    for queue in queues:
+    # Discard queued rows before clients reload authoritative snapshots.
+    for queue in all_subscribers:
+        while not queue.empty():
+            queue.get_nowait()
         offer(queue, {"kind": "resync"})
 
 
@@ -50,15 +50,19 @@ async def listen_for_notifications():
     while True:
         try:
             async with await psycopg.AsyncConnection.connect(db.DSN, autocommit=True) as conn:
+                await db.check_schema()
                 await conn.execute(f"LISTEN {CHANNEL}")
                 log.info("listening on channel %r", CHANNEL)
 
                 #Reload data after connecting to avoid missing earlier updates
+                listener_ready.set()
                 broadcast_resync()
 
                 async for note in conn.notifies():
                     try:
                         payload = json.loads(note.payload)
+                        if not isinstance(payload, dict):
+                            raise ValueError("notification must be an object")
                         kind = payload.get("kind")
                         symbol = payload.get("symbol")
 
@@ -72,6 +76,9 @@ async def listen_for_notifications():
                                 "symbol": symbol,
                                 "exchange": symbol.rpartition(".")[2] if "." in symbol else None,
                             })
+                            continue
+
+                        if not subscribers.get(symbol):
                             continue
 
                         window_start = payload.get("window_start")
@@ -91,6 +98,13 @@ async def listen_for_notifications():
                             row["kind"] = kind
                             dispatch_msg(row)
 
+                        # Advisories join their current price/EMAs from this window.
+                        if kind == "window":
+                            advisory = await db.get_advisory_by_key(symbol, window_start)
+                            if advisory is not None:
+                                advisory["kind"] = "advisory"
+                                dispatch_msg(advisory)
+
                     except (ValueError, TypeError, KeyError):
                         log.warning(
                             "invalid PostgreSQL notification: %s",
@@ -98,8 +112,11 @@ async def listen_for_notifications():
                         )
 
         except asyncio.CancelledError:
+            listener_ready.clear()
             raise
         except Exception as exc:
+            listener_ready.clear()
+            dispatch_msg({"kind": "status", "state": "reconnecting"})
             log.warning("listener lost (%s), retrying in 2s", exc)
             await asyncio.sleep(2)
 
@@ -123,16 +140,19 @@ async def stream(symbols, since):
 
     try:
         yield "retry: 3000\n\n"
+        # Do not declare live delivery ready until LISTEN has been established.
+        await listener_ready.wait()
 
         if since is not None:
-            windows, advisories = await db.get_catchup(symbols, since)
+            async for kind, row in db.iter_catchup(symbols, since):
+                yield sse(kind, row)
 
-            for kind, rows in (
-                ("window", windows),
-                ("advisory", advisories),
-            ):
-                for row in rows:
-                    yield sse(kind, row)
+        # A trading timestamp cannot detect older corrections or deletions.
+        # Every connection must refresh its authoritative REST snapshots.
+        if listener_ready.is_set():
+            yield sse("resync", {})
+        else:
+            yield sse("status", {"state": "reconnecting"})
 
         while True:
             try:
@@ -146,7 +166,10 @@ async def stream(symbols, since):
             kind = msg.get("kind")
 
             if kind == "resync":
-                yield sse("resync", {})
+                if listener_ready.is_set():
+                    yield sse("resync", {})
+                else:
+                    yield sse("status", {"state": "reconnecting"})
                 continue
 
             yield sse(kind, msg)

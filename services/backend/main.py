@@ -25,14 +25,19 @@ log = logging.getLogger("backend")
 #Open the database pool and start the PostgreSQL notification listener
 @asynccontextmanager
 async def lifespan(app):
-    await db.pool.open(wait=False)
-    listener = asyncio.create_task(events.listen_for_notifications())
-    log.info("live update mode: notify")
-    yield
-    #Stop the listener and close the database pool when the backend shuts down
-    listener.cancel()
-    await asyncio.gather(listener, return_exceptions=True)
-    await db.pool.close()
+    listener = None
+    try:
+        await db.pool.open(wait=True)
+        await db.check_schema()
+        events.listener_ready = asyncio.Event()
+        listener = asyncio.create_task(events.listen_for_notifications())
+        log.info("live update mode: notify")
+        yield
+    finally:
+        if listener is not None:
+            listener.cancel()
+            await asyncio.gather(listener, return_exceptions=True)
+        await db.pool.close()
 
 
 #Create the FastAPI application and allow frontend requests
@@ -60,8 +65,13 @@ def utc(dt):
 #Check that the backend can connect to the database
 @app.get("/api/health")
 async def health():
-    await db.fetch("SELECT 1")
-    return {"status": "ok"}
+    try:
+        await db.check_schema()
+    except db.SchemaNotReady as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=503)
+    if not events.listener_ready.is_set():
+        return JSONResponse({"detail": "notification listener reconnecting"}, status_code=503)
+    return {"status": "ok", "pid": os.getpid()}
 
 
 #Return available symbols with optional search and exchange filters
@@ -91,7 +101,7 @@ async def signals(symbols: Optional[str] = Query(None, description="comma list; 
 
 #Stream live updates for the requested symbols using Server-Sent Events
 @app.get("/api/events")
-async def live_events(symbols: str = Query("", description="comma list of symbols to subscribe to"), since: Optional[datetime] = Query(None, description="only rows after this time")):
+async def live_events(symbols: str = Query("", description="comma list of symbols to subscribe to"), since: Optional[datetime] = Query(None, description="optional window-start history filter; resync always requires reloading snapshots")):
     wanted = parse_symbols(symbols)
     return StreamingResponse(events.stream(wanted, utc(since)), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
