@@ -3,8 +3,7 @@
   const BUY = "#15803d", SELL = "#c62828";
   const CLOSE = "#1f2a44", EMA38 = "#e08a00", EMA100 = "#7c5cc4";
   const FLUSH_MS = 250, FEED_MAX = 300, MAX_ROWS = 300;
-  const CURSOR_KEY = "lastEventTime";
-  const CATCHUP_OVERLAP_MS = 5 * 60 * 1000;
+  const HISTORY_MAX = 5000, BUFFER_MAX = 4 * HISTORY_MAX + FEED_MAX;
   const API = location.protocol.startsWith("http") ? location.origin : "http://localhost:8000";
 
   document.documentElement.style.setProperty("--buy", BUY);
@@ -49,26 +48,19 @@
       if (v != null) url.searchParams.set(k, v);
     }
 
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
     return res.json();
   }
 
   const state = {
     symbols: [],
-    watchlist: [...new Set(load("watchlist", []).filter((s) => typeof s === "string"))], slot: {A: null, B: null,}, 
+    watchlist: [...new Set(load("watchlist", []).filter((s) => typeof s === "string"))], slot: {A: null, B: null,},
     query: "", exchange: "", onlyWatched: false, feedFilter: "all", windows: {}, advisories: {}, feed: [],
   };
 
   //Keep the followed-symbol list saved between page reloads
   save("watchlist", state.watchlist);
-
-  //Restore the timestamp used to request missed updates from the backend
-  let lastEventTime = load(CURSOR_KEY, null);
-
-  if (typeof lastEventTime !== "string" || !Number.isFinite(Date.parse(lastEventTime))) {
-    lastEventTime = null;
-  }
 
   const charted = () => [...new Set([state.slot.A, state.slot.B].filter(Boolean))];
 
@@ -177,11 +169,16 @@
   }
 
   //Load the available symbols from the backend
+  let symbolsRequest = 0;
   async function loadSymbols() {
+    const token = ++symbolsRequest;
     try {
-      state.symbols = await get("/api/symbols");
+      const symbols = await get("/api/symbols");
+      if (token !== symbolsRequest) return state.symbols.length;
+      state.symbols = symbols;
       $("error").hidden = true;
     } catch {
+      if (token !== symbolsRequest) return state.symbols.length;
       $("error").textContent =
         "Can't reach the backend. Is it running on port 8000?";
       $("error").hidden = false;
@@ -445,12 +442,20 @@
   let knownFeedKeys = new Set();
   let feedPrimed = false;
 
+  // Revisions are decimal strings so comparisons stay exact beyond 2^53.
+  const newer = (a, b) => !b || BigInt(a.revision || "0") >= BigInt(b.revision || "0");
+  const history = (rows) => Object.fromEntries(
+    rows.map((row) => [row.window_start, row])
+  );
+
   //Merge new signals with existing ones and avoid duplicate entries
   function mergeFeed(rows) {
     const byKey = new Map(state.feed.map((r) => [feedKey(r), r]));
 
     for (const row of rows) {
-      byKey.set(feedKey(row), row);
+      if (newer(row, byKey.get(feedKey(row)))) {
+        byKey.set(feedKey(row), row);
+      }
     }
 
     const next = [...byKey.values()]
@@ -515,31 +520,29 @@
     renderFeed();
   });
 
-  //Save the newest event timestamp so the next connection can catch up
-  function updateCursor(row) {
-    const timestamp = row.window_start;
-
-    if (!timestamp || !Number.isFinite(Date.parse(timestamp))) return;
-
-    if (!lastEventTime || Date.parse(timestamp) > Date.parse(lastEventTime)) {
-      lastEventTime = timestamp;
-      save(CURSOR_KEY, lastEventTime);
-    }
-  }
-
-  let buffer = [];
+  let buffer = new Map();
+  let syncPromise = null;
+  let syncRequested = false;
+  let generation = 0;
+  let syncRetryTimer = null;
+  let syncRetryDelay = 1000;
+  let streamConnected = false;
+  let listenerReady = false;
 
   const push = (kind, row) => {
-    updateCursor(row);
-    buffer.push({ kind, row });
+    if (kind === "window" && !charted().includes(row.symbol)) return;
+    if (kind === "advisory" && !subscribed().includes(row.symbol)) return;
+    const key = `${kind}|${feedKey(row)}`;
+    if (!buffer.has(key) && buffer.size >= BUFFER_MAX) sync(true);
+    if (newer(row, buffer.get(key)?.row)) buffer.set(key, { kind, row });
   };
 
   //Batch incoming updates to avoid redrawing charts for every individual event
-  setInterval(() => {
-    if (!buffer.length) return;
+  function flushBuffer() {
+    if (!buffer.size) return;
 
-    const items = buffer;
-    buffer = [];
+    const items = [...buffer.values()];
+    buffer.clear();
     const chartSet = new Set(charted());
     const subSet = new Set(subscribed());
     let chartsDirty = false;
@@ -550,11 +553,11 @@
         const bucket =
           kind === "window" ? state.windows : state.advisories;
 
-        (bucket[row.symbol] = bucket[row.symbol] || {})[
-          row.window_start
-        ] = row;
-
-        chartsDirty = true;
+        const rows = bucket[row.symbol] = bucket[row.symbol] || {};
+        if (newer(row, rows[row.window_start])) {
+          rows[row.window_start] = row;
+          chartsDirty = true;
+        }
       }
 
       if (kind === "advisory" && subSet.has(row.symbol)) {
@@ -567,45 +570,60 @@
     if (feedRows.length && mergeFeed(feedRows)) {
       renderFeed();
     }
-  }, FLUSH_MS);
+  }
+  setInterval(() => { if (!syncPromise) flushBuffer(); }, FLUSH_MS);
 
-  //Load saved history for followed symbols and selected charts
-  async function sync() {
-    const subs = subscribed();
-    const jobs = [];
-
-    if (subs.length) {
-      jobs.push(
-        get("/api/signals", {
-          symbols: subs.join(","),
-          limit: 100,
-        }).then((rows) =>
-          rows.forEach((r) => push("advisory", r))
-        )
-      );
+  // Replace snapshots atomically, then apply buffered updates by row revision.
+  // An invalidation discards queued messages from the previous refresh.
+  function sync(invalidate = false) {
+    if (invalidate) {
+      generation++;
+      buffer.clear();
     }
-
-    for (const s of charted()) {
-      jobs.push(
-        get("/api/ema-windows", {
-          symbol: s,
-          limit: 5000,
-        }).then((rows) =>
-          rows.forEach((r) => push("window", r))
-        )
-      );
-
-      jobs.push(
-        get("/api/trade-advisories", {
-          symbol: s,
-          limit: 5000,
-        }).then((rows) =>
-          rows.forEach((r) => push("advisory", r))
-        )
-      );
+    syncRequested = true;
+    clearTimeout(syncRetryTimer);
+    if (!syncPromise) {
+      syncPromise = refreshSnapshots().finally(() => { syncPromise = null; });
     }
+    return syncPromise;
+  }
 
-    await Promise.allSettled(jobs);
+  async function refreshSnapshots() {
+    do {
+      syncRequested = false;
+      const token = generation;
+      const subs = subscribed();
+      const charts = charted();
+      setStatus("refreshing");
+      try {
+        const [feed, windows, advisories] = await Promise.all([
+          subs.length ? get("/api/signals", { symbols: subs.join(","), limit: FEED_MAX }) : [],
+          Promise.all(charts.map((symbol) => get("/api/ema-windows", { symbol, limit: HISTORY_MAX }))),
+          Promise.all(charts.map((symbol) => get("/api/trade-advisories", { symbol, limit: HISTORY_MAX }))),
+        ]);
+        if (token !== generation) continue;
+        // The snapshot replaces the previous database state. Revisions can
+        // restart after a full reset; compare only live rows buffered since
+        // this refresh started against the incoming snapshot.
+        state.feed = feed;
+        state.windows = Object.fromEntries(charts.map((symbol, i) =>
+          [symbol, history(windows[i])]));
+        state.advisories = Object.fromEntries(charts.map((symbol, i) =>
+          [symbol, history(advisories[i])]));
+        flushBuffer();
+        updateCharts();
+        renderFeed();
+        syncRetryDelay = 1000;
+        setStatus(streamConnected && listenerReady ? "live" : "connecting");
+      } catch {
+        if (token !== generation) continue;
+        setStatus("historyError");
+        syncRetryTimer = setTimeout(() => sync(), syncRetryDelay);
+        syncRetryDelay = Math.min(syncRetryDelay * 2, 30000);
+        return false;
+      }
+    } while (syncRequested);
+    return true;
   }
 
   const STATUS_TEXT = {
@@ -613,6 +631,8 @@
     connecting: "Connecting…",
     live: "Live",
     reconnecting: "Reconnecting…",
+    refreshing: "Refreshing history…",
+    historyError: "History unavailable; retrying…",
   };
 
   function setStatus(s) {
@@ -634,6 +654,8 @@
     }
 
     clearTimeout(retryTimer);
+    streamConnected = false;
+    listenerReady = false;
 
     function connect() {
       setStatus("connecting");
@@ -641,17 +663,6 @@
       const params = new URLSearchParams({
         symbols: subs.join(","),
       });
-
-      //Request updates from slightly before the last saved timestamp to avoid missing late updates
-      if (lastEventTime) {
-        const sinceMs =
-          Date.parse(lastEventTime) - CATCHUP_OVERLAP_MS;
-
-        params.set(
-          "since",
-          new Date(Math.max(0, sinceMs)).toISOString()
-        );
-      }
 
       const url = `${API}/api/events?${params.toString()}`;
       const es = new EventSource(url);
@@ -661,14 +672,15 @@
       es.onopen = () => {
         if (source !== es) return;
 
-        setStatus("live");
-        sync();
+        streamConnected = true;
       };
 
       es.onerror = () => {
         if (source !== es) return;
 
         setStatus("reconnecting");
+        streamConnected = false;
+        listenerReady = false;
         es.close();
         source = null;
 
@@ -677,22 +689,28 @@
       };
 
       es.addEventListener("symbol", () => {
-        loadSymbols();
+        if (source === es) loadSymbols();
       });
 
       es.addEventListener("window", (e) => {
-        push("window", JSON.parse(e.data));
+        if (source === es) push("window", JSON.parse(e.data));
       });
 
       es.addEventListener("advisory", (e) => {
-        push("advisory", JSON.parse(e.data));
+        if (source === es) push("advisory", JSON.parse(e.data));
       });
 
       es.addEventListener("resync", () => {
         if (source === es) {
           loadSymbols();
-          sync();
+          listenerReady = true;
+          sync(true);
         }
+      });
+      es.addEventListener("status", () => {
+        if (source !== es) return;
+        listenerReady = false;
+        setStatus("reconnecting");
       });
     }
 
@@ -704,17 +722,16 @@
     const subs = subscribed();
     const key = subs.join(",");
 
+    const ck = charted().join(",");
+    const selectionChanged = key !== streamKey || ck !== chartsKey;
     if (key !== streamKey) {
       streamKey = key;
       openStream(subs);
     }
 
-    const ck = charted().join(",");
-
-    if (ck !== chartsKey) {
+    if (selectionChanged) {
       chartsKey = ck;
-
-      if (ck) sync();
+      sync(true);
     }
   }
 

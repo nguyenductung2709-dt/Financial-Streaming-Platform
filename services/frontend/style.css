@@ -40,6 +40,9 @@ h2 { font-size: 14px; font-weight: 650; }
 .status.live { color: var(--buy); }
 .status.live::before { background: var(--buy); }
 .status.reconnecting::before, .status.connecting::before { background: #e08a00; }
+.status.refreshing::before { background: #e08a00; }
+.status.historyError { color: var(--sell); }
+.status.historyError::before { background: var(--sell); }
 
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; min-height: 0; }
 .list { grid-area: list; }
