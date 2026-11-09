@@ -382,5 +382,26 @@ class IterRecordsTest(unittest.TestCase):
         self.assertEqual(collected, streamed)
 
 
+class TopicPartitionsTest(unittest.TestCase):
+    def test_returns_the_partitions_and_closes_the_consumer(self):
+        fake = FakeConsumer(partitions=(0, 5))
+
+        self.assertEqual(
+            kafka_topics.topic_partitions("localhost:19092", "ema-windows",
+                                           consumer_factory=lambda brokers: fake),
+            {0, 5})
+        self.assertEqual(fake.requested_topic, "ema-windows")
+        self.assertTrue(fake.closed)
+
+    def test_a_missing_topic_has_no_partitions(self):
+        fake = FakeConsumer(partitions=())
+
+        self.assertEqual(
+            kafka_topics.topic_partitions("localhost:19092", "materialize-stamps",
+                                           consumer_factory=lambda brokers: fake),
+            set())
+        self.assertTrue(fake.closed)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
