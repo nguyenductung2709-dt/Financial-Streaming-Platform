@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -20,6 +21,7 @@ type config struct {
 	dlqTopic   string
 	dlqEnabled bool
 	rate       int
+	speed      float64
 	maxEvents  uint64
 }
 
@@ -58,6 +60,7 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	flags.StringVar(&cfg.dlqTopic, "dlqTopic", "trade-events-dlq", "Trade event dead letter queue Redpanda topic")
 	flags.BoolVar(&cfg.dlqEnabled, "dlqEnabled", false, "Enable the dead letter queue topic for invalid trade events")
 	flags.IntVar(&cfg.rate, "rate", 0, "Maximum events per second (0 = unlimited)")
+	flags.Float64Var(&cfg.speed, "speed", 0, "Replay the gaps between trade times, sped up by this factor (0 = off; excludes -rate)")
 	flags.Uint64Var(&cfg.maxEvents, "maxEvents", 0, "Maximum acknowledged events to publish (0 = unlimited)")
 	if err := flags.Parse(args); err != nil {
 		return config{}, err
@@ -67,6 +70,13 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	}
 	if cfg.rate < 0 || cfg.rate > int(time.Second) {
 		return config{}, fmt.Errorf("rate must be between 0 and 1000000000 events per second")
+	}
+	// !(x >= 0) also rejects NaN.
+	if !(cfg.speed >= 0) || math.IsInf(cfg.speed, 1) {
+		return config{}, fmt.Errorf("speed must be a finite number, zero or above")
+	}
+	if cfg.speed > 0 && cfg.rate > 0 {
+		return config{}, fmt.Errorf("use either -rate or -speed, not both")
 	}
 	if len(cfg.csvPaths) == 0 {
 		cfg.csvPaths = []string{"dataset/debs2022-gc-trading-day-12-11-21.csv"}
@@ -139,6 +149,10 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 		}
 	}
 	var nextPublish time.Time
+	replay := replaySchedule{speed: cfg.speed}
+	// How far the sends fell behind the replay schedule; large values mean the
+	// producer could not keep up with -speed, so the load was not the replayed one.
+	var maxReplayLag time.Duration
 	limitReached := errors.New("event limit reached")
 
 	// Keep rate, limits, and counters continuous across the entire input sequence.
@@ -175,6 +189,15 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 			// Schedule from the actual send start. Slow sends never create catch-up bursts.
 			nextPublish = time.Now().Add(interval)
 		}
+		if cfg.speed > 0 {
+			due := replay.due(event.GetTradeTime().AsTime(), time.Now())
+			if err := waitForReplay(ctx, due); err != nil {
+				return err
+			}
+			if lag := time.Since(due); lag > maxReplayLag {
+				maxReplayLag = lag
+			}
+		}
 		if err := publishPriceEvent(ctx, client, cfg.topic, event); err != nil {
 			return err
 		}
@@ -195,8 +218,12 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 	if err != nil {
 		status = "stopped"
 	}
-	fmt.Fprintf(output, "CSV processing %s: published=%d skipped=%d rejected=%d topic=%q\n",
+	fmt.Fprintf(output, "CSV processing %s: published=%d skipped=%d rejected=%d topic=%q",
 		status, published, skipped, rejected, cfg.topic)
+	if cfg.speed > 0 {
+		fmt.Fprintf(output, " replay_lag_max_ms=%d", maxReplayLag.Milliseconds())
+	}
+	fmt.Fprintln(output)
 	if err != nil {
 		return err
 	}
