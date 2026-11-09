@@ -13,12 +13,14 @@ import (
 
 	"financial-streaming-platform/services/materializer/internal/consumer"
 	"financial-streaming-platform/services/materializer/internal/data"
+	"financial-streaming-platform/services/materializer/internal/stamps"
 )
 
 type config struct {
 	databaseURL string
 	brokers     []string
 	groupID     string
+	stampTopic  string
 }
 
 //go:embed migrations/001_create_read_models.up.sql
@@ -63,11 +65,21 @@ func run(ctx context.Context, initDB, resetDB bool) error {
 		return nil
 	}
 
-	c, err := consumer.New(cfg.brokers, cfg.groupID, store, slog.Default())
+	publisher := stamps.Noop
+	if cfg.stampTopic != "" {
+		publisher, err = stamps.NewKafka(cfg.brokers, cfg.stampTopic)
+		if err != nil {
+			return err
+		}
+	}
+	// Run stopped before the deferred database close; the stamps client closes first.
+	defer publisher.Close()
+	c, err := consumer.New(cfg.brokers, cfg.groupID, store, publisher, slog.Default())
 	if err != nil {
 		return err
 	}
-	slog.Info("starting materializer", "brokers", cfg.brokers, "group_id", cfg.groupID)
+	slog.Info("starting materializer", "brokers", cfg.brokers, "group_id", cfg.groupID,
+		"stamp_topic", cfg.stampTopic)
 	// Run closes the consumer before the deferred database close.
 	return c.Run(ctx)
 }
@@ -94,6 +106,14 @@ func loadConfig() (config, error) {
 	}
 	if cfg.groupID == "" || cfg.groupID != strings.TrimSpace(cfg.groupID) {
 		return config{}, fmt.Errorf("MATERIALIZER_GROUP_ID must be nonempty and trimmed")
+	}
+	// Measurement only: publish a stage stamp per committed result (off by default).
+	cfg.stampTopic, ok = os.LookupEnv("MATERIALIZER_STAMP_TOPIC")
+	if !ok {
+		cfg.stampTopic = ""
+	}
+	if cfg.stampTopic != "" && cfg.stampTopic != strings.TrimSpace(cfg.stampTopic) {
+		return config{}, fmt.Errorf("MATERIALIZER_STAMP_TOPIC must be empty or trimmed")
 	}
 	return cfg, nil
 }

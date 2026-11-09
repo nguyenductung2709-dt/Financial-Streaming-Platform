@@ -10,6 +10,7 @@ import (
 
 	"financial-streaming-platform/services/materializer/internal/data"
 	"financial-streaming-platform/services/materializer/internal/mapper"
+	"financial-streaming-platform/services/materializer/internal/stamps"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -38,16 +39,20 @@ type redpandaClient interface {
 type Consumer struct {
 	client redpandaClient
 	store  Store
+	stamps stamps.Publisher
 	logger *slog.Logger
 }
 
 // New subscribes to both result topics. A nil logger uses slog.Default().
-func New(brokers []string, groupID string, store Store, logger *slog.Logger) (*Consumer, error) {
+func New(brokers []string, groupID string, store Store, publisher stamps.Publisher, logger *slog.Logger) (*Consumer, error) {
 	if groupID == "" || groupID != strings.TrimSpace(groupID) {
 		return nil, errors.New("consumer group must be nonempty and trimmed")
 	}
 	if store == nil {
 		return nil, errors.New("materializer store is nil")
+	}
+	if publisher == nil {
+		return nil, errors.New("materializer stamp publisher is nil")
 	}
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(brokers...),
@@ -63,7 +68,7 @@ func New(brokers []string, groupID string, store Store, logger *slog.Logger) (*C
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Consumer{client: client, store: store, logger: logger}, nil
+	return &Consumer{client: client, store: store, stamps: publisher, logger: logger}, nil
 }
 
 // Run saves batches, then commits their offsets after each database commit.
@@ -103,6 +108,12 @@ func (c *Consumer) Run(ctx context.Context) error {
 					return c.recordError(records[batchErr.Index], err)
 				}
 				return c.batchError("save database batch", records, err)
+			}
+			// The database has committed: stamp the batch's results as
+			// materialized before their offsets are acknowledged, so a
+			// publish failure leaves the batch to be saved and stamped again.
+			if err := c.stamps.Publish(ctx, results); err != nil {
+				return c.batchError("publish materialize stamps", records, err)
 			}
 			if err := c.commitBatch(ctx, records); err != nil {
 				return c.batchError("commit batch offsets", records, err)

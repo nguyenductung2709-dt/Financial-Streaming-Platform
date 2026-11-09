@@ -44,6 +44,7 @@ The container runs on the Compose network, so `compose.yaml` supplies its settin
 | `MATERIALIZER_DATABASE_URL` | Built from `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` (the `postgres` service's defaults), at `postgres:5432`. Percent-encode URL-reserved characters (`@ : / ? # %`) in `POSTGRES_PASSWORD`; Compose cannot encode them. |
 | `MATERIALIZER_BROKERS` | `redpanda-0:9092` |
 | `MATERIALIZER_GROUP_ID` | `materializer`, or the value from your environment, Make or `.env` |
+| `MATERIALIZER_STAMP_TOPIC` | Empty (off), or the topic for measurement stamps; `measure-flow` sets `materialize-stamps` |
 
 The localhost values in `.env.example` (`localhost:15432` and `localhost:19092`) are
 for tools that run on the host, such as the Python validation scripts. Override the
@@ -173,7 +174,7 @@ performs no database operations and has no dependency on the consumer.
 
 ## Redpanda consumer
 
-`internal/consumer.New(brokers, groupID, store, logger)` creates a consumer for
+`internal/consumer.New(brokers, groupID, store, publisher, logger)` creates a consumer for
 `ema-windows` and `trade-advisories`, using the existing `franz-go` dependency.
 The store implements `SaveBatch(ctx, []data.Result)`; `*data.Postgres` already
 satisfies this interface. A nil logger uses Go's default structured
@@ -213,6 +214,13 @@ The consumer tests use fake broker and store interfaces to check routing,
 write-before-commit ordering, failure handling, and cancellation. They run
 without a broker or database. Full flow tests with Redpanda
 and PostgreSQL are a separate step.
+
+## Measurement stamps
+
+With `MATERIALIZER_STAMP_TOPIC` set, `internal/stamps` publishes one `market.v1.StageStamp`
+per saved result after the database commit and before the offsets are committed, for the
+latency report. A publish failure stops the consumer so the batch is saved and stamped again.
+`stamps.Noop` is the default publisher.
 
 ## Go database layer
 

@@ -14,6 +14,7 @@ import (
 
 	marketv1 "financial-streaming-platform/gen/go/market/v1"
 	"financial-streaming-platform/services/materializer/internal/data"
+	"financial-streaming-platform/services/materializer/internal/stamps"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/proto"
@@ -123,8 +124,27 @@ func (f *fakeStore) SaveBatch(ctx context.Context, results []data.Result) error 
 	return nil
 }
 
-func testConsumer(client *fakeClient, store *fakeStore) *Consumer {
-	return &Consumer{client: client, store: store, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+type fakeStamper struct {
+	batches [][]data.Result
+	calls   int
+	err     error
+	events  *[]string
+}
+
+func (f *fakeStamper) Publish(ctx context.Context, results []data.Result) error {
+	f.calls++
+	if f.err != nil {
+		return f.err
+	}
+	f.batches = append(f.batches, slices.Clone(results))
+	if f.events != nil {
+		*f.events = append(*f.events, "materialize stamps")
+	}
+	return nil
+}
+
+func testConsumer(client *fakeClient, store *fakeStore, stamper *fakeStamper) *Consumer {
+	return &Consumer{client: client, store: store, stamps: stamper, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
 func windowMessage() *marketv1.EmaWindow {
@@ -161,7 +181,7 @@ func recordFetch(records ...*kgo.Record) kgo.Fetches {
 
 func TestNewConfiguresManualCommits(t *testing.T) {
 	brokers := []string{"localhost:19092"}
-	c, err := New(brokers, "materializer-test", &fakeStore{}, nil)
+	c, err := New(brokers, "materializer-test", &fakeStore{}, stamps.Noop, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,14 +219,16 @@ func TestNewRejectsInvalidConfiguration(t *testing.T) {
 		brokers []string
 		group   string
 		store   Store
+		stamper stamps.Publisher
 	}{
-		{"no brokers", nil, "materializer", &fakeStore{}},
-		{"empty group", []string{"localhost:19092"}, "", &fakeStore{}},
-		{"untrimmed group", []string{"localhost:19092"}, " materializer", &fakeStore{}},
-		{"nil store", []string{"localhost:19092"}, "materializer", nil},
+		{"no brokers", nil, "materializer", &fakeStore{}, stamps.Noop},
+		{"empty group", []string{"localhost:19092"}, "", &fakeStore{}, stamps.Noop},
+		{"untrimmed group", []string{"localhost:19092"}, " materializer", &fakeStore{}, stamps.Noop},
+		{"nil store", []string{"localhost:19092"}, "materializer", nil, stamps.Noop},
+		{"nil stamp publisher", []string{"localhost:19092"}, "materializer", &fakeStore{}, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			c, err := New(test.brokers, test.group, test.store, nil)
+			c, err := New(test.brokers, test.group, test.store, test.stamper, nil)
 			if c != nil {
 				c.Close()
 				t.Fatal("expected nil consumer")
@@ -232,12 +254,19 @@ func TestRunWritesWholeBatchBeforeCommitting(t *testing.T) {
 	var events []string
 	client := &fakeClient{fetches: []kgo.Fetches{batch}, events: &events}
 	store := &fakeStore{events: &events}
-	c := testConsumer(client, store)
+	stamper := &fakeStamper{events: &events}
+	c := testConsumer(client, store, stamper)
 	if err := c.Run(context.Background()); !errors.Is(err, errPollingStopped) {
 		t.Fatalf("Run error = %v", err)
 	}
-	if want := []string{"save window", "save advisory", "save window", "save advisory", "database commit", "offset commit"}; !reflect.DeepEqual(events, want) {
+	if want := []string{"save window", "save advisory", "save window", "save advisory", "database commit", "materialize stamps", "offset commit"}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("operation order = %v; want %v", events, want)
+	}
+	if stamper.calls != 1 || len(stamper.batches) != 1 || len(stamper.batches[0]) != len(records) {
+		t.Fatal("the committed batch was not stamped exactly once with all its results")
+	}
+	if stamper.batches[0][0] != data.Result(store.windows[0]) || stamper.batches[0][1] != data.Result(store.advisories[0]) {
+		t.Fatal("stamps were not published for the decoded results of the batch")
 	}
 	if !reflect.DeepEqual(client.commitBatches, [][]*kgo.Record{records}) {
 		t.Fatal("batch commit did not include exactly the successfully saved records across topics and partitions")
@@ -267,7 +296,7 @@ func TestRunDoesNotCommitFailedWrites(t *testing.T) {
 			later := resultRecord(t, topic, 42)
 			client := &fakeClient{fetches: []kgo.Fetches{recordFetch(failed), recordFetch(later)}}
 			store := &fakeStore{saveErr: writeErr, failOnResult: 1}
-			c := testConsumer(client, store)
+			c := testConsumer(client, store, &fakeStamper{})
 			var logs bytes.Buffer
 			c.logger = slog.New(slog.NewJSONHandler(&logs, nil))
 			err := c.Run(context.Background())
@@ -304,7 +333,7 @@ func TestRunStopsOnInvalidRecords(t *testing.T) {
 			record := &kgo.Record{Topic: test.topic, Partition: 2, Offset: 41, Value: test.value}
 			client := &fakeClient{fetches: []kgo.Fetches{recordFetch(record)}}
 			store := &fakeStore{}
-			if err := testConsumer(client, store).Run(context.Background()); err == nil {
+			if err := testConsumer(client, store, &fakeStamper{}).Run(context.Background()); err == nil {
 				t.Fatal("expected invalid record to fail")
 			}
 			if store.saveCalls != 0 || len(store.windows)+len(store.advisories)+len(client.commits) != 0 || !client.closed {
@@ -322,7 +351,7 @@ func TestRunDecodesWholeBatchBeforeWriting(t *testing.T) {
 			invalid.Value = nil
 			client := &fakeClient{fetches: []kgo.Fetches{recordFetch(first, invalid)}}
 			store := &fakeStore{}
-			if err := testConsumer(client, store).Run(context.Background()); err == nil {
+			if err := testConsumer(client, store, &fakeStamper{}).Run(context.Background()); err == nil {
 				t.Fatal("expected invalid second record to fail")
 			}
 			if store.saveCalls != 0 || len(client.commitBatches) != 0 || !client.closed {
@@ -338,7 +367,7 @@ func TestRunDoesNotCommitOffsetsAfterDatabaseCommitFailure(t *testing.T) {
 	second := resultRecord(t, EmaWindowsTopic, 42)
 	client := &fakeClient{fetches: []kgo.Fetches{recordFetch(first, second)}}
 	store := &fakeStore{saveErr: commitErr}
-	c := testConsumer(client, store)
+	c := testConsumer(client, store, &fakeStamper{})
 	var logs bytes.Buffer
 	c.logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	err := c.Run(context.Background())
@@ -362,7 +391,7 @@ func TestRunStopsAfterCommitFailure(t *testing.T) {
 	later := resultRecord(t, EmaWindowsTopic, 43)
 	client := &fakeClient{fetches: []kgo.Fetches{recordFetch(first, second), recordFetch(later)}, commitErr: commitErr}
 	store := &fakeStore{}
-	c := testConsumer(client, store)
+	c := testConsumer(client, store, &fakeStamper{})
 	var logs bytes.Buffer
 	c.logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	err := c.Run(context.Background())
@@ -381,6 +410,30 @@ func TestRunStopsAfterCommitFailure(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotCommitOffsetsWhenStampingFails(t *testing.T) {
+	stampErr := errors.New("stamp publish failed")
+	first := resultRecord(t, EmaWindowsTopic, 41)
+	second := resultRecord(t, TradeAdvisoriesTopic, 42)
+	client := &fakeClient{fetches: []kgo.Fetches{recordFetch(first, second)}}
+	store := &fakeStore{}
+	stamper := &fakeStamper{err: stampErr}
+	c := testConsumer(client, store, stamper)
+	var logs bytes.Buffer
+	c.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	err := c.Run(context.Background())
+	if !errors.Is(err, stampErr) || !strings.Contains(err.Error(), "publish materialize stamps") {
+		t.Fatalf("Run error = %v; want stamp publish failure", err)
+	}
+	if store.saveCalls != 1 || len(client.commitBatches) != 0 || client.polls != 1 || !client.closed {
+		t.Fatal("consumer committed offsets or continued past a stamp publish failure")
+	}
+	for _, field := range []string{`"operation":"publish materialize stamps"`, `"batch_size":2`} {
+		if !strings.Contains(logs.String(), field) {
+			t.Fatalf("stamp failure log is missing %s: %s", field, logs.String())
+		}
+	}
+}
+
 func TestRunPreservesEarlierCommittedBatches(t *testing.T) {
 	completed := resultRecord(t, EmaWindowsTopic, 40)
 	first := resultRecord(t, EmaWindowsTopic, 41)
@@ -389,7 +442,7 @@ func TestRunPreservesEarlierCommittedBatches(t *testing.T) {
 	later := resultRecord(t, EmaWindowsTopic, 43)
 	client := &fakeClient{fetches: []kgo.Fetches{recordFetch(completed), recordFetch(first, failed, later)}}
 	store := &fakeStore{}
-	if err := testConsumer(client, store).Run(context.Background()); err == nil {
+	if err := testConsumer(client, store, &fakeStamper{}).Run(context.Background()); err == nil {
 		t.Fatal("expected invalid second record to fail")
 	}
 	if len(store.windows) != 1 || store.saveCalls != 1 || !reflect.DeepEqual(client.commits, []*kgo.Record{completed}) {
@@ -406,7 +459,7 @@ func TestRunLeavesPartiallyWrittenBatchUncommitted(t *testing.T) {
 			}
 			client := &fakeClient{fetches: []kgo.Fetches{recordFetch(records...)}}
 			store := &fakeStore{saveErr: writeErr, failOnResult: 2}
-			err := testConsumer(client, store).Run(context.Background())
+			err := testConsumer(client, store, &fakeStamper{}).Run(context.Background())
 			if !errors.Is(err, writeErr) || !strings.Contains(err.Error(), "offset=42") {
 				t.Fatalf("Run error = %v; want second record write failure", err)
 			}
@@ -421,7 +474,7 @@ func TestRunLeavesPartiallyWrittenBatchUncommitted(t *testing.T) {
 func TestRunDoesNotCommitEmptyFetches(t *testing.T) {
 	record := resultRecord(t, EmaWindowsTopic, 41)
 	client := &fakeClient{fetches: []kgo.Fetches{{}, recordFetch(record)}}
-	if err := testConsumer(client, &fakeStore{}).Run(context.Background()); !errors.Is(err, errPollingStopped) {
+	if err := testConsumer(client, &fakeStore{}, &fakeStamper{}).Run(context.Background()); !errors.Is(err, errPollingStopped) {
 		t.Fatalf("Run error = %v", err)
 	}
 	if len(client.commitBatches) != 1 || !reflect.DeepEqual(client.commits, []*kgo.Record{record}) {
@@ -433,7 +486,7 @@ func TestRunStopsOnFetchError(t *testing.T) {
 	fetchErr := errors.New("fetch failed")
 	client := &fakeClient{fetches: []kgo.Fetches{kgo.NewErrFetch(fetchErr)}}
 	store := &fakeStore{}
-	if err := testConsumer(client, store).Run(context.Background()); !errors.Is(err, fetchErr) {
+	if err := testConsumer(client, store, &fakeStamper{}).Run(context.Background()); !errors.Is(err, fetchErr) {
 		t.Fatalf("Run error = %v; want fetch error", err)
 	}
 	if len(store.windows)+len(store.advisories)+len(client.commits) != 0 || !client.closed {
@@ -457,7 +510,7 @@ func TestRunCancellationDoesNotCommit(t *testing.T) {
 					return kgo.NewErrFetch(ctx.Err())
 				}
 			}
-			if err := testConsumer(client, store).Run(ctx); !errors.Is(err, context.Canceled) {
+			if err := testConsumer(client, store, &fakeStamper{}).Run(ctx); !errors.Is(err, context.Canceled) {
 				t.Fatalf("Run error = %v; want context canceled", err)
 			}
 			if len(client.commits) != 0 || !client.closed {
@@ -498,7 +551,7 @@ func TestRunCommitsSavedBatchDespiteCancellation(t *testing.T) {
 				}
 				return nil
 			}
-			if err := testConsumer(client, store).Run(ctx); !errors.Is(err, context.Canceled) {
+			if err := testConsumer(client, store, &fakeStamper{}).Run(ctx); !errors.Is(err, context.Canceled) {
 				t.Fatalf("Run error = %v; want context canceled", err)
 			}
 			if store.saveCalls != 1 || len(store.windows) != 2 ||
@@ -521,7 +574,7 @@ func TestCommitBatchIgnoresExpiredCallerDeadline(t *testing.T) {
 		return commitCtx.Err()
 	}}
 	record := resultRecord(t, EmaWindowsTopic, 41)
-	if err := testConsumer(client, &fakeStore{}).commitBatch(ctx, []*kgo.Record{record}); err != nil {
+	if err := testConsumer(client, &fakeStore{}, &fakeStamper{}).commitBatch(ctx, []*kgo.Record{record}); err != nil {
 		t.Fatalf("commitBatch error = %v; want successful offset commit", err)
 	}
 	if !reflect.DeepEqual(client.commits, []*kgo.Record{record}) {
