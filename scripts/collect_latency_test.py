@@ -58,6 +58,27 @@ class TriggerTimesTest(unittest.TestCase):
                          {B: 2, B + WINDOW: 2})
 
 
+class CrossingTimesTest(unittest.TestCase):
+    def test_zero_allowance_records_the_event_that_reaches_the_window_end(self):
+        events = [(B + 10, 100), (B + 299_999, 200), (B + 300_000, 300), (B + 370_000, 400)]
+        self.assertEqual(collector.crossing_times(events, WINDOW, (0,)), [{B + WINDOW: 300}])
+
+    def test_one_pass_gives_every_allowance(self):
+        events = iter([(B + 10, 100), (B + WINDOW + 5, 200), (B + WINDOW + ALLOWANCE, 300),
+                       (B + 2 * WINDOW + ALLOWANCE, 400)])
+        reached, triggers = collector.crossing_times(events, WINDOW, (0, ALLOWANCE))
+        self.assertEqual(reached, {B + WINDOW: 200, B + 2 * WINDOW: 400})
+        # B is the end of an empty window before the first event; build_rows never joins it.
+        self.assertEqual(triggers, {B: 200, B + WINDOW: 300, B + 2 * WINDOW: 400})
+        # The stream reaches a window's end no later than the event that fires it.
+        for end, at in reached.items():
+            self.assertLessEqual(at, triggers[end])
+
+    def test_late_events_cross_nothing(self):
+        events = [(B + 10, 100), (B + 299_999, 200), (B + 100, 300), (B + 300_001, 400)]
+        self.assertEqual(collector.crossing_times(events, WINDOW, (0,)), [{B + WINDOW: 400}])
+
+
 class StatisticsTest(unittest.TestCase):
     def test_percentile_interpolates_between_closest_ranks(self):
         self.assertEqual(collector.percentile([10, 20, 30, 40], 50), 25.0)
@@ -169,6 +190,41 @@ class BuildRowsTest(unittest.TestCase):
                 [("IUSAC.FR", END, 1512)], {END: 1000},
                 materialized=([("IUSAC.FR", END, 1520)], [("IUSAC.FR", END, 1511)]))
 
+    def test_window_end_stages_count_from_the_moment_the_stream_reached_the_end(self):
+        rows, _ = collector.build_rows(
+            stamps_for(advisory=True), [("IUSAC.FR", END, 1510)],
+            [("IUSAC.FR", END, 1512)], {END: 1000},
+            materialized=([("IUSAC.FR", END, 1520)], [("IUSAC.FR", END, 1522)]),
+            window_ends={END: 800})
+        row = rows[0]
+        self.assertEqual(row["tw_ms"], 800)
+        self.assertEqual(row["watermark_wait"], 200)                     # t0 - tw
+        self.assertEqual(row["window_end_to_ema"], 702)                  # t2 - tw
+        self.assertEqual(row["window_end_to_ema_published"], 710)        # t4e - tw
+        self.assertEqual(row["window_end_to_advisory_published"], 712)   # t4a - tw
+        self.assertEqual(row["window_end_to_ema_materialized"], 720)     # t5e - tw
+        self.assertEqual(row["window_end_to_advisory_materialized"], 722)
+        # Each window_end_to_* stage is the watermark wait plus its end_to_end_* stage.
+        self.assertEqual(row["window_end_to_ema_published"],
+                         row["watermark_wait"] + row["end_to_end_ema"])
+
+    def test_window_end_stages_follow_the_missing_moments(self):
+        rows, _ = collector.build_rows(
+            stamps_for(), [("IUSAC.FR", END, 1510)], [], {END: 1000}, window_ends={END: 800})
+        row = rows[0]
+        self.assertEqual(row["window_end_to_ema_published"], 710)
+        self.assertIsNone(row["window_end_to_advisory_published"])
+        self.assertIsNone(row["window_end_to_ema_materialized"])
+
+    def test_without_window_ends_the_window_end_stages_stay_empty(self):
+        rows, _ = collector.build_rows(
+            stamps_for(), [("IUSAC.FR", END, 1510)], [], {END: 1000})
+        row = rows[0]
+        self.assertIsNone(row["tw_ms"])
+        for stage in ("watermark_wait", "window_end_to_ema", "window_end_to_ema_published"):
+            self.assertIsNone(row[stage])
+        self.assertEqual(row["end_to_end_ema"], 510)
+
     def test_without_materialize_stamps_the_database_stages_stay_empty(self):
         rows, coverage = collector.build_rows(
             stamps_for(), [("IUSAC.FR", END, 1510)], [], {END: 1000})
@@ -250,7 +306,10 @@ class StageNamesTest(unittest.TestCase):
             "ingest_to_fire", "ema_compute", "advisory_compute", "ema_publish",
             "advisory_publish", "end_to_end_ema", "end_to_end_advisory",
             "ema_materialize", "advisory_materialize",
-            "end_to_end_ema_materialized", "end_to_end_advisory_materialized"))
+            "end_to_end_ema_materialized", "end_to_end_advisory_materialized",
+            "watermark_wait", "window_end_to_ema", "window_end_to_ema_published",
+            "window_end_to_advisory_published", "window_end_to_ema_materialized",
+            "window_end_to_advisory_materialized"))
 
 
 E = 1_636_693_500_000  # a window end: a multiple of WINDOW
@@ -295,7 +354,8 @@ def full_run(advisory=True, materialized=False):
             (stamp_record(bindings.STAGE_CROSSOVER_EVALUATED, BASE + 1503, advisory), 0)],
         config.TOPIC_EMA_WINDOWS: [(ema, BASE + 1510)],
         config.TOPIC_TRADE_ADVISORIES: [(advice, BASE + 1512)] if advisory else [],
-        config.TOPIC_EVENTS: [(event(E - 60_000), BASE + 1000), (event(E + 70_000), BASE + 1400)],
+        config.TOPIC_EVENTS: [(event(E - 60_000), BASE + 1000), (event(E + 10_000), BASE + 1200),
+                              (event(E + 70_000), BASE + 1400)],
     }
     if materialized:
         stamps = [(stamp_record(bindings.STAGE_EMA_MATERIALIZED, BASE + 1520), 0)]
@@ -310,31 +370,32 @@ class ReadRunTest(unittest.TestCase):
         return collector.read_run("b", fake_stream(topics), fake_partitions(topics), **kwargs)
 
     def test_stage_stamps_decode_to_millisecond_stamps(self):
-        stamps, _, _, _, _ = self.read(full_run())
+        stamps, *_ = self.read(full_run())
         self.assertEqual(stamps, [
             collector.Stamp("IUSAC.FR", E, "fired", BASE + 1500, False),
             collector.Stamp("IUSAC.FR", E, "ema", BASE + 1502, False),
             collector.Stamp("IUSAC.FR", E, "crossover", BASE + 1503, True)])
 
     def test_landed_times_use_the_record_timestamp_and_embedded_window_key(self):
-        _, ema_landed, advisory_landed, _, _ = self.read(full_run())
+        _, ema_landed, advisory_landed, *_ = self.read(full_run())
         self.assertEqual(ema_landed, [("IUSAC.FR", E, BASE + 1510)])
         self.assertEqual(advisory_landed, [("IUSAC.FR", E, BASE + 1512)])
 
     def test_the_trigger_is_the_event_that_reaches_the_threshold(self):
-        *_, triggers = self.read(full_run())
+        *_, triggers, window_ends = self.read(full_run())
         self.assertEqual(triggers, {E: BASE + 1400})
+        self.assertEqual(window_ends, {E: BASE + 1200})
 
-    def test_trade_events_are_streamed_into_the_trigger_scan(self):
+    def test_trade_events_are_streamed_into_one_scan(self):
         seen = []
 
-        def spy(events, window_ms, out_of_orderness_ms):
-            seen.append((inspect.isgenerator(events), window_ms, out_of_orderness_ms))
-            return {}
+        def spy(events, window_ms, allowances):
+            seen.append((inspect.isgenerator(events), window_ms, allowances))
+            return [{}, {}]
 
-        with mock.patch.object(collector, "trigger_times", side_effect=spy):
+        with mock.patch.object(collector, "crossing_times", side_effect=spy):
             self.read(full_run())
-        self.assertEqual(seen, [(True, config.WINDOW_MS, config.OUT_OF_ORDERNESS_MS)])
+        self.assertEqual(seen, [(True, config.WINDOW_MS, (0, config.OUT_OF_ORDERNESS_MS))])
 
     def test_empty_stamps_name_the_flag(self):
         topics = full_run()
@@ -343,18 +404,18 @@ class ReadRunTest(unittest.TestCase):
             self.read(topics)
 
     def test_materialize_stamps_decode_to_triples(self):
-        _, _, _, materialized, _ = self.read(full_run(materialized=True))
+        _, _, _, materialized, *_ = self.read(full_run(materialized=True))
         self.assertEqual(materialized, ([("IUSAC.FR", E, BASE + 1520)],
                                          [("IUSAC.FR", E, BASE + 1522)]))
 
     def test_without_the_materialize_stamps_topic_there_are_no_database_stages(self):
-        _, _, _, materialized, _ = self.read(full_run())
+        _, _, _, materialized, *_ = self.read(full_run())
         self.assertIsNone(materialized)
 
     def test_an_existing_but_empty_stamps_topic_means_no_database_stages(self):
         topics = full_run()
         topics[config.TOPIC_MATERIALIZE_STAMPS] = []
-        _, _, _, materialized, _ = self.read(topics)
+        _, _, _, materialized, *_ = self.read(topics)
         self.assertIsNone(materialized)
 
     def test_an_unrecognized_materialize_stage_is_refused(self):
@@ -376,7 +437,7 @@ class CollectTest(unittest.TestCase):
             with open(Path(directory) / "latency-summary.csv", newline="") as handle:
                 summary_rows = list(csv.DictReader(handle))
         self.assertEqual(list(rows[0]), [
-            "symbol", "window_end_ms", "t0_ms", "t1_ms", "t2_ms", "t3_ms", "t4e_ms",
+            "symbol", "window_end_ms", "tw_ms", "t0_ms", "t1_ms", "t2_ms", "t3_ms", "t4e_ms",
             "advisory_emitted", "t4a_ms", "t5e_ms", "t5a_ms", *collector.STAGES])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["symbol"], "IUSAC.FR")
@@ -390,6 +451,13 @@ class CollectTest(unittest.TestCase):
         self.assertEqual(rows[0]["advisory_materialize"], "10")
         self.assertEqual(rows[0]["end_to_end_ema_materialized"], "120")
         self.assertEqual(rows[0]["end_to_end_advisory_materialized"], "122")
+        self.assertEqual(rows[0]["tw_ms"], str(BASE + 1200))
+        self.assertEqual(rows[0]["watermark_wait"], "200")
+        self.assertEqual(rows[0]["window_end_to_ema"], "302")
+        self.assertEqual(rows[0]["window_end_to_ema_published"], "310")
+        self.assertEqual(rows[0]["window_end_to_advisory_published"], "312")
+        self.assertEqual(rows[0]["window_end_to_ema_materialized"], "320")
+        self.assertEqual(rows[0]["window_end_to_advisory_materialized"], "322")
         self.assertEqual(list(summary_rows[0]),
                          ["stage", "count", "mean_ms", "p50_ms", "p95_ms", "p99_ms", "max_ms"])
         self.assertEqual([row["stage"] for row in summary_rows], list(collector.STAGES))

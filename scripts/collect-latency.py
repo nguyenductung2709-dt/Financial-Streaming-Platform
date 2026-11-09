@@ -8,6 +8,8 @@ with MATERIALIZER_STAMP_TOPIC for the database stages (measure-flow does both).
 
 Each window is followed through these wall-clock moments (epoch milliseconds):
 
+  tw   the stream reached window_end: the producer published the first event in
+       trade-events whose trade_time reaches window_end, rebuilt from trade-events
   t0   the producer published the event that let the window close (the first
        event in trade-events whose trade_time reaches window_end + the
        watermark's out-of-orderness allowance), rebuilt from trade-events
@@ -19,9 +21,11 @@ Each window is followed through these wall-clock moments (epoch milliseconds):
   t5e  the EMA was committed to PostgreSQL  } stamps published to
   t5a  the advisory was committed            } materialize-stamps
 
-and the stages derived from them are in STAGES. Writes latency.csv (one row per
-window) and latency-summary.csv (count, mean, p50, p95, p99, max per stage) to
---out.
+and the stages derived from them are in STAGES. The end_to_end_* stages start at
+t0 and leave out the wait for the out-of-orderness allowance; the window_end_to_*
+stages start at tw and include it, like a latency counted from the window's end.
+Writes latency.csv (one row per window) and latency-summary.csv (count, mean, p50,
+p95, p99, max per stage) to --out.
 """
 
 import argparse
@@ -38,9 +42,12 @@ import config  # noqa: E402
 STAGES = ("ingest_to_fire", "ema_compute", "advisory_compute", "ema_publish",
           "advisory_publish", "end_to_end_ema", "end_to_end_advisory",
           "ema_materialize", "advisory_materialize",
-          "end_to_end_ema_materialized", "end_to_end_advisory_materialized")
+          "end_to_end_ema_materialized", "end_to_end_advisory_materialized",
+          "watermark_wait", "window_end_to_ema", "window_end_to_ema_published",
+          "window_end_to_advisory_published", "window_end_to_ema_materialized",
+          "window_end_to_advisory_materialized")
 SUMMARY_KEYS = ("count", "mean_ms", "p50_ms", "p95_ms", "p99_ms", "max_ms")
-ROW_COLUMNS = ("symbol", "window_end_ms", "t0_ms", "t1_ms", "t2_ms", "t3_ms", "t4e_ms",
+ROW_COLUMNS = ("symbol", "window_end_ms", "tw_ms", "t0_ms", "t1_ms", "t2_ms", "t3_ms", "t4e_ms",
                "advisory_emitted", "t4a_ms", "t5e_ms", "t5a_ms", *STAGES)
 
 # One stamp from latency-stamps; stage is "fired", "ema" or "crossover".
@@ -51,27 +58,36 @@ class LatencyError(RuntimeError):
     """The topics cannot be turned into a trustworthy latency report."""
 
 
-def trigger_times(events, window_ms, out_of_orderness_ms):
-    """{window_end_ms: publish_ms} of the event that let each window fire.
+def crossing_times(events, window_ms, allowances):
+    """One {window_end_ms: publish_ms} per allowance, in one pass over `events`.
 
-    `events` is an iterable of (trade_time_ms, publish_ms) in log order. Flink's
-    watermark is the highest trade time seen minus the allowance, and a window
-    ending at `e` fires once the highest trade time reaches `e + allowance`.
-    Late events still raise the maximum when they exceed it, and never lower it.
-    The first event triggers nothing: windows it would close have no events.
+    `events` is an iterable of (trade_time_ms, publish_ms) in log order. For each
+    allowance, the event recorded for a window ending at `e` is the first whose
+    trade time takes the highest trade time seen to `e + allowance` or beyond.
+    Flink's watermark is the highest trade time minus the out-of-orderness
+    allowance, so with that allowance this is the event that let the window fire;
+    with 0 it is the event at which the stream reached the window's end. Late
+    events still raise the maximum when they exceed it, and never lower it. The
+    first event records nothing: windows it would cross have no events.
     """
-    triggers = {}
+    crossings = [{} for _ in allowances]
     highest = None
     for trade_time, published in events:
         if highest is not None and trade_time > highest:
-            end = (highest - out_of_orderness_ms) // window_ms * window_ms + window_ms
-            limit = trade_time - out_of_orderness_ms
-            while end <= limit:
-                triggers[end] = published
-                end += window_ms
+            for allowance, crossed in zip(allowances, crossings):
+                end = (highest - allowance) // window_ms * window_ms + window_ms
+                limit = trade_time - allowance
+                while end <= limit:
+                    crossed[end] = published
+                    end += window_ms
         if highest is None or trade_time > highest:
             highest = trade_time
-    return triggers
+    return crossings
+
+
+def trigger_times(events, window_ms, out_of_orderness_ms):
+    """{window_end_ms: publish_ms} of the event that let each window fire."""
+    return crossing_times(events, window_ms, (out_of_orderness_ms,))[0]
 
 
 def percentile(sorted_values, q):
@@ -97,6 +113,11 @@ def summarize_rows(rows):
             for stage in STAGES]
 
 
+def elapsed(start, end):
+    """end - start, or None when either moment is unknown."""
+    return end - start if start is not None and end is not None else None
+
+
 def first_landings(landed):
     """({(symbol, window_end): landed_ms} keeping the first of each, duplicates dropped)."""
     first, duplicates = {}, 0
@@ -108,7 +129,8 @@ def first_landings(landed):
     return first, duplicates
 
 
-def build_rows(stamps, ema_landed, advisory_landed, triggers, materialized=None):
+def build_rows(stamps, ema_landed, advisory_landed, triggers, materialized=None,
+               window_ends=None):
     """Join stamps, landing times and trigger times into one row per measured window.
 
     ema_landed / advisory_landed are iterables of (symbol, window_end_ms, landed_ms).
@@ -119,7 +141,9 @@ def build_rows(stamps, ema_landed, advisory_landed, triggers, materialized=None)
     keep the first occurrence. materialized is None when the run has no
     materialize stamps (the database stages stay empty), else (ema, advisory)
     stamp triples shaped like ema_landed; a measured window without one counts
-    in coverage["missing_materialize"]. Returns (rows, coverage).
+    in coverage["missing_materialize"]. window_ends is {window_end_ms: tw} (the
+    moment the stream reached each window's end); without it the window_end_to_*
+    stages stay empty. Returns (rows, coverage).
     """
     duplicates = 0
     by_window = {}
@@ -163,6 +187,9 @@ def build_rows(stamps, ema_landed, advisory_landed, triggers, materialized=None)
             flushed += 1
             continue
         t0 = triggers[window_end]
+        # The stream reached window_end no later than t0. tw is missing only for a window that
+        # lies wholly behind the first event (filled by late events); its window_end_to_* stay empty.
+        tw = window_ends.get(window_end) if window_ends is not None else None
         t5e = t5a = None
         if materialized_emas is not None:
             t5e = materialized_emas.get(key)
@@ -183,7 +210,7 @@ def build_rows(stamps, ema_landed, advisory_landed, triggers, materialized=None)
                         "materialized before it landed on its topic.")
         rows.append({
             "symbol": symbol, "window_end_ms": window_end,
-            "t0_ms": t0, "t1_ms": t1, "t2_ms": t2, "t3_ms": t3, "t4e_ms": t4e,
+            "tw_ms": tw, "t0_ms": t0, "t1_ms": t1, "t2_ms": t2, "t3_ms": t3, "t4e_ms": t4e,
             "advisory_emitted": emitted, "t4a_ms": t4a, "t5e_ms": t5e, "t5a_ms": t5a,
             "ingest_to_fire": t1 - t0,
             "ema_compute": t2 - t1,
@@ -196,6 +223,12 @@ def build_rows(stamps, ema_landed, advisory_landed, triggers, materialized=None)
             "advisory_materialize": t5a - t4a if t5a is not None else None,
             "end_to_end_ema_materialized": t5e - t0 if t5e is not None else None,
             "end_to_end_advisory_materialized": t5a - t0 if t5a is not None else None,
+            "watermark_wait": elapsed(tw, t0),
+            "window_end_to_ema": elapsed(tw, t2),
+            "window_end_to_ema_published": elapsed(tw, t4e),
+            "window_end_to_advisory_published": elapsed(tw, t4a),
+            "window_end_to_ema_materialized": elapsed(tw, t5e),
+            "window_end_to_advisory_materialized": elapsed(tw, t5a),
         })
     rows.sort(key=lambda row: (row["window_end_ms"], row["symbol"]))
     coverage = {
@@ -217,7 +250,7 @@ def timestamp_ms(timestamp):
 
 
 def read_run(brokers, stream=None, topic_partitions=None):
-    """(stamps, ema_landed, advisory_landed, materialized, triggers) for build_rows, read from the topics.
+    """(stamps, ema_landed, advisory_landed, materialized, triggers, window_ends) for build_rows.
 
     `stream(brokers, topic)` yields (offset, value, timestamp_ms) like
     kafka_topics.stream_records and `topic_partitions` is
@@ -274,8 +307,9 @@ def read_run(brokers, stream=None, topic_partitions=None):
         for _, value, published in stream(brokers, config.TOPIC_EVENTS):
             yield timestamp_ms(bindings.PriceEvent.FromString(value).trade_time), published
 
-    triggers = trigger_times(published_events(), config.WINDOW_MS, config.OUT_OF_ORDERNESS_MS)
-    return stamps, ema_landed, advisory_landed, materialized, triggers
+    window_ends, triggers = crossing_times(published_events(), config.WINDOW_MS,
+                                           (0, config.OUT_OF_ORDERNESS_MS))
+    return stamps, ema_landed, advisory_landed, materialized, triggers, window_ends
 
 
 def cell(value):
@@ -336,8 +370,10 @@ def write_outputs(out_dir, rows, summary, coverage):
 
 def collect(brokers, out_dir, stream=None, topic_partitions=None):
     """Read the run, write the outputs; returns (summary, coverage, console_table)."""
-    stamps, ema_landed, advisory_landed, materialized, triggers = read_run(brokers, stream, topic_partitions)
-    rows, coverage = build_rows(stamps, ema_landed, advisory_landed, triggers, materialized)
+    stamps, ema_landed, advisory_landed, materialized, triggers, window_ends = read_run(
+        brokers, stream, topic_partitions)
+    rows, coverage = build_rows(stamps, ema_landed, advisory_landed, triggers, materialized,
+                                window_ends)
     summary = summarize_rows(rows)
     return summary, coverage, write_outputs(Path(out_dir), rows, summary, coverage)
 
