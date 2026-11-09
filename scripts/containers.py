@@ -189,9 +189,7 @@ class MaterializerContainer:
     WAIT_INTERVAL_S = 0.5
 
     def __init__(self, compose=COMPOSE, run=subprocess.run, clock=time.monotonic, sleep=time.sleep, cwd=ROOT, env=None):
-        """env is extra environment for every docker call (merged over os.environ);
-        None inherits the process environment untouched. Compose interpolates
-        it into the service definition, e.g. MATERIALIZER_STAMP_TOPIC."""
+        """env is merged over os.environ for every docker call; Compose interpolates it."""
         self._compose = list(compose)
         self._run = run
         self._clock = clock

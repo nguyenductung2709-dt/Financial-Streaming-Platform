@@ -114,12 +114,7 @@ def _watermarks(consumer, topic, partition):
 
 def topic_partitions(brokers: str, topic: str,
                      consumer_factory=None) -> set[int]:
-    """The partitions of `topic`; empty when the topic does not exist.
-
-    The same consumer surface stream_records uses, closed after one
-    metadata query; a topic that exists only in a stale deployment reports
-    no partitions instead of a failed read.
-    """
+    """The partitions of `topic`; empty when the topic does not exist."""
     consumer = (consumer_factory or _default_consumer_factory)(brokers)
     try:
         return consumer.list_topics(topic)

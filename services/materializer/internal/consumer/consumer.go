@@ -109,9 +109,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 				}
 				return c.batchError("save database batch", records, err)
 			}
-			// The database has committed: stamp the batch's results as
-			// materialized before their offsets are acknowledged, so a
-			// publish failure leaves the batch to be saved and stamped again.
+			// Stamp after the database commit and before the offsets, so a failed publish retries the batch.
 			if err := c.stamps.Publish(ctx, results); err != nil {
 				return c.batchError("publish materialize stamps", records, err)
 			}
