@@ -44,7 +44,7 @@ async function dashboard(storage = {}) {
   const source = original.replace(/\}\)\(\);\s*$/, `
     globalThis.review = {state, mergeFeed, renderFeed, push, sync, changed, applySubscription, loadSymbols,
       panes, openSymbol, setCompare, quoteInfo, renderList, applyTheme, toggleWatch,
-      comparison, comparisonData, toggleComparison, addToComparison, COMPARE_MAX,
+      comparison, comparisonData, emaSpread, spreadData, toggleComparison, addToComparison, COMPARE_MAX,
       getPending: () => syncPromise, getBuffer: () => buffer,
       getKnown: () => knownFeedKeys, HISTORY_MAX, BUFFER_MAX};
   })();`);
@@ -803,4 +803,156 @@ test('an excluded symbol rejoins automatically once two matching closes arrive',
   assert.equal(app.comparison.data.series.length, 3);
   assert.equal(app.node('comparisonCoverage').hidden, true);
   assert.equal(app.state.comparison.length, 3);
+});
+
+
+function emaRow(fast, slow, index = 0, symbol = 'A', revision = '1') {
+  return {...row(100, revision, index, symbol), ema38: fast, ema100: slow};
+}
+
+test('EMA spread computes positive, negative, equal and scale-independent percentage gaps', async () => {
+  const app = await dashboard();
+  near(app.emaSpread(emaRow(110, 100)), 10);
+  near(app.emaSpread(emaRow(90, 100)), -10);
+  assert.equal(app.emaSpread(emaRow(100, 100)), 0);
+  near(app.emaSpread(emaRow(1100, 1000)), 10);
+  near(app.emaSpread(emaRow('110', '100')), 10);
+  assert.equal(app.emaSpread(emaRow(0, 100)), -100);
+});
+
+test('EMA spread rejects missing, non-finite and non-positive denominators', async () => {
+  const app = await dashboard();
+  for (const slow of [0, -1, null, undefined, '', ' ', false, Infinity, NaN]) {
+    assert.equal(app.emaSpread(emaRow(110, slow)), null);
+  }
+  for (const fast of [null, undefined, '', ' ', false, Infinity, NaN]) {
+    assert.equal(app.emaSpread(emaRow(fast, 100)), null);
+  }
+  assert.equal(app.emaSpread(emaRow(1e308, 1e-300)), null);
+});
+
+test('spread series retain their actual starting percentage without rebasing', async () => {
+  const app = await dashboard();
+  const data = app.spreadData(['A'], {A: windowMap(emaRow(110,100), emaRow(105,100,1))});
+  assert.deepEqual([...data.series[0].values], [10,5]);
+  assert.equal(data.series[0].percent, 5);
+  assert.equal(data.series[0].emas[0][0], 110);
+  assert.equal(data.series[0].emas[0][1], 100);
+});
+
+test('spread comparison plots single observations at actual timestamps without shared prices', async () => {
+  const app = await dashboard();
+  const data = app.spreadData(['A','B','C'], {
+    A: windowMap(emaRow(110,100)),
+    B: windowMap(emaRow(90,100,10,'B')),
+    C: windowMap(emaRow(100,100,20,'C')),
+  });
+  assert.equal(data.series.length, 3);
+  assert.equal(data.availability.every(item => item.compared), true);
+  assert.equal(data.series[1].times[0], emaRow(90,100,10,'B').window_end);
+  assert.equal(data.series[1].values[0], -10);
+  assert.equal(data.start, Date.parse(emaRow(110,100).window_end));
+  assert.equal(data.end, Date.parse(emaRow(100,100,20,'C').window_end));
+});
+
+test('unusable EMA observations remain gaps and cannot become interpolated values', async () => {
+  const app = await dashboard();
+  const data = app.spreadData(['A','B'], {
+    A: windowMap(emaRow(110,100), emaRow(110,0,1), emaRow(90,100,2)),
+    B: windowMap(emaRow(100,100,0,'B'), emaRow(100,100,1,'B'), emaRow(100,100,2,'B')),
+  });
+  assert.deepEqual([...data.series[0].values], [10,null,-10]);
+  assert.equal(data.series[0].emas[1], null);
+  assert.equal(data.breaks.length, 0);
+  assert.equal(data.availability[0].count, 2);
+});
+
+test('a symbol without usable EMA values does not blank valid spread series', async () => {
+  const app = await dashboard();
+  const data = app.spreadData(['A','B'], {
+    A: windowMap(emaRow(110,100)), B: windowMap(emaRow(90,0,1,'B')),
+  });
+  assert.equal(data.series.length, 1);
+  assert.equal(data.series[0].symbol, 'A');
+  assert.equal(data.availability[1].reason, 'No valid EMA values');
+  const none = app.spreadData(['B'], {B: windowMap(emaRow(90,0,1,'B'))});
+  assert.equal(none.series.length, 0);
+  assert.match(none.message, /positive EMA 100/);
+});
+
+test('spread range filtering uses actual observation times and All restores older symbols', async () => {
+  const app = await dashboard();
+  const windows = {A: windowMap(emaRow(110,100)), B: windowMap(emaRow(90,100,600,'B'))};
+  const day = app.spreadData(['A','B'], windows, '1D');
+  assert.equal(day.series.length, 1);
+  assert.equal(day.series[0].symbol, 'B');
+  assert.equal(day.availability[0].reason, 'No EMA values in this period');
+  const all = app.spreadData(['A','B'], windows, 'All');
+  assert.equal(all.series.length, 2);
+});
+
+test('metric toggle updates chart and table while preserving symbols, colors and loaded data', async () => {
+  const storage = {};
+  const app = await dashboard(storage);
+  app.state.compare = true; app.state.comparison = ['A','B']; app.state.watchlist = ['A','B'];
+  app.state.windows = {
+    A: windowMap(emaRow(110,100), emaRow(105,100,1)),
+    B: windowMap(emaRow(90,100,0,'B'), emaRow(100,100,1,'B')),
+  };
+  app.comparison.update();
+  const color = app.comparison.color('A');
+  const data = app.state.windows;
+  app.comparison.manualRange = ['2021-11-08T10:00Z','2021-11-08T10:05Z'];
+  const metric = {dataset:{metric:'spread'}};
+  app.node('comparisonMetrics').handlers.click({target:{closest:()=>metric}});
+  assert.equal(app.comparison.metric, 'spread');
+  assert.equal(storage.comparisonMetric, 'spread');
+  assert.equal(app.comparison.anchor, null);
+  assert.equal(app.comparison.manualRange, null);
+  assert.equal(app.state.windows, data);
+  assert.equal(app.comparison.color('A'), color);
+  assert.deepEqual([...app.state.comparison], ['A','B']);
+  assert.match(app.node('comparisonTitle').textContent, /EMA spreads/);
+  assert.equal(app.node('comparisonValueHeading').textContent, 'EMA spread');
+  assert.match(app.node('comparisonTable').innerHTML, /Bullish/);
+  assert.match(app.node('comparisonTable').innerHTML, /Equal EMAs/);
+  assert.equal(app.comparison.plot.layout.shapes[0].y0, 0);
+  assert.ok(app.comparison.plot.layout.yaxis.range[0] < 0);
+  assert.ok(app.comparison.plot.layout.yaxis.range[1] > 0);
+  assert.match(app.comparison.plot.traces[0].hovertemplate, /EMA 100/);
+  metric.dataset.metric = 'price';
+  app.node('comparisonMetrics').handlers.click({target:{closest:()=>metric}});
+  assert.equal(app.comparison.metric, 'price');
+  assert.equal(app.node('comparisonDetailHeading').textContent, 'Close at shared end');
+  assert.equal(app.node('comparisonMetricNote').hidden, true);
+});
+
+test('spread endpoint markers use each symbol observation time, not the latest peer time', async () => {
+  const app = await dashboard({comparisonMetric:'spread'});
+  app.state.compare = true; app.state.comparison = ['A','B'];
+  app.state.windows = {A:windowMap(emaRow(110,100)), B:windowMap(emaRow(90,100,10,'B'))};
+  app.comparison.update();
+  const marker = app.comparison.plot.traces.find(t=>t.name==='A end');
+  assert.equal(marker.x[0], emaRow(110,100).window_end);
+  assert.match(app.node('comparisonHistoryHeading').textContent, /Observed/);
+  assert.match(app.comparison.plot.layout.annotations.find(a=>a.text.startsWith('A ')).text, /UTC/);
+});
+
+test('live EMA corrections respect revisions and update the spread value', async () => {
+  const app = await dashboard({comparisonMetric:'spread'});
+  app.state.compare = true; app.state.comparison = ['A']; app.state.watchlist = ['A'];
+  app.state.windows = {A: windowMap(emaRow(110,100))};
+  app.comparison.update();
+  app.push('window', emaRow(120,100,0,'A','2')); app.ctx.flush();
+  assert.equal(app.comparison.data.series[0].percent, 20);
+  app.push('window', emaRow(101,100,0,'A','1')); app.ctx.flush();
+  assert.equal(app.comparison.data.series[0].percent, 20);
+  assert.match(app.node('comparisonTable').innerHTML, /20.00%/);
+});
+
+test('comparison metric preference survives reload and unknown values fall back to price', async () => {
+  const spread = await dashboard({comparisonMetric:'spread'});
+  assert.equal(spread.comparison.metric, 'spread');
+  const unknown = await dashboard({comparisonMetric:'raw-ema'});
+  assert.equal(unknown.comparison.metric, 'price');
 });

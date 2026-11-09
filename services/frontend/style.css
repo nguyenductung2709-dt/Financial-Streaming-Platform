@@ -162,6 +162,10 @@ h2 { font-size: 15px; font-weight: 600; }
 .series-dot { display: inline-block; width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--series); }
 .line-hidden { opacity: .45; }
 .comparison-axis-label { color: var(--muted); font-size: 11px; margin-left: auto; }
+.comparison-metrics { flex-shrink: 0; }
+.comparison-metrics .tool-button { font-size: 11px; }
+.comparison-metric-note { padding: 10px 20px; color: var(--muted); font-size: 10px; border-bottom: 1px solid var(--line); }
+.ema-alignment { font-size: 11px; }
 .comparison-notice { color: var(--ema38); font-size: 11px; margin-top: 8px; }
 .comparison-coverage { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; padding: 10px 12px; background: var(--raised); border-left: 2px solid var(--ema38); border-radius: 4px; color: var(--muted); font-size: 11px; }
 .coverage-actions { display: flex; gap: 14px; }
@@ -195,6 +199,8 @@ h2 { font-size: 15px; font-weight: 600; }
   .comparison-box { min-height: 300px; }
   .comparison-chip button { font-size: 10px; padding: 5px 7px; }
   .comparison-axis-label { font-size: 10px; }
+  .comparison-metrics { margin-right: auto; }
+  .comparison-metric-note { padding-inline: 12px; }
   .comparison-table-wrap { padding-inline: 6px; }
   .comparison-footer { padding: 12px; }
   .comparison-table th, .comparison-table td { padding: 9px 7px; }
