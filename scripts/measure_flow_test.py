@@ -167,6 +167,12 @@ class LatencyIntegrationTest(unittest.TestCase):
                          ["--starting-offsets", "earliest", "--latency-topic", "latency-stamps"])
         self.assertIn("*JOB_ARGS", inspect.getsource(measure.measure))
 
+    def test_the_materializer_stamps_committed_results(self):
+        self.assertEqual(measure.MATERIALIZER_STAMP_ENV,
+                         {"MATERIALIZER_STAMP_TOPIC": "materialize-stamps"})
+        self.assertIn("MaterializerContainer(compose=COMPOSE, env=MATERIALIZER_STAMP_ENV)",
+                      inspect.getsource(measure.measure))
+
     def write_results(self, directory):
         out = Path(directory)
         (out / "summary.txt").write_text("RESOURCES\n")
