@@ -498,21 +498,79 @@
     return { series, availability, start, end, breaks, commonCount: common.filter((t) => t >= start).length };
   }
 
+  function emaSpread(row) {
+    const usable = (value) => (typeof value === "number" || typeof value === "string") &&
+      String(value).trim() !== "" && Number.isFinite(Number(value));
+    if (!usable(row.ema38) || !usable(row.ema100) || Number(row.ema100) <= 0) return null;
+    const value = (Number(row.ema38) - Number(row.ema100)) / Number(row.ema100) * 100;
+    return Number.isFinite(value) ? value : null;
+  }
+
+  // Spread is a level at each actual observation; it requires neither rebasing nor matching closes.
+  function spreadData(symbols, windows, range = "1D") {
+    if (!symbols.length) return { series: [], availability: [], title: "Compare EMA spreads", message: "Choose up to five symbols from the watchlist to compare." };
+    const rows = symbols.map((symbol) => Object.values(windows[symbol] || {})
+      .filter((r) => Number.isFinite(Date.parse(r.window_end))).sort(byTime));
+    const validTimes = rows.flatMap((list) => list.filter((r) => emaSpread(r) !== null).map((r) => Date.parse(r.window_end)));
+    const end = validTimes.length ? Math.max(...validTimes) : null;
+    const cutoff = end === null || range === "All" ? -Infinity : end - (range === "3D" ? 3 : 1) * 86400000;
+    const observed = new Set();
+    const availability = [];
+    const series = [];
+    for (let i = 0; i < symbols.length; i++) {
+      const symbol = symbols[i];
+      const within = rows[i].filter((r) => Date.parse(r.window_end) >= cutoff);
+      const valid = within.filter((r) => emaSpread(r) !== null);
+      const loading = !Object.hasOwn(windows, symbol);
+      availability.push({ symbol, count: valid.length, first: valid[0], last: valid.at(-1), loading,
+        compared: !!valid.length, kind: "spread",
+        reason: loading ? "Loading EMA values…" : !within.length && rows[i].length ? "No EMA values in this period"
+          : !rows[i].length ? "No prices available yet" : !valid.length ? "No valid EMA values" : "Compared" });
+      if (!valid.length) continue;
+      const first = valid[0], last = valid.at(-1);
+      const times = [], values = [], emas = [];
+      let previous;
+      for (const row of within) {
+        const time = Date.parse(row.window_end);
+        if (time < Date.parse(first.window_end) || time > Date.parse(last.window_end)) continue;
+        if (previous !== undefined && time - previous > WINDOW_MS) {
+          times.push(new Date(previous + WINDOW_MS).toISOString()); values.push(null); emas.push(null);
+        }
+        const value = emaSpread(row);
+        times.push(new Date(time).toISOString()); values.push(value);
+        emas.push(value === null ? null : [Number(row.ema38), Number(row.ema100)]);
+        if (value !== null) observed.add(time);
+        previous = time;
+      }
+      series.push({ symbol, last, percent: emaSpread(last), times, values, emas });
+    }
+    if (!series.length) return { series, availability, title: "No usable EMA values yet",
+      message: "EMA spread needs both EMAs and a positive EMA 100. Available history is listed below." };
+    const allTimes = [...observed].sort((a, b) => a - b);
+    const breaks = [];
+    for (let i = 1; i < allTimes.length; i++) {
+      const gap = allTimes[i] - allTimes[i - 1] - WINDOW_MS;
+      if (gap > 0) breaks.push({ values: [new Date(allTimes[i - 1] + WINDOW_MS).toISOString()], dvalue: gap });
+    }
+    return { series, availability, start: allTimes[0], end, breaks, observationCount: allTimes.length };
+  }
+
   const historyDate = new Intl.DateTimeFormat("en-GB", {
     day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC",
   });
   function historyLabel(item) {
-    if (!item.count) return item.loading ? "Loading history…" : "No prices available yet";
+    if (!item.count) return item.loading ? "Loading history…" : item.kind === "spread" ? "No valid EMA observations in this period" : "No prices available yet";
     const first = new Date(item.first.window_end), last = new Date(item.last.window_end);
     const sameDay = first.toISOString().slice(0, 10) === last.toISOString().slice(0, 10);
     const end = sameDay ? last.toISOString().slice(11, 16) : historyDate.format(last);
-    return `${historyDate.format(first)}${first.getTime() === last.getTime() ? "" : ` – ${end}`} UTC · ${item.count} ${item.count === 1 ? "price" : "prices"}`;
+    return `${historyDate.format(first)}${first.getTime() === last.getTime() ? "" : ` – ${end}`} UTC · ${item.count} ${item.kind === "spread" ? item.count === 1 ? "EMA observation" : "EMA observations" : item.count === 1 ? "price" : "prices"}`;
   }
 
   class ComparisonPane {
     constructor() {
       this.plot = $("comparisonCanvas");
       this.range = "1D";
+      this.metric = load("comparisonMetric", "price") === "spread" ? "spread" : "price";
       this.anchor = null;
       this.signature = null;
       this.cohortSignature = null;
@@ -521,6 +579,14 @@
       this.hidden = new Set();
       this.manualRange = null;
       this.eventsBound = false;
+      $("comparisonMetrics").addEventListener("click", (e) => {
+        const button = e.target.closest("button[data-metric]");
+        if (!button || !["price", "spread"].includes(button.dataset.metric) || button.dataset.metric === this.metric) return;
+        this.metric = button.dataset.metric;
+        save("comparisonMetric", this.metric);
+        this.anchor = null; this.manualRange = null; this.viewRevision++;
+        this.update();
+      });
       $("comparisonRanges").addEventListener("click", (e) => {
         const button = e.target.closest("button[data-range]");
         if (!button) return;
@@ -546,7 +612,7 @@
       });
       $("comparisonChangeSymbols").addEventListener("click", () => this.focusSymbols());
       $("comparisonUseAvailable").addEventListener("click", () => {
-        if (this.data.series.length < 2) return;
+        if (this.data.series.length < (this.metric === "spread" ? 1 : 2)) return;
         state.comparison = this.data.series.map((s) => s.symbol);
         $("comparisonNotice").hidden = true;
         changed();
@@ -589,9 +655,10 @@
         this.signature = signature;
         for (const s of this.hidden) if (!state.comparison.includes(s)) this.hidden.delete(s);
       }
-      this.data = comparisonData(state.comparison, state.windows, this.range, this.anchor);
-      if (this.data.start !== undefined) this.anchor = this.data.start;
-      else this.anchor = null;
+      const spread = this.metric === "spread";
+      this.data = spread ? spreadData(state.comparison, state.windows, this.range)
+        : comparisonData(state.comparison, state.windows, this.range, this.anchor);
+      this.anchor = !spread && this.data.start !== undefined ? this.data.start : null;
       const data = this.data;
       const cohort = data.series.map((s) => s.symbol).join("|");
       if (cohort !== this.cohortSignature) {
@@ -599,16 +666,34 @@
       }
       const theme = THEMES[state.theme];
       $("comparisonCount").textContent = `${state.comparison.length} / ${COMPARE_MAX}`;
-      $("comparisonPeriod").textContent = data.series.length
-        ? `Price return · Shared start ${utcLabel(new Date(data.start).toISOString())} · End ${utcLabel(new Date(data.end).toISOString())} · ${data.commonCount} matching closes`
-        : "Price return · Available history is listed below";
+      $("comparisonEyebrow").textContent = spread ? "EMA alignment" : "Relative performance";
+      $("comparisonTitle").textContent = spread ? "Compare EMA spreads" : "Compare performance";
+      $("comparisonAxisLabel").textContent = spread ? "(EMA 38 − EMA 100) / EMA 100 × 100" : "% change from shared start";
+      $("comparisonMetricNote").hidden = !spread;
+      $("comparisonCaption").textContent = spread ? "Latest observed EMA spreads and their EMA alignment" : "Returns and closing prices over the same shared period";
+      $("comparisonValueHeading").textContent = spread ? "EMA spread" : "Return in view";
+      $("comparisonValueCompact").textContent = spread ? "Spread" : "Return";
+      $("comparisonDetailHeading").textContent = spread ? "EMA alignment" : "Close at shared end";
+      $("comparisonDetailCompact").textContent = spread ? "Alignment" : "Close at end";
+      $("comparisonMethod").textContent = spread
+        ? "Actual EMA gap · Shared gaps collapsed · Individual gaps remain · 5-minute windows"
+        : "Same start & end · Shared gaps collapsed · Individual gaps remain · 5-minute closes";
+      $("comparisonMetrics").querySelectorAll("[data-metric]").forEach((button) => {
+        button.setAttribute("aria-pressed", button.dataset.metric === this.metric);
+      });
+      $("comparisonPeriod").textContent = spread
+        ? data.series.length ? `EMA spread (%) · Actual observations ${utcLabel(new Date(data.start).toISOString())} – ${utcLabel(new Date(data.end).toISOString())} · Not rebased`
+          : "EMA spread (%) · Observations are plotted at their actual UTC times"
+        : data.series.length ? `Price return · Shared start ${utcLabel(new Date(data.start).toISOString())} · End ${utcLabel(new Date(data.end).toISOString())} · ${data.commonCount} matching closes`
+          : "Price return · Available history is listed below";
       const excluded = data.availability.filter((a) => !a.compared);
       $("comparisonCoverage").hidden = !excluded.length;
       $("comparisonCoverageText").textContent = data.series.length
         ? `Showing ${data.series.length} of ${state.comparison.length} symbols. ${excluded.map((a) => `${a.symbol}: ${a.reason.toLowerCase()}`).join("; ")}.`
-        : "Each return needs two matching prices. Review the available history below.";
-      $("comparisonUseAvailable").hidden = data.series.length < 2 || !excluded.length;
-      $("comparisonUseAvailable").textContent = `Keep these ${data.series.length} symbols`;
+        : spread ? "Spread needs both EMA values and EMA 100 above zero. Review the available history below."
+          : "Each return needs two matching prices. Review the available history below.";
+      $("comparisonUseAvailable").hidden = data.series.length < (spread ? 1 : 2) || !excluded.length;
+      $("comparisonUseAvailable").textContent = data.series.length === 1 ? "Keep this symbol" : `Keep these ${data.series.length} symbols`;
       $("comparisonSymbols").innerHTML = state.comparison.map((symbol) => {
         const visible = !this.hidden.has(symbol);
         return `<span class="comparison-chip${visible ? "" : " line-hidden"}" style="--series:${this.color(symbol)}">` +
@@ -619,14 +704,14 @@
         const active = b.dataset.range === this.range;
         b.classList.toggle("on", active); b.setAttribute("aria-pressed", active);
       });
-      $("comparisonHistoryHeading").textContent = excluded.length ? "Available history (UTC)" : "Data through (UTC)";
+      $("comparisonHistoryHeading").textContent = excluded.length ? "Available history (UTC)" : spread ? "Observed at (UTC)" : "Data through (UTC)";
       $("comparisonTable").innerHTML = data.availability.map((item) => {
         const s = data.series.find((series) => series.symbol === item.symbol);
         const muted = this.hidden.has(item.symbol);
         const history = historyLabel(item);
         return `<tr class="${s ? muted ? "line-hidden" : "" : "comparison-unavailable"}"><th scope="row"><button class="table-symbol" data-detail-symbol="${esc(item.symbol)}" title="Open individual chart" style="--series:${this.color(item.symbol)}"><i class="series-dot"></i>${esc(item.symbol)}<span aria-hidden="true">↗</span></button>` +
           `${excluded.length ? `<small class="history-range">${esc(history)}</small>` : ""}</th>` +
-          (s ? `<td class="${s.percent >= 0 ? "up" : "down"}">${signed(s.percent)}%</td><td>${fmt(s.last.closing_price)}</td>`
+          (s ? `<td class="${s.percent === 0 ? "muted" : s.percent > 0 ? "up" : "down"}">${signed(s.percent)}%</td><td>${spread ? `<span class="ema-alignment" title="${s.percent === 0 ? "EMA 38 equals EMA 100" : s.percent > 0 ? "EMA 38 is above EMA 100" : "EMA 38 is below EMA 100"}">${s.percent === 0 ? "Equal EMAs" : s.percent > 0 ? "Bullish" : "Bearish"}</span>` : fmt(s.last.closing_price)}</td>`
             : `<td><span class="history-status">${esc(item.reason)}</span><button class="plain remove-unavailable" data-remove-unavailable="${esc(item.symbol)}" aria-label="Remove ${esc(item.symbol)} from comparison">Remove</button></td><td class="muted">—</td>`) +
           `<td>${esc(excluded.length ? history : utcLabel(s.last.window_end))}</td></tr>`;
       }).join("");
@@ -640,11 +725,12 @@
             `${state.comparison.length ? `<button class="tool-button" ${data.suggestAll ? "data-use-all" : "data-change-symbols"}>${data.suggestAll ? "Use all available history" : "Change symbols"}</button>` : ""}`;
       const traces = data.series.flatMap((s) => {
         const color = this.color(s.symbol), visible = !this.hidden.has(s.symbol);
-        const sparse = s.prices.filter((p) => p !== null).length <= 12;
-        return [{ type: "scatter", mode: sparse ? "lines+markers" : "lines", name: s.symbol, x: s.times, y: s.values, customdata: s.prices,
+        const sparse = s.values.filter((value) => value !== null).length <= 12;
+        return [{ type: "scatter", mode: sparse ? "lines+markers" : "lines", name: s.symbol, x: s.times, y: s.values, customdata: spread ? s.emas : s.prices,
           line: { color, width: 1.8 }, marker: { color, size: 4 }, connectgaps: false, visible,
-          hovertemplate: `${esc(s.symbol)} %{y:+.2f}%<br>Close %{customdata:,.4f}<extra></extra>` },
-        { type: "scatter", mode: "markers", name: `${s.symbol} end`, x: [new Date(data.end).toISOString()], y: [s.percent],
+          hovertemplate: spread ? `${esc(s.symbol)} spread %{y:+.2f}%<br>EMA 38 %{customdata[0]:,.4f}<br>EMA 100 %{customdata[1]:,.4f}<extra></extra>`
+            : `${esc(s.symbol)} %{y:+.2f}%<br>Close %{customdata:,.4f}<extra></extra>` },
+        { type: "scatter", mode: "markers", name: `${s.symbol} end`, x: [s.last.window_end], y: [s.percent],
           marker: { color, size: 6, line: { color: theme.panel, width: 1 } }, visible, hoverinfo: "skip" }];
       });
       const values = data.series.flatMap((s) => s.values.filter((v) => v !== null));
@@ -654,11 +740,12 @@
       const height = Math.max(120, (this.plot.clientHeight || 400) - 50);
       const labels = data.series.filter((s) => !this.hidden.has(s.symbol)).sort((a, b) => a.percent - b.percent);
       const positions = [];
-      labels.forEach((s, i) => { positions[i] = Math.max((s.percent - ymin) / (ymax - ymin) * height, i ? positions[i - 1] + 19 : 8); });
+      const labelGap = spread ? 32 : 19;
+      labels.forEach((s, i) => { positions[i] = Math.max((s.percent - ymin) / (ymax - ymin) * height, i ? positions[i - 1] + labelGap : 8); });
       const overflow = Math.max(0, (positions.at(-1) || 0) - height + 8);
       const annotations = labels.map((s, i) => ({ xref: "paper", x: 1.01, xanchor: "left", yref: "y", y: s.percent,
         yshift: positions[i] - overflow - (s.percent - ymin) / (ymax - ymin) * height,
-        xshift: 46, text: `${esc(s.symbol.length > 12 ? s.symbol.slice(0, 10) + "…" : s.symbol)} ${signed(s.percent)}%`, showarrow: false, bgcolor: theme.panel,
+        xshift: 46, text: `${esc(s.symbol.length > 12 ? s.symbol.slice(0, 10) + "…" : s.symbol)} ${signed(s.percent)}%${spread && Date.parse(s.last.window_end) !== data.end ? `<br>${esc(utcLabel(s.last.window_end))}` : ""}`, showarrow: false, bgcolor: theme.panel,
         font: { color: this.color(s.symbol), size: 10 }, borderpad: 3 }));
       const range = this.manualRange || (data.series.length
         ? [new Date(data.start - (data.start === data.end ? WINDOW_MS : 0)).toISOString(), new Date(data.end + WINDOW_MS).toISOString()] : null);
@@ -667,7 +754,7 @@
       const axis = { gridcolor: theme.grid, linecolor: theme.line, zeroline: false, showspikes: true,
         spikecolor: theme.text, spikethickness: 1, spikemode: "across", spikesnap: "cursor" };
       const layout = {
-        uirevision: `${this.signature}|${this.range}|${data.start}|${this.viewRevision}`,
+        uirevision: `${this.signature}|${this.metric}|${this.range}|${data.start}|${this.viewRevision}`,
         margin: { l: 14, r: compact ? 60 : 180, t: 18, b: 40 }, autosize: true,
         paper_bgcolor: theme.panel, plot_bgcolor: theme.panel,
         font: { family: "system-ui, -apple-system, Segoe UI, sans-serif", size: 11, color: theme.text },

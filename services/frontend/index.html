@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <meta name="description" content="A live market workspace for five-minute prices, EMA trends, and trade signals.">
   <title>Market workspace · Trade signals</title>
-  <link rel="stylesheet" href="style.css?v=compare-3">
+  <link rel="stylesheet" href="style.css?v=compare-4">
 </head>
 <body>
   <div class="app" id="workspace">
@@ -26,8 +26,8 @@
       <section class="chart-pane" id="paneA" aria-label="Primary chart"></section>
       <section class="chart-pane comparison-pane" id="comparisonPane" aria-label="Relative performance comparison" hidden>
         <header class="comparison-head">
-          <span class="eyebrow">Relative performance</span>
-          <div class="comparison-title"><h2>Compare performance</h2><span class="count" id="comparisonCount">0 / 5</span></div>
+          <span class="eyebrow" id="comparisonEyebrow">Relative performance</span>
+          <div class="comparison-title"><h2 id="comparisonTitle">Compare performance</h2><span class="count" id="comparisonCount">0 / 5</span></div>
           <p class="comparison-period" id="comparisonPeriod">Choose symbols to compare price returns.</p>
           <div class="comparison-symbols" id="comparisonSymbols"></div>
           <p class="comparison-notice" id="comparisonNotice" role="status" hidden></p>
@@ -43,20 +43,25 @@
             <button class="range-button" data-range="All" aria-pressed="false">All</button>
             <button class="range-button" data-range="Reset">Reset</button>
           </div>
-          <span class="comparison-axis-label">% change from shared start</span>
+          <div class="view-switch comparison-metrics" id="comparisonMetrics" role="group" aria-label="Comparison metric">
+            <button class="tool-button" data-metric="price" aria-pressed="true">Price return</button>
+            <button class="tool-button" data-metric="spread" aria-pressed="false">EMA spread (%)</button>
+          </div>
+          <span class="comparison-axis-label" id="comparisonAxisLabel">% change from shared start</span>
         </div>
+        <p class="comparison-metric-note" id="comparisonMetricNote" hidden>Above 0: EMA 38 above EMA 100 · Below 0: EMA 38 below EMA 100 · At 0: equal. Missing EMAs and EMA 100 ≤ 0 are omitted.</p>
         <div class="chart-box comparison-box">
           <div class="chart-canvas" id="comparisonCanvas"></div>
           <div class="chart-empty" id="comparisonEmpty"></div>
         </div>
         <div class="comparison-table-wrap">
           <table class="comparison-table">
-            <caption class="sr-only">Returns and closing prices over the same shared period</caption>
-            <thead><tr><th scope="col">Symbol</th><th scope="col"><span class="desktop-label">Return in view</span><span class="compact-label">Return</span></th><th scope="col"><span class="desktop-label">Close at shared end</span><span class="compact-label">Close at end</span></th><th scope="col" id="comparisonHistoryHeading">Data through (UTC)</th></tr></thead>
+            <caption class="sr-only" id="comparisonCaption">Returns and closing prices over the same shared period</caption>
+            <thead><tr><th scope="col">Symbol</th><th scope="col"><span class="desktop-label" id="comparisonValueHeading">Return in view</span><span class="compact-label" id="comparisonValueCompact">Return</span></th><th scope="col"><span class="desktop-label" id="comparisonDetailHeading">Close at shared end</span><span class="compact-label" id="comparisonDetailCompact">Close at end</span></th><th scope="col" id="comparisonHistoryHeading">Data through (UTC)</th></tr></thead>
             <tbody id="comparisonTable"></tbody>
           </table>
         </div>
-        <footer class="comparison-footer"><span>Same start & end · Shared gaps collapsed · Individual gaps remain · 5-minute closes</span><button class="plain" id="openIndividual">Open individual chart ↗</button></footer>
+        <footer class="comparison-footer"><span id="comparisonMethod">Same start & end · Shared gaps collapsed · Individual gaps remain · 5-minute closes</span><button class="plain" id="openIndividual">Open individual chart ↗</button></footer>
       </section>
     </main>
     <nav class="mobile-tabs" aria-label="Market panels">
@@ -89,6 +94,6 @@
     <footer class="workspace-footer"><span>Price & EMA analysis <span class="footer-dot">·</span> 5-minute windows</span><span>All timestamps UTC <span class="footer-dot">·</span> <span id="dataTime">Awaiting market data</span></span></footer>
   </div>
   <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js" charset="utf-8"></script>
-  <script src="app.js?v=compare-3"></script>
+  <script src="app.js?v=compare-4"></script>
 </body>
 </html>

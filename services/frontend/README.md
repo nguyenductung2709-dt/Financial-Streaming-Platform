@@ -30,8 +30,11 @@ the Live badge describes connection readiness rather than current market time.
 
 ## Comparing symbols
 
-Compare shows closing-price returns only; EMA overlays remain in Single chart.
-The chart uses `(close / starting_close - 1) * 100`. Every plotted symbol must
+Compare offers **Price return** and **EMA spread (%)**, with the selected metric
+saved in browser storage. Switching metrics reuses loaded window rows, preserves
+symbols and colors, and resets zoom. Raw EMA overlays remain in Single chart.
+
+Price return uses `(close / starting_close - 1) * 100`. Every plotted symbol must
 have actual closes at the same starting **and ending** timestamp. 1D and 3D
 choose the first common close within that period, measured back from the latest
 common end in loaded history. All uses the first common close in loaded history.
@@ -68,6 +71,27 @@ actual closing timestamps and prices. Hiding a line does not alter the shared
 period. Symbol colors remain stable as other symbols are added or removed.
 Endpoint labels appear on wider charts; compact charts retain colored chips,
 the shared hover display, and the table.
+
+EMA spread uses `((EMA38 - EMA100) / EMA100) * 100` at each actual window close.
+It keeps its real percentage level instead of rebasing at the first observation.
+Above zero means EMA38 is above EMA100, below zero means it is below, and zero
+means equal EMAs. The table describes these as bullish, bearish, and equal EMA
+alignment, respectively. The chart always includes the zero reference line;
+hover shows the two source EMAs alongside the spread.
+
+Spread does not require a shared start/end timestamp or two matching prices.
+Each selected symbol can plot its own valid observations within 1D, 3D, or all
+loaded history. A single observation appears as a point. The table identifies
+each symbol's observation time, and endpoint markers stay at that time, even
+when a peer has newer observations. Earlier endpoint labels include a timestamp.
+These EMA levels describe indicator alignment rather than price performance.
+
+Missing or non-finite EMAs and EMA100 values at or below zero are omitted.
+Invalid observations inside a series remain null gaps, never fabricated zero
+spreads or carried-forward values. A symbol with no usable EMA values is labeled
+in the availability table while valid peers remain visible. Spread ranges count
+back from the newest valid observation across the selections. Color, visibility,
+history limits, and revision reconciliation work the same way for both metrics.
 
 Comparison collapses the desktop signal panel by default and remembers its
 visibility independently from Single chart. Chip labels hide/show lines; ×
