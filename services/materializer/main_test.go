@@ -24,8 +24,9 @@ func TestLoadConfig(t *testing.T) {
 				"MATERIALIZER_DATABASE_URL": "postgresql://localhost/another",
 				"MATERIALIZER_BROKERS":      " broker-a:9092, broker-b:9092 ",
 				"MATERIALIZER_GROUP_ID":     "another-group",
+				"MATERIALIZER_STAMP_TOPIC":  "materialize-stamps",
 			},
-			want: config{databaseURL: "postgresql://localhost/another", brokers: []string{"broker-a:9092", "broker-b:9092"}, groupID: "another-group"},
+			want: config{databaseURL: "postgresql://localhost/another", brokers: []string{"broker-a:9092", "broker-b:9092"}, groupID: "another-group", stampTopic: "materialize-stamps"},
 		},
 		{name: "missing database", env: map[string]string{"MATERIALIZER_DATABASE_URL": ""}, wantErr: "MATERIALIZER_DATABASE_URL"},
 		{name: "blank database", env: map[string]string{"MATERIALIZER_DATABASE_URL": "  "}, wantErr: "MATERIALIZER_DATABASE_URL"},
@@ -33,10 +34,11 @@ func TestLoadConfig(t *testing.T) {
 		{name: "empty broker entry", env: map[string]string{"MATERIALIZER_BROKERS": "localhost:19092, "}, wantErr: "MATERIALIZER_BROKERS"},
 		{name: "empty group", env: map[string]string{"MATERIALIZER_GROUP_ID": ""}, wantErr: "MATERIALIZER_GROUP_ID"},
 		{name: "untrimmed group", env: map[string]string{"MATERIALIZER_GROUP_ID": " materializer"}, wantErr: "MATERIALIZER_GROUP_ID"},
+		{name: "untrimmed stamp topic", env: map[string]string{"MATERIALIZER_STAMP_TOPIC": " stamps"}, wantErr: "MATERIALIZER_STAMP_TOPIC"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("MATERIALIZER_DATABASE_URL", "postgresql://localhost/test")
-			for _, key := range []string{"MATERIALIZER_BROKERS", "MATERIALIZER_GROUP_ID"} {
+			for _, key := range []string{"MATERIALIZER_BROKERS", "MATERIALIZER_GROUP_ID", "MATERIALIZER_STAMP_TOPIC"} {
 				t.Setenv(key, "") // Preserve the caller's environment for cleanup.
 				if err := os.Unsetenv(key); err != nil {
 					t.Fatal(err)
