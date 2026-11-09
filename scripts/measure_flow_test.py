@@ -50,6 +50,22 @@ class PipelineSampleTest(unittest.TestCase):
             self.assertNotEqual(base, changed[0])
 
 
+class ProducerSummaryTest(unittest.TestCase):
+    def test_counts_from_the_last_summary_line(self):
+        lines = ["starting", 'CSV processing completed: published=5 skipped=2 rejected=1 topic="trade-events"']
+        self.assertEqual(measure.parse_producer_summary(lines),
+                         {"published": 5, "skipped": 2, "rejected": 1})
+
+    def test_a_replay_run_adds_its_lag(self):
+        lines = ['CSV processing limit reached: published=9 skipped=0 rejected=0 '
+                 'topic="trade-events" replay_lag_max_ms=42']
+        self.assertEqual(measure.parse_producer_summary(lines),
+                         {"published": 9, "skipped": 0, "rejected": 0, "replay_lag_max_ms": 42})
+
+    def test_no_summary_line(self):
+        self.assertIsNone(measure.parse_producer_summary(["starting", "failed"]))
+
+
 class SettleTest(unittest.TestCase):
     def feed(self, settle, samples):
         for now, signature, caught_up in samples:
