@@ -140,9 +140,10 @@ class RecreateTopicsTest(unittest.TestCase):
                          "--format", "json", *broker])
         self.assertEqual(runner.commands, expected)
 
-    def test_latency_stamps_is_a_project_topic(self):
-        self.assertEqual(self.mod.TOPICS[-1], "latency-stamps")
-        self.assertEqual(len(self.mod.TOPICS), 5)
+    def test_measurement_topics_are_project_topics(self):
+        self.assertEqual(self.mod.TOPICS[-1], "materialize-stamps")
+        self.assertEqual(self.mod.TOPICS[-2], "latency-stamps")
+        self.assertEqual(len(self.mod.TOPICS), 6)
 
     def test_passes_on_pristine_topics(self):
         runner = self.recreate({name: [(0, 0)] for name in self.mod.TOPICS})
