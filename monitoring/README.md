@@ -14,7 +14,10 @@ make measure-flow CSV=dataset/<file>.csv RATE=0 MAX_EVENTS=2000000
 Resets the flow, starts the infrastructure and the monitoring stack, runs the
 materializer and the producer as containers, finds the start and end of the run by itself, and
 writes the results to `bin/metrics/<timestamp>/` (`OUT=dir` to choose). `RATE` is
-the producer's events per second (`0` is unlimited). The reset permanently
+the producer's events per second (`0` is unlimited). `SPEED=<x>` replaces it with a
+replay of the real gaps between trade times, sped up `x` times, which keeps the bursts
+of the data (see [the producer README](../services/data-producer/README.md#replay-speed)).
+The reset permanently
 clears the project topics and database results. Use `MAX_EVENTS` to bound a run;
 Redpanda's memory grows with the amount of data published (about 40 MiB per minute
 in the 2M-event run, with no plateau observed).
@@ -24,7 +27,7 @@ in the 2M-event run, with no plateau observed).
 | `summary.txt` | Table per component: CPU and memory (average, maximum), bytes moved; then the latency table |
 | `summary.csv` | The same per component and metric: `avg`, `max`, `total` |
 | `timeseries.csv` | Every sample: `offset_s,component,kind,metric,value` |
-| `pipeline.json` | Event counts, durations, producer and end-to-end events per second, and the `latency` coverage counts |
+| `pipeline.json` | Event counts, durations, producer and end-to-end events per second, the `latency` coverage counts, and under `SPEED` the producer's `replay_lag_max_ms` |
 | `latency.csv` | One row per EMA window: the wall-clock moments and the latency stages ([Latency](#latency)) |
 | `latency-summary.csv` | Per stage: `count`, `mean_ms`, `p50_ms`, `p95_ms`, `p99_ms`, `max_ms` |
 | `run.json` | Window, sampling settings, labels, producer arguments |
@@ -91,12 +94,18 @@ alongside it, or compare the `end_to_end_*` stages.
 ```sh
 make collect-latency OUT=bin/metrics/<run>     # a run that already finished (topics intact)
 make sweep-flow RATES="500 1000 2000" CSV=dataset/<file>.csv MAX_EVENTS=1000000
+make sweep-flow SPEEDS="100 200 400 800" CSV=dataset/<file>.csv MAX_EVENTS=1000000
 ```
 
 `collect-latency` reads the topics, so it works until the next `reset-flow`. `sweep-flow`
-runs `measure-flow` once per rate into `<out>/rate-<rate>/` (each run resets the flow first)
-and writes `sweep-summary.csv` with the percentiles and throughput of every rate and stage;
-it stops at the first failed run and keeps the earlier ones.
+runs `measure-flow` once per rate into `<out>/rate-<rate>/`, or once per replay speed into
+`<out>/speed-<speed>/` (each run resets the flow first), and writes `sweep-summary.csv`
+with the percentiles and throughput of every load and stage (plus `replay_lag_max_ms` for
+speeds); it stops at the first failed run and keeps the earlier ones.
+
+A replay speed only produces the replayed load while the producer keeps up with it. When
+`replay_lag_max_ms` grows to seconds, the producer was publishing as fast as it could,
+which is the same load as `RATE=0`.
 
 Things to know when reading the numbers:
 
