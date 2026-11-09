@@ -25,7 +25,7 @@ in the 2M-event run, with no plateau observed).
 | `summary.csv` | The same per component and metric: `avg`, `max`, `total` |
 | `timeseries.csv` | Every sample: `offset_s,component,kind,metric,value` |
 | `pipeline.json` | Event counts, durations, producer and end-to-end events per second, and the `latency` coverage counts |
-| `latency.csv` | One row per EMA window: the wall-clock moments and the seven latency stages ([Latency](#latency)) |
+| `latency.csv` | One row per EMA window: the wall-clock moments and the latency stages ([Latency](#latency)) |
 | `latency-summary.csv` | Per stage: `count`, `mean_ms`, `p50_ms`, `p95_ms`, `p99_ms`, `max_ms` |
 | `run.json` | Window, sampling settings, labels, producer arguments |
 
@@ -40,7 +40,8 @@ read as UTC. `measure-flow` prints its start as epoch seconds. Change the URL wi
 
 `measure-flow` also reports how long the pipeline takes to produce each EMA window and
 trade advisory. It starts the Flink job with `--latency-topic latency-stamps`, so three
-operators stamp the wall-clock time they finish a window; afterwards
+operators stamp the wall-clock time they finish a window, and the materializer
+(`MATERIALIZER_STAMP_TOPIC=materialize-stamps`) stamps each result it commits; afterwards
 `scripts/collect-latency.py` joins those stamps with the broker's append time on the
 output topics and with the moment the producer published the event that let the window
 close. Producer, Flink and Redpanda are containers on one host, so they share one clock.
@@ -52,6 +53,7 @@ close. Producer, Flink and Redpanda are containers on one host, so they share on
 | t2 | Flink computed the EMA | stamp in `latency-stamps` |
 | t3 | Flink evaluated the crossover, for every window (advisories themselves are rare) | stamp in `latency-stamps` |
 | t4e / t4a | The EMA / advisory landed on `ema-windows` / `trade-advisories` | the topics' broker append time (`LogAppendTime`) |
+| t5e / t5a | The materializer committed the EMA / advisory to PostgreSQL | stamp in `materialize-stamps` |
 
 | Stage | Definition |
 | --- | --- |
@@ -62,6 +64,10 @@ close. Producer, Flink and Redpanda are containers on one host, so they share on
 | `advisory_publish` | t4a - t3, for windows that emitted an advisory |
 | `end_to_end_ema` | t4e - t0 |
 | `end_to_end_advisory` | t4a - t0, for windows that emitted an advisory |
+| `ema_materialize` / `advisory_materialize` | t5e - t4e / t5a - t4a: materializer consumption and PostgreSQL commit |
+| `end_to_end_ema_materialized` / `end_to_end_advisory_materialized` | t5e - t0 / t5a - t0: the result visible in PostgreSQL |
+
+Without materialize stamps (as under `run-flow`) the `*_materialized` stages stay empty.
 
 The wait for the watermark (a window fires 70 s of event time after it ends) is set by the
 data and is not counted. Gaps between stamps include queueing behind earlier records:
