@@ -121,6 +121,64 @@ class BuildRowsTest(unittest.TestCase):
         self.assertEqual(row["end_to_end_advisory"], 512)
         self.assertEqual(coverage["advisories"], 1)
 
+    def test_materialize_stamps_add_the_database_stages(self):
+        rows, coverage = collector.build_rows(
+            stamps_for(advisory=True), [("IUSAC.FR", END, 1510)],
+            [("IUSAC.FR", END, 1512)], {END: 1000},
+            materialized=([("IUSAC.FR", END, 1520)], [("IUSAC.FR", END, 1522)]))
+        row = rows[0]
+        self.assertEqual(row["t5e_ms"], 1520)
+        self.assertEqual(row["t5a_ms"], 1522)
+        self.assertEqual(row["ema_materialize"], 10)      # t5e - t4e
+        self.assertEqual(row["advisory_materialize"], 10)  # t5a - t4a
+        self.assertEqual(row["end_to_end_ema_materialized"], 520)    # t5e - t0
+        self.assertEqual(row["end_to_end_advisory_materialized"], 522)
+        self.assertTrue(coverage["materialized"])
+        self.assertEqual(coverage["missing_materialize"], 0)
+
+    def test_a_measured_window_without_a_materialize_stamp_keeps_its_stages(self):
+        rows, coverage = collector.build_rows(
+            stamps_for(), [("IUSAC.FR", END, 1510)], [], {END: 1000},
+            materialized=([], []))
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertIsNone(row["t5e_ms"])
+        self.assertIsNone(row["ema_materialize"])
+        self.assertIsNone(row["end_to_end_ema_materialized"])
+        self.assertTrue(coverage["materialized"])
+        self.assertEqual(coverage["missing_materialize"], 1)
+        self.assertEqual(coverage["measured"], 1)
+
+    def test_an_advisory_without_its_materialize_stamp_counts_once(self):
+        rows, coverage = collector.build_rows(
+            stamps_for(advisory=True), [("IUSAC.FR", END, 1510)],
+            [("IUSAC.FR", END, 1512)], {END: 1000},
+            materialized=([("IUSAC.FR", END, 1520)], []))
+        self.assertEqual(coverage["missing_materialize"], 1)
+        self.assertEqual(rows[0]["t5e_ms"], 1520)
+        self.assertIsNone(rows[0]["t5a_ms"])
+
+    def test_a_result_stamped_before_it_landed_is_refused(self):
+        with self.assertRaisesRegex(collector.LatencyError, "materialized"):
+            collector.build_rows(
+                stamps_for(), [("IUSAC.FR", END, 1510)], [], {END: 1000},
+                materialized=([("IUSAC.FR", END, 1500)], []))
+        with self.assertRaisesRegex(collector.LatencyError, "materialized"):
+            collector.build_rows(
+                stamps_for(advisory=True), [("IUSAC.FR", END, 1510)],
+                [("IUSAC.FR", END, 1512)], {END: 1000},
+                materialized=([("IUSAC.FR", END, 1520)], [("IUSAC.FR", END, 1511)]))
+
+    def test_without_materialize_stamps_the_database_stages_stay_empty(self):
+        rows, coverage = collector.build_rows(
+            stamps_for(), [("IUSAC.FR", END, 1510)], [], {END: 1000})
+        row = rows[0]
+        self.assertIsNone(row["t5e_ms"])
+        self.assertIsNone(row["ema_materialize"])
+        self.assertFalse(coverage["materialized"])
+        self.assertEqual(coverage["missing_materialize"], 0)
+
+
     def test_rows_are_sorted_by_window_end_then_symbol(self):
         stamps = (stamps_for("B.FR", END + WINDOW) + stamps_for("B.FR", END)
                   + stamps_for("A.FR", END))
@@ -190,7 +248,9 @@ class StageNamesTest(unittest.TestCase):
     def test_stages_in_the_documented_order(self):
         self.assertEqual(collector.STAGES, (
             "ingest_to_fire", "ema_compute", "advisory_compute", "ema_publish",
-            "advisory_publish", "end_to_end_ema", "end_to_end_advisory"))
+            "advisory_publish", "end_to_end_ema", "end_to_end_advisory",
+            "ema_materialize", "advisory_materialize",
+            "end_to_end_ema_materialized", "end_to_end_advisory_materialized"))
 
 
 E = 1_636_693_500_000  # a window end: a multiple of WINDOW
@@ -213,7 +273,14 @@ def fake_stream(topics):
     return stream
 
 
-def full_run(advisory=True):
+def fake_partitions(topics):
+    """topic_partitions(brokers, topic) that knows only the fixture's topics."""
+    def partitions(brokers, topic):
+        return {0} if topic in topics else set()
+    return partitions
+
+
+def full_run(advisory=True, materialized=False):
     ema = bindings.EmaWindow(symbol="IUSAC.FR", window_end=ts(E)).SerializeToString()
     advice = bindings.TradeAdvisory(
         ema_window=bindings.EmaWindow(symbol="IUSAC.FR", window_end=ts(E))).SerializeToString()
@@ -221,7 +288,7 @@ def full_run(advisory=True):
     def event(trade_time_ms):
         return bindings.PriceEvent(symbol="IUSAC.FR", trade_time=ts(trade_time_ms)).SerializeToString()
 
-    return {
+    topics = {
         config.TOPIC_LATENCY_STAMPS: [
             (stamp_record(bindings.STAGE_WINDOW_FIRED, BASE + 1500), 0),
             (stamp_record(bindings.STAGE_EMA_COMPUTED, BASE + 1502), 0),
@@ -230,23 +297,32 @@ def full_run(advisory=True):
         config.TOPIC_TRADE_ADVISORIES: [(advice, BASE + 1512)] if advisory else [],
         config.TOPIC_EVENTS: [(event(E - 60_000), BASE + 1000), (event(E + 70_000), BASE + 1400)],
     }
+    if materialized:
+        stamps = [(stamp_record(bindings.STAGE_EMA_MATERIALIZED, BASE + 1520), 0)]
+        if advisory:
+            stamps.append((stamp_record(bindings.STAGE_ADVISORY_MATERIALIZED, BASE + 1522), 0))
+        topics[config.TOPIC_MATERIALIZE_STAMPS] = stamps
+    return topics
 
 
 class ReadRunTest(unittest.TestCase):
+    def read(self, topics, **kwargs):
+        return collector.read_run("b", fake_stream(topics), fake_partitions(topics), **kwargs)
+
     def test_stage_stamps_decode_to_millisecond_stamps(self):
-        stamps, _, _, _ = collector.read_run("b", fake_stream(full_run()))
+        stamps, _, _, _, _ = self.read(full_run())
         self.assertEqual(stamps, [
             collector.Stamp("IUSAC.FR", E, "fired", BASE + 1500, False),
             collector.Stamp("IUSAC.FR", E, "ema", BASE + 1502, False),
             collector.Stamp("IUSAC.FR", E, "crossover", BASE + 1503, True)])
 
     def test_landed_times_use_the_record_timestamp_and_embedded_window_key(self):
-        _, ema_landed, advisory_landed, _ = collector.read_run("b", fake_stream(full_run()))
+        _, ema_landed, advisory_landed, _, _ = self.read(full_run())
         self.assertEqual(ema_landed, [("IUSAC.FR", E, BASE + 1510)])
         self.assertEqual(advisory_landed, [("IUSAC.FR", E, BASE + 1512)])
 
     def test_the_trigger_is_the_event_that_reaches_the_threshold(self):
-        *_, triggers = collector.read_run("b", fake_stream(full_run()))
+        *_, triggers = self.read(full_run())
         self.assertEqual(triggers, {E: BASE + 1400})
 
     def test_trade_events_are_streamed_into_the_trigger_scan(self):
@@ -257,27 +333,51 @@ class ReadRunTest(unittest.TestCase):
             return {}
 
         with mock.patch.object(collector, "trigger_times", side_effect=spy):
-            collector.read_run("b", fake_stream(full_run()))
+            self.read(full_run())
         self.assertEqual(seen, [(True, config.WINDOW_MS, config.OUT_OF_ORDERNESS_MS)])
 
     def test_empty_stamps_name_the_flag(self):
         topics = full_run()
         topics[config.TOPIC_LATENCY_STAMPS] = []
         with self.assertRaisesRegex(collector.LatencyError, "--latency-topic latency-stamps"):
-            collector.read_run("b", fake_stream(topics))
+            self.read(topics)
+
+    def test_materialize_stamps_decode_to_triples(self):
+        _, _, _, materialized, _ = self.read(full_run(materialized=True))
+        self.assertEqual(materialized, ([("IUSAC.FR", E, BASE + 1520)],
+                                         [("IUSAC.FR", E, BASE + 1522)]))
+
+    def test_without_the_materialize_stamps_topic_there_are_no_database_stages(self):
+        _, _, _, materialized, _ = self.read(full_run())
+        self.assertIsNone(materialized)
+
+    def test_an_existing_but_empty_stamps_topic_means_no_database_stages(self):
+        topics = full_run()
+        topics[config.TOPIC_MATERIALIZE_STAMPS] = []
+        _, _, _, materialized, _ = self.read(topics)
+        self.assertIsNone(materialized)
+
+    def test_an_unrecognized_materialize_stage_is_refused(self):
+        topics = full_run()
+        topics[config.TOPIC_MATERIALIZE_STAMPS] = [
+            (stamp_record(bindings.STAGE_WINDOW_FIRED, BASE + 1520), 0)]
+        with self.assertRaisesRegex(collector.LatencyError, "unrecognized stage"):
+            self.read(topics)
 
 
 class CollectTest(unittest.TestCase):
     def test_outputs_have_the_documented_columns_and_values(self):
         with tempfile.TemporaryDirectory() as directory:
-            summary, coverage, table = collector.collect("b", Path(directory), fake_stream(full_run()))
+            topics = full_run(materialized=True)
+            summary, coverage, table = collector.collect(
+                "b", Path(directory), fake_stream(topics), fake_partitions(topics))
             with open(Path(directory) / "latency.csv", newline="") as handle:
                 rows = list(csv.DictReader(handle))
             with open(Path(directory) / "latency-summary.csv", newline="") as handle:
                 summary_rows = list(csv.DictReader(handle))
         self.assertEqual(list(rows[0]), [
             "symbol", "window_end_ms", "t0_ms", "t1_ms", "t2_ms", "t3_ms", "t4e_ms",
-            "advisory_emitted", "t4a_ms", *collector.STAGES])
+            "advisory_emitted", "t4a_ms", "t5e_ms", "t5a_ms", *collector.STAGES])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["symbol"], "IUSAC.FR")
         self.assertEqual(rows[0]["t0_ms"], str(BASE + 1400))
@@ -285,19 +385,26 @@ class CollectTest(unittest.TestCase):
         self.assertEqual(rows[0]["ingest_to_fire"], "100")
         self.assertEqual(rows[0]["end_to_end_ema"], "110")
         self.assertEqual(rows[0]["end_to_end_advisory"], "112")
+        self.assertEqual(rows[0]["t5e_ms"], str(BASE + 1520))
+        self.assertEqual(rows[0]["ema_materialize"], "10")
+        self.assertEqual(rows[0]["advisory_materialize"], "10")
+        self.assertEqual(rows[0]["end_to_end_ema_materialized"], "120")
+        self.assertEqual(rows[0]["end_to_end_advisory_materialized"], "122")
         self.assertEqual(list(summary_rows[0]),
                          ["stage", "count", "mean_ms", "p50_ms", "p95_ms", "p99_ms", "max_ms"])
         self.assertEqual([row["stage"] for row in summary_rows], list(collector.STAGES))
         by_stage = {row["stage"]: row for row in summary_rows}
         self.assertEqual(by_stage["ema_compute"]["count"], "1")
         self.assertEqual(float(by_stage["ema_compute"]["p50_ms"]), 2.0)
-        self.assertEqual(coverage["measured"], 1)
+        self.assertEqual(by_stage["end_to_end_advisory_materialized"]["count"], "1")
+        self.assertTrue(coverage["materialized"])
         self.assertEqual([item["stage"] for item in summary], list(collector.STAGES))
         self.assertIn("ingest_to_fire", table)
 
     def test_advisory_columns_are_blank_without_an_advisory(self):
         with tempfile.TemporaryDirectory() as directory:
-            collector.collect("b", Path(directory), fake_stream(full_run(advisory=False)))
+            topics = full_run(advisory=False)
+            collector.collect("b", Path(directory), fake_stream(topics), fake_partitions(topics))
             with open(Path(directory) / "latency.csv", newline="") as handle:
                 row = next(csv.DictReader(handle))
             with open(Path(directory) / "latency-summary.csv", newline="") as handle:
@@ -308,21 +415,45 @@ class CollectTest(unittest.TestCase):
         self.assertEqual(by_stage["end_to_end_advisory"]["count"], "0")
         self.assertEqual(by_stage["end_to_end_advisory"]["p50_ms"], "")
 
+    def test_database_columns_are_blank_without_materialize_stamps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            topics = full_run()  # no materialize-stamps topic
+            summary, coverage, table = collector.collect(
+                "b", Path(directory), fake_stream(topics), fake_partitions(topics))
+            with open(Path(directory) / "latency.csv", newline="") as handle:
+                row = next(csv.DictReader(handle))
+            with open(Path(directory) / "latency-summary.csv", newline="") as handle:
+                by_stage = {r["stage"]: r for r in csv.DictReader(handle)}
+        self.assertEqual((row["t5e_ms"], row["t5a_ms"], row["ema_materialize"],
+                          row["end_to_end_ema_materialized"]), ("", "", "", ""))
+        self.assertEqual(by_stage["ema_materialize"]["count"], "0")
+        self.assertFalse(coverage["materialized"])
+        self.assertIn("no materialize stamps", table)
+
 
 class FormatTableTest(unittest.TestCase):
     COVERAGE = {"measured": 3, "flushed": 1, "missing_stage": 0, "duplicates": 2,
+                "materialized": True, "missing_materialize": 0,
                 "advisories": 1, "advisory_stamps": 1, "advisory_records": 1}
 
     def test_footer_lists_the_coverage(self):
         table = collector.format_table(collector.summarize_rows([]), self.COVERAGE)
-        for text in ("measured 3", "flushed 1", "duplicates 2"):
+        for text in ("measured 3", "flushed 1", "duplicates 2",
+                     "missing a materialize stamp 0"):
             self.assertIn(text, table)
         self.assertNotIn("mismatch", table)
+        self.assertNotIn("no materialize stamps", table)
 
     def test_footer_flags_an_advisory_count_mismatch(self):
         table = collector.format_table(
             collector.summarize_rows([]), {**self.COVERAGE, "advisory_records": 0})
         self.assertIn("mismatch", table)
+
+    def test_without_materialize_stamps_the_footer_says_so(self):
+        coverage = {**self.COVERAGE, "materialized": False}
+        table = collector.format_table(collector.summarize_rows([]), coverage)
+        self.assertIn("no materialize stamps", table)
+        self.assertNotIn("missing a materialize stamp", table)
 
 
 class MainTest(unittest.TestCase):
