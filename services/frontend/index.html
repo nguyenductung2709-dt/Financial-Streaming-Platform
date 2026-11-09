@@ -1,52 +1,94 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Trade signals</title>
-  <link rel="stylesheet" href="style.css">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="A live market workspace for five-minute prices, EMA trends, and trade signals.">
+  <title>Market workspace · Trade signals</title>
+  <link rel="stylesheet" href="style.css?v=compare-3">
 </head>
 <body>
-  <div class="app">
+  <div class="app" id="workspace">
     <header class="topbar">
-      <h1>Trade signals</h1>
-      <span id="status" class="status idle">Waiting for symbols…</span>
-    </header>
-
-    <aside class="panel list">
-      <div class="panel-head">
-        <h2>Symbols</h2>
-      </div>
-      <div class="chips">
-        <button class="chip" id="followAll">Follow all</button>
-        <button class="chip" id="unfollowAll">Unfollow all</button>
-      </div>
-      <input class="search" id="search" placeholder="Search symbols" autocomplete="off">
-      <div class="chips" id="chips"></div>
-      <p class="hint" id="hint"></p>
-      <p class="error" id="error" hidden></p>
-      <ul class="rows" id="rows"></ul>
-    </aside>
-
-    <main class="charts">
-      <section class="chart-pane" id="paneA"></section>
-      <section class="chart-pane" id="paneB"></section>
-    </main>
-
-    <aside class="panel feed">
-      <div class="panel-head">
-        <h2>Signals</h2>
-        <div class="chips" id="feedChips">
-          <button class="chip on" data-f="all">All</button>
-          <button class="chip" data-f="buy">Buy</button>
-          <button class="chip" data-f="sell">Sell</button>
+      <div class="brand"><span class="brand-mark" aria-hidden="true">⌁</span><div><h1>Trade signals</h1><span class="eyebrow">Market workspace</span></div></div>
+      <span id="status" class="status idle" role="status">Waiting for symbols…</span>
+      <div class="workspace-actions">
+        <div class="view-switch" role="group" aria-label="Chart view">
+          <button class="tool-button" id="singleToggle" aria-pressed="true" aria-controls="paneA">Single chart</button>
+          <button class="tool-button" id="compareToggle" aria-pressed="false" aria-controls="comparisonPane">Compare</button>
         </div>
+        <button class="tool-button" id="signalsToggle" aria-expanded="true" aria-controls="signalPanel">Signals</button>
+        <button class="tool-button" id="themeToggle" aria-label="Switch to light theme">Light theme</button>
       </div>
-      <ul class="feed-list" id="feedList"></ul>
+    </header>
+    <main class="charts" id="charts" aria-label="Price charts">
+      <section class="chart-pane" id="paneA" aria-label="Primary chart"></section>
+      <section class="chart-pane comparison-pane" id="comparisonPane" aria-label="Relative performance comparison" hidden>
+        <header class="comparison-head">
+          <span class="eyebrow">Relative performance</span>
+          <div class="comparison-title"><h2>Compare performance</h2><span class="count" id="comparisonCount">0 / 5</span></div>
+          <p class="comparison-period" id="comparisonPeriod">Choose symbols to compare price returns.</p>
+          <div class="comparison-symbols" id="comparisonSymbols"></div>
+          <p class="comparison-notice" id="comparisonNotice" role="status" hidden></p>
+          <div class="comparison-coverage" id="comparisonCoverage" role="status" hidden>
+            <span id="comparisonCoverageText"></span>
+            <div class="coverage-actions"><button class="plain" id="comparisonUseAvailable" hidden>Keep comparable symbols</button><button class="plain" id="comparisonChangeSymbols">Change symbols</button></div>
+          </div>
+        </header>
+        <div class="chart-toolbar">
+          <div class="range-controls" id="comparisonRanges" aria-label="Comparison period in loaded history">
+            <button class="range-button on" data-range="1D" aria-pressed="true">1D</button>
+            <button class="range-button" data-range="3D" aria-pressed="false">3D</button>
+            <button class="range-button" data-range="All" aria-pressed="false">All</button>
+            <button class="range-button" data-range="Reset">Reset</button>
+          </div>
+          <span class="comparison-axis-label">% change from shared start</span>
+        </div>
+        <div class="chart-box comparison-box">
+          <div class="chart-canvas" id="comparisonCanvas"></div>
+          <div class="chart-empty" id="comparisonEmpty"></div>
+        </div>
+        <div class="comparison-table-wrap">
+          <table class="comparison-table">
+            <caption class="sr-only">Returns and closing prices over the same shared period</caption>
+            <thead><tr><th scope="col">Symbol</th><th scope="col"><span class="desktop-label">Return in view</span><span class="compact-label">Return</span></th><th scope="col"><span class="desktop-label">Close at shared end</span><span class="compact-label">Close at end</span></th><th scope="col" id="comparisonHistoryHeading">Data through (UTC)</th></tr></thead>
+            <tbody id="comparisonTable"></tbody>
+          </table>
+        </div>
+        <footer class="comparison-footer"><span>Same start & end · Shared gaps collapsed · Individual gaps remain · 5-minute closes</span><button class="plain" id="openIndividual">Open individual chart ↗</button></footer>
+      </section>
+    </main>
+    <nav class="mobile-tabs" aria-label="Market panels">
+      <button class="on" id="watchlistTab" aria-pressed="true" aria-controls="watchlistPanel">Watchlist</button>
+      <button id="signalsTab" aria-pressed="false" aria-controls="signalPanel">Signals</button>
+    </nav>
+    <aside class="panel list" id="watchlistPanel" aria-label="Market watchlist">
+      <div class="panel-head"><div><span class="eyebrow">Discover & follow</span><h2>Watchlist <span class="count" id="symbolCount">0</span></h2></div></div>
+      <label class="search-label" for="search"><span aria-hidden="true">⌕</span><input class="search" id="search" placeholder="Search symbols…" autocomplete="off" aria-label="Search symbols"></label>
+      <div class="chips" id="chips"></div>
+      <div class="list-actions"><button class="plain" id="followAll">Follow all</button><button class="plain" id="unfollowAll">Clear follows</button></div>
+      <p class="hint" id="hint"></p>
+      <p class="error" id="error" role="alert" hidden></p>
+      <p class="comparison-selection-label" id="comparisonSelection" hidden></p>
+      <div class="watchlist-heading"><span>Symbol / trend</span><span>Close / Δ window</span></div>
+      <ul class="rows" id="rows"></ul>
+      <footer class="panel-note">5-minute closes · Changes vs previous available window</footer>
     </aside>
+    <aside class="panel feed" id="signalPanel" aria-label="Trade signals">
+      <div class="panel-head"><div><span class="eyebrow">EMA crossovers</span><h2>Signal activity <span class="count" id="signalCount">0</span></h2></div></div>
+      <div class="chips feed-filters" id="feedChips" aria-label="Filter signal direction">
+        <button class="chip on" data-f="all" aria-pressed="true">All signals</button>
+        <button class="chip" data-f="buy" aria-pressed="false">Buy</button>
+        <button class="chip" data-f="sell" aria-pressed="false">Sell</button>
+      </div>
+      <p class="hint">Select a signal to inspect its price window.</p>
+      <ul class="feed-list" id="feedList"></ul>
+      <footer class="panel-note">Signal times are window closes in UTC</footer>
+    </aside>
+    <footer class="workspace-footer"><span>Price & EMA analysis <span class="footer-dot">·</span> 5-minute windows</span><span>All timestamps UTC <span class="footer-dot">·</span> <span id="dataTime">Awaiting market data</span></span></footer>
   </div>
-
   <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js" charset="utf-8"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=compare-3"></script>
 </body>
 </html>
