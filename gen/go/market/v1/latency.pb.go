@@ -29,6 +29,9 @@ const (
 	Stage_STAGE_WINDOW_FIRED        Stage = 1
 	Stage_STAGE_EMA_COMPUTED        Stage = 2
 	Stage_STAGE_CROSSOVER_EVALUATED Stage = 3
+	// The materializer committed the result's PostgreSQL transaction.
+	Stage_STAGE_EMA_MATERIALIZED      Stage = 4
+	Stage_STAGE_ADVISORY_MATERIALIZED Stage = 5
 )
 
 // Enum value maps for Stage.
@@ -38,12 +41,16 @@ var (
 		1: "STAGE_WINDOW_FIRED",
 		2: "STAGE_EMA_COMPUTED",
 		3: "STAGE_CROSSOVER_EVALUATED",
+		4: "STAGE_EMA_MATERIALIZED",
+		5: "STAGE_ADVISORY_MATERIALIZED",
 	}
 	Stage_value = map[string]int32{
-		"STAGE_UNSPECIFIED":         0,
-		"STAGE_WINDOW_FIRED":        1,
-		"STAGE_EMA_COMPUTED":        2,
-		"STAGE_CROSSOVER_EVALUATED": 3,
+		"STAGE_UNSPECIFIED":           0,
+		"STAGE_WINDOW_FIRED":          1,
+		"STAGE_EMA_COMPUTED":          2,
+		"STAGE_CROSSOVER_EVALUATED":   3,
+		"STAGE_EMA_MATERIALIZED":      4,
+		"STAGE_ADVISORY_MATERIALIZED": 5,
 	}
 )
 
@@ -75,7 +82,9 @@ func (Stage) EnumDescriptor() ([]byte, []int) {
 }
 
 // Measurement only: one stamp per pipeline stage and window, published when the
-// processor runs with --latency-topic. Not part of the domain data.
+// processor runs with --latency-topic, and one per materialized result when the
+// materializer runs with MATERIALIZER_STAMP_TOPIC (topic materialize-stamps).
+// Not part of the domain data.
 type StageStamp struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Symbol          string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
@@ -164,12 +173,14 @@ const file_market_v1_latency_proto_rawDesc = "" +
 	"window_end\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\twindowEnd\x12&\n" +
 	"\x05stage\x18\x03 \x01(\x0e2\x10.market.v1.StageR\x05stage\x12*\n" +
 	"\x02at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x12)\n" +
-	"\x10advisory_emitted\x18\x05 \x01(\bR\x0fadvisoryEmitted*m\n" +
+	"\x10advisory_emitted\x18\x05 \x01(\bR\x0fadvisoryEmitted*\xaa\x01\n" +
 	"\x05Stage\x12\x15\n" +
 	"\x11STAGE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12STAGE_WINDOW_FIRED\x10\x01\x12\x16\n" +
 	"\x12STAGE_EMA_COMPUTED\x10\x02\x12\x1d\n" +
-	"\x19STAGE_CROSSOVER_EVALUATED\x10\x03B8Z6financial-streaming-platform/gen/go/market/v1;marketv1b\x06proto3"
+	"\x19STAGE_CROSSOVER_EVALUATED\x10\x03\x12\x1a\n" +
+	"\x16STAGE_EMA_MATERIALIZED\x10\x04\x12\x1f\n" +
+	"\x1bSTAGE_ADVISORY_MATERIALIZED\x10\x05B8Z6financial-streaming-platform/gen/go/market/v1;marketv1b\x06proto3"
 
 var (
 	file_market_v1_latency_proto_rawDescOnce sync.Once
