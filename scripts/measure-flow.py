@@ -53,6 +53,7 @@ SOURCE_RECORDS = 'sum(flink_taskmanager_job_task_operator_numRecordsIn{operator_
 JOB_ARGS = ["--starting-offsets", "earliest", "--latency-topic", config.TOPIC_LATENCY_STAMPS]
 MATERIALIZER_STAMP_ENV = {"MATERIALIZER_STAMP_TOPIC": config.TOPIC_MATERIALIZE_STAMPS}
 PRODUCER_SUMMARY = re.compile(r"published=(\d+)\s+skipped=(\d+)\s+rejected=(\d+)")
+REPLAY_LAG = re.compile(r"replay_lag_max_ms=(\d+)")
 
 
 def load_collector():
@@ -290,14 +291,30 @@ def measure(args, producer_args):
 
     end = settle.last_change
     time.sleep(args.scrape_grace)
-    summary = next((PRODUCER_SUMMARY.search(line) for line in reversed(producer_output) if PRODUCER_SUMMARY.search(line)), None)
     _, ends = prometheus.sample(group)
     events = prometheus.scalar(SOURCE_RECORDS)
     return {
         "start": started, "end": end, "producer_done": producer_done,
         "events": int(events), "ema_windows": int(ends.get("ema-windows", 0)), "trade_advisories": int(ends.get("trade-advisories", 0)),
-        "producer": {"published": int(summary[1]), "skipped": int(summary[2]), "rejected": int(summary[3])} if summary else None,
+        "producer": parse_producer_summary(producer_output),
     }
+
+
+def parse_producer_summary(lines):
+    """The producer's closing counts from its output, or None without a summary line.
+
+    Under -speed the line also carries replay_lag_max_ms: how far the sends fell
+    behind the replayed trade-time schedule.
+    """
+    line = next((line for line in reversed(lines) if PRODUCER_SUMMARY.search(line)), None)
+    if line is None:
+        return None
+    counts = PRODUCER_SUMMARY.search(line)
+    summary = {"published": int(counts[1]), "skipped": int(counts[2]), "rejected": int(counts[3])}
+    lag = REPLAY_LAG.search(line)
+    if lag:
+        summary["replay_lag_max_ms"] = int(lag[1])
+    return summary
 
 
 def export(args, result, producer_args):
