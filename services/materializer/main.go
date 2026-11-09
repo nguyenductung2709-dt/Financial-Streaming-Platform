@@ -107,7 +107,7 @@ func loadConfig() (config, error) {
 	if cfg.groupID == "" || cfg.groupID != strings.TrimSpace(cfg.groupID) {
 		return config{}, fmt.Errorf("MATERIALIZER_GROUP_ID must be nonempty and trimmed")
 	}
-	// Measurement only: publish a stage stamp per committed result (off by default).
+	// Measurement only; off by default.
 	cfg.stampTopic, ok = os.LookupEnv("MATERIALIZER_STAMP_TOPIC")
 	if !ok {
 		cfg.stampTopic = ""

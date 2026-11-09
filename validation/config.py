@@ -52,7 +52,7 @@ TOPIC_DLQ = "trade-events-dlq"
 TOPIC_EMA_WINDOWS = "ema-windows"
 TOPIC_TRADE_ADVISORIES = "trade-advisories"
 TOPIC_LATENCY_STAMPS = "latency-stamps"  # processor --latency-topic; measurement only
-TOPIC_MATERIALIZE_STAMPS = "materialize-stamps"  # materializer MATERIALIZER_STAMP_TOPIC; measurement only
+TOPIC_MATERIALIZE_STAMPS = "materialize-stamps"  # materializer stamps; measurement only
 # Output topics created with the broker's append time as the record timestamp: the
 # processor writes event time otherwise, and the latency collector reads the
 # timestamp as the moment a result landed.

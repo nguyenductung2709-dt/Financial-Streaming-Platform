@@ -49,7 +49,7 @@ public final class Latency extends com.google.protobuf.GeneratedFile {
     STAGE_CROSSOVER_EVALUATED(3),
     /**
      * <pre>
-     * The materializer committed the result's PostgreSQL transaction.
+     * Committed to PostgreSQL by the materializer.
      * </pre>
      *
      * <code>STAGE_EMA_MATERIALIZED = 4;</code>
@@ -89,7 +89,7 @@ public final class Latency extends com.google.protobuf.GeneratedFile {
     public static final int STAGE_CROSSOVER_EVALUATED_VALUE = 3;
     /**
      * <pre>
-     * The materializer committed the result's PostgreSQL transaction.
+     * Committed to PostgreSQL by the materializer.
      * </pre>
      *
      * <code>STAGE_EMA_MATERIALIZED = 4;</code>
@@ -280,10 +280,8 @@ public final class Latency extends com.google.protobuf.GeneratedFile {
   }
   /**
    * <pre>
-   * Measurement only: one stamp per pipeline stage and window, published when the
-   * processor runs with --latency-topic, and one per materialized result when the
-   * materializer runs with MATERIALIZER_STAMP_TOPIC (topic materialize-stamps).
-   * Not part of the domain data.
+   * Measurement only: one stamp per pipeline stage and window, published by the
+   * processor (--latency-topic) and the materializer. Not part of the domain data.
    * </pre>
    *
    * Protobuf type {@code market.v1.StageStamp}
@@ -685,10 +683,8 @@ public final class Latency extends com.google.protobuf.GeneratedFile {
     }
     /**
      * <pre>
-     * Measurement only: one stamp per pipeline stage and window, published when the
-     * processor runs with --latency-topic, and one per materialized result when the
-     * materializer runs with MATERIALIZER_STAMP_TOPIC (topic materialize-stamps).
-     * Not part of the domain data.
+     * Measurement only: one stamp per pipeline stage and window, published by the
+     * processor (--latency-topic) and the materializer. Not part of the domain data.
      * </pre>
      *
      * Protobuf type {@code market.v1.StageStamp}

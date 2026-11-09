@@ -29,7 +29,7 @@ const (
 	Stage_STAGE_WINDOW_FIRED        Stage = 1
 	Stage_STAGE_EMA_COMPUTED        Stage = 2
 	Stage_STAGE_CROSSOVER_EVALUATED Stage = 3
-	// The materializer committed the result's PostgreSQL transaction.
+	// Committed to PostgreSQL by the materializer.
 	Stage_STAGE_EMA_MATERIALIZED      Stage = 4
 	Stage_STAGE_ADVISORY_MATERIALIZED Stage = 5
 )
@@ -81,10 +81,8 @@ func (Stage) EnumDescriptor() ([]byte, []int) {
 	return file_market_v1_latency_proto_rawDescGZIP(), []int{0}
 }
 
-// Measurement only: one stamp per pipeline stage and window, published when the
-// processor runs with --latency-topic, and one per materialized result when the
-// materializer runs with MATERIALIZER_STAMP_TOPIC (topic materialize-stamps).
-// Not part of the domain data.
+// Measurement only: one stamp per pipeline stage and window, published by the
+// processor (--latency-topic) and the materializer. Not part of the domain data.
 type StageStamp struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Symbol          string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
