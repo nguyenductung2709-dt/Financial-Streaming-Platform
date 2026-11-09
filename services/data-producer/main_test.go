@@ -61,7 +61,7 @@ func TestParseConfigHelp(t *testing.T) {
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("error = %v; want flag.ErrHelp", err)
 	}
-	for _, name := range []string{"-csvPath", "-brokers", "-topic", "-dlqTopic", "-dlqEnabled", "-rate", "-maxEvents"} {
+	for _, name := range []string{"-csvPath", "-brokers", "-topic", "-dlqTopic", "-dlqEnabled", "-rate", "-speed", "-maxEvents"} {
 		if !strings.Contains(output.String(), name) {
 			t.Fatalf("help omits %s", name)
 		}
