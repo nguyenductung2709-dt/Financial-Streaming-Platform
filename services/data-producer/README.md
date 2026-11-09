@@ -36,10 +36,29 @@ of the complete flow. Print the flags with `make run-data-producer ARGS="-help"`
 | `-dlqTopic` | `trade-events-dlq` | Topic for rejected rows |
 | `-dlqEnabled` | off | Publish invalid rows to the dead letter topic instead of stopping |
 | `-rate` | `0` | Maximum events per second (0 is unlimited) |
+| `-speed` | `0` | Replay the gaps between trade times, sped up by this factor (0 is off); cannot be combined with `-rate` |
 | `-maxEvents` | `0` | Stop after this many acknowledged events (0 is unlimited) |
 
 The run ends with `CSV processing <status>: published=N skipped=N rejected=N`, which
-`make measure-flow` reads.
+`make measure-flow` reads. Under `-speed` the line ends with `replay_lag_max_ms=N`.
+
+## Replay speed
+
+`-rate` spaces events evenly. `-speed=<x>` keeps the shape of the trading day instead:
+an event is sent when the wall clock has moved `(trade time - first trade time) / x`
+since the first event, so the bursts and quiet stretches of the data stay in the load.
+`-speed=1` is real time, `-speed=100` turns 5 minutes of trading into 3 seconds.
+
+- The schedule follows the highest trade time seen so far. An out-of-order event is sent
+  at once, and the schedule never runs backwards.
+- The schedule is anchored to the first event, so time spent publishing does not add
+  up. A producer that falls behind sends back to back until it has caught up.
+  `replay_lag_max_ms` is the furthest it fell behind: when it reaches seconds, the
+  producer could not keep up with the speed (it tops out near 4.7k events/s) and the
+  load was closer to `-rate=0` than to the replay.
+- Skipped and rejected rows do not wait.
+- Several CSV files replay the gap between them too, so the night between two trading
+  days becomes a pause of its length divided by the speed.
 
 ## Notes
 
