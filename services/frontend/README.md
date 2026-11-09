@@ -1,5 +1,82 @@
 # Dashboard state and recovery
 
+## Market workspace
+
+The primary chart fills the center of the workspace. On startup, the dashboard
+restores the saved primary symbol, chooses an available followed symbol, or
+follows the first available symbol. Selecting a symbol opens and follows it in
+one action. Its + button adds it to the comparison view. The Single chart /
+Compare switch moves between individual price analysis and a shared percentage
+chart for up to five symbols. Comparison selections persist in browser storage.
+
+Dark and light themes include the charts and persist in browser storage. Signals
+can be collapsed on desktop. On smaller screens, charts appear first and the
+watchlist and signals use tabs. New signals retain a yellow arrival highlight,
+disabled when reduced motion is requested.
+
+The watchlist loads the last 24 five-minute windows for each followed symbol
+through `/api/quotes?symbols=A,B`, then reconciles live window updates with the
+same exact revision ordering as chart history. It shows the latest available
+close, a sparkline, and change against the previous available window. This is
+not a daily return. Unfollowed symbols show placeholders until selected/followed.
+
+Chart controls select 1D, 3D, or all **loaded** history, reset pan/zoom, and toggle
+EMA and signal overlays. Gaps without observations are collapsed on the time
+axis and identified in the chart footer. Hover timestamps remain actual UTC
+times. Clicking a signal focuses a 65-minute range around its window. Manual
+pan/zoom is preserved through live updates; selecting a range recenters the view.
+Prices and timestamps describe stored market windows, including historical replay;
+the Live badge describes connection readiness rather than current market time.
+
+## Comparing symbols
+
+Compare shows closing-price returns only; EMA overlays remain in Single chart.
+The chart uses `(close / starting_close - 1) * 100`. Every plotted symbol must
+have actual closes at the same starting **and ending** timestamp. 1D and 3D
+choose the first common close within that period, measured back from the latest
+common end in loaded history. All uses the first common close in loaded history.
+At least two distinct matching closes are required; a single observation never
+produces a measured 0% return. If the selected period contains only one match,
+the chart offers an action to use all available loaded history.
+
+One symbol with insufficient or incompatible history does not blank the chart.
+The dashboard finds the largest group with two matching closes (at least two
+symbols when multiple symbols are selected), preferring the newest common end
+when equally sized groups exist. A notice identifies how many symbols are
+actually compared. The other selections remain visible in the table with their
+available dates, observation counts, and reasons such as `Needs another price`.
+Their returns and comparison prices are not fabricated or carried forward.
+Users can remove an unavailable selection or keep only the comparable group
+without unfollowing those symbols. If no group can be compared, an empty state
+shows the available histories and a Change symbols action.
+
+The starting close stays anchored during live updates. The shared ending close
+advances only when every plotted symbol has a close at a newer common time.
+Changing the selection or choosing a range resets the anchor. If bounded-history
+eviction removes the anchor, the chart selects a new shared start and displays it.
+The table shows returns and raw closing prices at the shared end, not newer
+unmatched prices from the watchlist. These are price returns, not total returns.
+Excluded symbols rejoin automatically when their data supports a larger matching
+group; a change to the plotted group resets manual zoom and is reflected in the
+displayed shared period. Sparse series use markers to distinguish observations
+from missing windows, and the header reports the number of matching closes.
+
+Missing five-minute observations insert null points so lines cannot interpolate
+across an individual symbol's gaps. Time intervals with no observations for any
+selected symbol collapse on the axis, as disclosed in the footer. Hover retains
+actual closing timestamps and prices. Hiding a line does not alter the shared
+period. Symbol colors remain stable as other symbols are added or removed.
+Endpoint labels appear on wider charts; compact charts retain colored chips,
+the shared hover display, and the table.
+
+Comparison collapses the desktop signal panel by default and remembers its
+visibility independently from Single chart. Chip labels hide/show lines; ×
+removes a symbol without unfollowing it. Selecting a table symbol or ↗ opens its
+individual price/EMA chart. The Add symbol button focuses watchlist search.
+
+The HTML versions its local stylesheet and application script together. Bump
+both version query strings when releasing changes to avoid mixed cached assets.
+
 The backend serves this browser application and its REST/SSE endpoints from
 the same origin. `app.js` loads saved history over REST and receives live rows
 through an `EventSource` connected to `/api/events` for followed symbols.
@@ -30,9 +107,11 @@ back to an empty watchlist so they cannot prevent the dashboard from opening.
 Signals from unfollowed symbols are removed before applying the 300-record feed
 limit, keeping older signals from currently followed symbols accessible.
 
-Each chart keeps the latest 5,000 window rows and 5,000 advisory rows. Incoming
-live results evict the oldest rows when these limits are reached. Removing a
-symbol from both charts evicts its chart caches immediately. Unfollowing also
+Single chart keeps the latest 5,000 window rows and 5,000 advisory rows.
+Comparison loads up to 5,000 window rows for each of its five selected symbols
+without fetching advisory histories. Incoming live results evict the oldest
+rows when these limits are reached. Leaving a view or removing a symbol releases
+history no longer needed by the active view. Unfollowing also
 removes its signals, and highlight bookkeeping retains only current feed keys.
 
 REST requests load the latest history initially. Older history is not fetched
@@ -68,3 +147,6 @@ snapshots, failed history loads and retries, selection changes, listener status,
 obsolete connections, symbol-list races, and pending-buffer recovery.
 They also cover watchlist changes, invalid saved watchlists, retention of the
 newest rows, and immediate cache eviction after unfollowing.
+Comparison tests cover normalization, shared start/end alignment, missing and
+non-overlapping history, gap preservation, anchored ranges, independent line
+visibility, stable colors, saved selections, limits, and revision-ordered updates.
