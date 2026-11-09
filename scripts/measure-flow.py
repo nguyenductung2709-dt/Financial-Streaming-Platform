@@ -257,7 +257,7 @@ def measure(args, producer_args):
     run([*COMPOSE, "up", "-d", "--wait", "--wait-timeout", "120", *INFRA_SERVICES, *MONITORING_SERVICES])
     wait_for_monitoring(prometheus)
     print("Resetting the flow for a clean run...", flush=True)
-    run([sys.executable, "scripts/reset-flow.py"])
+    run([sys.executable, "scripts/reset-flow-data.py"])
 
     with flow_lock():
         try:
