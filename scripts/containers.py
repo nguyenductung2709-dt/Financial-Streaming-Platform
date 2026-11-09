@@ -188,18 +188,22 @@ class MaterializerContainer:
     POLL_INTERVAL_S = 1.0
     WAIT_INTERVAL_S = 0.5
 
-    def __init__(self, compose=COMPOSE, run=subprocess.run, clock=time.monotonic, sleep=time.sleep, cwd=ROOT):
+    def __init__(self, compose=COMPOSE, run=subprocess.run, clock=time.monotonic, sleep=time.sleep, cwd=ROOT, env=None):
+        """env is extra environment for every docker call (merged over os.environ);
+        None inherits the process environment untouched. Compose interpolates
+        it into the service definition, e.g. MATERIALIZER_STAMP_TOPIC."""
         self._compose = list(compose)
         self._run = run
         self._clock = clock
         self._sleep = sleep
         self._cwd = cwd
+        self._env = {**os.environ, **env} if env is not None else None
         self.returncode = None
         self._checked_at = None
         self._started = False
 
     def _docker(self, *args, capture=True, check=False):
-        return self._run([*self._compose, *args], cwd=self._cwd, text=True, capture_output=capture, check=check)
+        return self._run([*self._compose, *args], cwd=self._cwd, text=True, capture_output=capture, check=check, env=self._env)
 
     def _container(self):
         """The service's container as `compose ps` reports it, or None when there is none."""
