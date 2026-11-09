@@ -186,6 +186,26 @@ async def get_signals(symbols, limit):
     return await get_advisories(symbols, None, None, limit)
 
 
+async def get_signal_snapshot(symbols, limit):
+    """Count all matching signals and load recent rows from the same SQL snapshot."""
+    where = " WHERE a.symbol = ANY(%s)" if symbols is not None else ""
+    params = [symbols] if symbols is not None else []
+    rows = await fetch(
+        "WITH totals AS (SELECT count(*) AS _total, "
+        "count(*) FILTER (WHERE a.action = 'BUY') AS _buy, "
+        "count(*) FILTER (WHERE a.action = 'SELL') AS _sell "
+        f"FROM trade_advisories a{where}), recent AS ("
+        f"SELECT {ADVISORY_COLS} FROM {ADVISORY_FROM}{where} "
+        "ORDER BY a.window_start DESC, a.symbol LIMIT %s) "
+        "SELECT totals.*, recent.* FROM totals LEFT JOIN recent ON true "
+        "ORDER BY recent.window_start DESC, recent.symbol",
+        params + params + [limit])
+    counts = {name: int(rows[0]["_" + name]) for name in ("total", "buy", "sell")}
+    items = [shape({k: v for k, v in row.items() if k not in ("_total", "_buy", "_sell")})
+             for row in rows if row["symbol"] is not None]
+    return {"items": items, "counts": counts}
+
+
 # Stream history in deterministic pages, including ties across symbols.
 # `since` filters trading-window time; it is not a cursor for row corrections.
 async def iter_catchup(symbols, since, page_size=5000):

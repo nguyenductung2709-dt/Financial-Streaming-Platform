@@ -66,6 +66,41 @@ class DatabaseTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class DatabaseIntegrationTest(DatabaseTestCase):
+    async def test_signal_totals_include_history_beyond_the_feed_limit(self):
+        await self.seed()
+        await self.conn.execute("INSERT INTO symbols VALUES ('B')")
+        await self.conn.execute("""INSERT INTO ema_windows
+            (symbol, window_start, window_end, closing_price_micros, ema38, ema100)
+            SELECT 'A', '2021-11-08 10:00Z'::timestamptz + n * INTERVAL '5 minutes',
+                '2021-11-08 10:05Z'::timestamptz + n * INTERVAL '5 minutes',
+                15000000, 14, 13 FROM generate_series(1, 350) n""")
+        await self.conn.execute("""INSERT INTO trade_advisories
+            (symbol, window_start, action, previous_ema38, previous_ema100)
+            SELECT 'A', '2021-11-08 10:00Z'::timestamptz + n * INTERVAL '5 minutes',
+                CASE WHEN n % 2 = 0 THEN 'BUY' ELSE 'SELL' END, 12, 13
+            FROM generate_series(1, 350) n""")
+        await self.conn.execute("""INSERT INTO ema_windows
+            (symbol, window_start, window_end, closing_price_micros, ema38, ema100)
+            SELECT 'B', '2021-11-08 10:00Z'::timestamptz + n * INTERVAL '5 minutes',
+                '2021-11-08 10:05Z'::timestamptz + n * INTERVAL '5 minutes',
+                25000000, 24, 23 FROM generate_series(1, 20) n""")
+        await self.conn.execute("""INSERT INTO trade_advisories
+            (symbol, window_start, action, previous_ema38, previous_ema100)
+            SELECT 'B', '2021-11-08 10:00Z'::timestamptz + n * INTERVAL '5 minutes',
+                'SELL', 25, 23 FROM generate_series(1, 20) n""")
+        snapshot = await db.get_signal_snapshot(["A", "B"], 300)
+        self.assertEqual(len(snapshot["items"]), 300)
+        self.assertEqual(snapshot["counts"], {"total": 371, "buy": 176, "sell": 195})
+        self.assertTrue(all(isinstance(r["revision"], str) for r in snapshot["items"]))
+        self.assertTrue(all(r["window_start"].endswith("Z") for r in snapshot["items"]))
+        selected = await db.get_signal_snapshot(["A"], 10)
+        self.assertEqual(selected["counts"], {"total": 351, "buy": 176, "sell": 175})
+        self.assertEqual(len(selected["items"]), 10)
+        for symbols in [[], ["MISSING"], ["A' OR true --"]]:
+            empty = await db.get_signal_snapshot(symbols, 300)
+            self.assertEqual(empty, {"items": [], "counts": {"total": 0, "buy": 0, "sell": 0}})
+        self.assertEqual((await db.get_signal_snapshot(None, 1))["counts"]["total"], 371)
+
     async def test_quotes_keep_latest_24_per_symbol_in_chronological_order(self):
         await self.seed()
         await self.conn.execute("INSERT INTO symbols VALUES ('B'), ('EMPTY')")

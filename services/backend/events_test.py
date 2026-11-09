@@ -106,6 +106,27 @@ class EventsTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.get_quotes([]), [])
         fetch.assert_not_awaited()
 
+    async def test_signal_counts_are_exposed_without_changing_the_array_response(self):
+        items = [{"symbol": "A", "action": "BUY"}]
+        snapshot = {"items": items, "counts": {"total": 1234, "buy": 800, "sell": 434}}
+        response = main.Response()
+        with patch.object(db, "get_signal_snapshot", AsyncMock(return_value=snapshot)) as get_snapshot:
+            result = await main.signals(response, " A, B, A ", 100, True)
+        self.assertEqual(result, items)
+        get_snapshot.assert_awaited_once_with(["A", "B"], 100)
+        self.assertEqual(response.headers["X-Signal-Total"], "1234")
+        self.assertEqual(response.headers["X-Signal-Buy"], "800")
+        self.assertEqual(response.headers["X-Signal-Sell"], "434")
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    async def test_signal_counts_are_optional_for_existing_clients(self):
+        response = main.Response()
+        with patch.object(db, "get_signals", AsyncMock(return_value=[])) as get_signals:
+            result = await main.signals(response, "A", 100, False)
+        self.assertEqual(result, [])
+        get_signals.assert_awaited_once_with(["A"], 100)
+        self.assertNotIn("X-Signal-Total", response.headers)
+
     async def test_health_requires_notification_listener(self):
         events.listener_ready.clear()
         with patch.object(db, "check_schema", AsyncMock()):

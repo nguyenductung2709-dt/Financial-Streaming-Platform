@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <meta name="description" content="A live market workspace for five-minute prices, EMA trends, and trade signals.">
   <title>Market workspace · Trade signals</title>
-  <link rel="stylesheet" href="style.css?v=compare-4">
+  <link rel="stylesheet" href="style.css?v=signals-1">
 </head>
 <body>
   <div class="app" id="workspace">
@@ -88,12 +88,13 @@
         <button class="chip" data-f="sell" aria-pressed="false">Sell</button>
       </div>
       <p class="hint">Select a signal to inspect its price window.</p>
+      <p class="hint feed-summary" id="feedSummary">Follow symbols to view their signals.</p>
       <ul class="feed-list" id="feedList"></ul>
       <footer class="panel-note">Signal times are window closes in UTC</footer>
     </aside>
     <footer class="workspace-footer"><span>Price & EMA analysis <span class="footer-dot">·</span> 5-minute windows</span><span>All timestamps UTC <span class="footer-dot">·</span> <span id="dataTime">Awaiting market data</span></span></footer>
   </div>
   <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js" charset="utf-8"></script>
-  <script src="app.js?v=compare-4"></script>
+  <script src="app.js?v=signals-1"></script>
 </body>
 </html>

@@ -13,7 +13,7 @@
     light: { buy: "#087c58", sell: "#c32e49", close: "#345fc5", ema38: "#9e6500", ema100: "#7950c2",
       panel: "#ffffff", grid: "#edf0f5", line: "#dbe2ec", text: "#59677d" },
   };
-  const FLUSH_MS = 250, FEED_MAX = 300, MAX_ROWS = 300;
+  const FLUSH_MS = 250, FEED_MAX = 300, FEED_VISIBLE = 100, SIGNAL_REFRESH_MS = 2000, MAX_ROWS = 300;
   const HISTORY_MAX = 5000, BUFFER_MAX = 2 * COMPARE_MAX * HISTORY_MAX + FEED_MAX;
   const API = location.protocol.startsWith("http") ? location.origin : "http://localhost:8000";
 
@@ -50,7 +50,7 @@
   };
 
   //Fetch data from the backend and return the JSON response
-  async function get(path, params = {}) {
+  async function get(path, params = {}, metadata = null) {
     const url = new URL(API + path);
     for (const [k, v] of Object.entries(params)) {
       if (v != null) url.searchParams.set(k, v);
@@ -62,7 +62,24 @@
       error.status = res.status;
       throw error;
     }
+    if (metadata) metadata.headers = res.headers;
     return res.json();
+  }
+
+  async function getSignals(symbols) {
+    const scope = symbols.join(",");
+    if (!symbols.length) return { rows: [], counts: { total: 0, buy: 0, sell: 0, scope } };
+    const metadata = {};
+    const rows = await get("/api/signals", { symbols: scope, limit: FEED_MAX, include_counts: true }, metadata);
+    const counts = {};
+    for (const name of ["total", "buy", "sell"]) {
+      const raw = metadata.headers?.get?.("X-Signal-" + name);
+      if (raw === undefined || raw === null || !/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+        return { rows, counts: null };
+      }
+      counts[name] = Number(raw);
+    }
+    return { rows, counts: counts.total === counts.buy + counts.sell ? { ...counts, scope } : null };
   }
 
   const savedWatchlist = load("watchlist", []);
@@ -70,7 +87,7 @@
   const state = {
     symbols: [],
     watchlist: [...new Set((Array.isArray(savedWatchlist) ? savedWatchlist : []).filter((s) => typeof s === "string"))], slot: {A: null},
-    query: "", exchange: "", onlyWatched: false, feedFilter: "all", windows: {}, advisories: {}, feed: [], quotes: {},
+    query: "", exchange: "", onlyWatched: false, feedFilter: "all", windows: {}, advisories: {}, feed: [], quotes: {}, signalCounts: null, signalCountsDirty: false,
     theme: load("theme", "dark") === "light" ? "light" : "dark", compare: false, signalsVisible: true, comparisonSignalsVisible: false, mobilePanel: "watchlist",
     comparison: [...new Set((Array.isArray(savedComparison) ? savedComparison : []).filter((s) => typeof s === "string" && Array.isArray(savedWatchlist) && savedWatchlist.includes(s)))].slice(0, COMPARE_MAX),
   };
@@ -1028,13 +1045,15 @@
   function renderFeed() {
     const subSet = new Set(subscribed());
 
-    const items = state.feed
+    const matching = state.feed
       .filter((r) => subSet.has(r.symbol))
       .filter((r) =>
         state.feedFilter === "all" ||
         (state.feedFilter === "buy") === isBuy(r.action)
-      )
-      .slice(0, 100);
+      );
+    const items = matching.slice(0, FEED_VISIBLE);
+    const scoped = state.signalCounts?.scope === subscribed().join(",") ? state.signalCounts : null;
+    const total = subSet.size === 0 ? 0 : scoped?.[state.feedFilter === "all" ? "total" : state.feedFilter];
 
     let html = items.map((r) => {
       const buy = isBuy(r.action);
@@ -1050,11 +1069,18 @@
     if (!items.length) {
       html = `<li class="empty">${subSet.size === 0
         ? "Star symbols in the list to follow their buy and sell signals."
-        : "No signals yet for the symbols you follow. New ones appear here as they arrive."}</li>`;
+        : total > 0 ? "No matching signals in the recent activity loaded here."
+          : "No signals yet for the symbols you follow. New ones appear here as they arrive."}</li>`;
     }
 
     $("feedList").innerHTML = html;
-    $("signalCount").textContent = items.length;
+    $("signalCount").textContent = total === undefined ? `${matching.length} loaded` : total.toLocaleString("en-US");
+    $("signalCount").setAttribute("title", total === undefined
+      ? "Signals in the loaded recent activity; full total is unavailable"
+      : "Total stored signals for the followed symbols and selected direction");
+    $("feedSummary").textContent = subSet.size === 0 ? "Follow symbols to view their signals."
+      : total === undefined ? `Showing ${items.length} of ${matching.length} loaded signals · Total unavailable`
+        : `Showing ${items.length} recent signals · ${total.toLocaleString("en-US")} total${state.signalCountsDirty ? " · Updating…" : ""}`;
 
     knownFeedKeys = new Set(state.feed.map(feedKey));
 
@@ -1083,6 +1109,38 @@
     panes[0].update();
     $("paneA").scrollIntoView({ block: "nearest" });
   });
+
+  let signalRefreshTimer = null;
+  let signalRefreshInFlight = false;
+  let signalVersion = 0;
+  function scheduleSignalRefresh() {
+    if (signalRefreshTimer !== null || signalRefreshInFlight || syncPromise || !state.signalCountsDirty || !subscribed().length) return;
+    signalRefreshTimer = setTimeout(refreshSignalFeed, SIGNAL_REFRESH_MS);
+  }
+  async function refreshSignalFeed() {
+    signalRefreshTimer = null;
+    if (syncPromise || !subscribed().length) return;
+    const token = generation, version = signalVersion;
+    const symbols = subscribed();
+    signalRefreshInFlight = true;
+    try {
+      const snapshot = await getSignals(symbols);
+      if (token !== generation || syncPromise || symbols.join(",") !== subscribed().join(",")) return;
+      mergeFeed(snapshot.rows);
+      state.signalCounts = snapshot.counts;
+      state.signalCountsDirty = signalVersion !== version;
+      renderFeed();
+    } catch {
+      if (token === generation) {
+        state.signalCounts = null;
+        state.signalCountsDirty = true;
+        renderFeed();
+      }
+    } finally {
+      signalRefreshInFlight = false;
+      scheduleSignalRefresh();
+    }
+  }
 
   let buffer = new Map();
   let syncPromise = null;
@@ -1148,8 +1206,12 @@
 
     if (quotesDirty) renderList();
 
-    if (feedRows.length && mergeFeed(feedRows)) {
+    if (feedRows.length) {
+      signalVersion++;
+      state.signalCountsDirty = true;
+      mergeFeed(feedRows);
       renderFeed();
+      scheduleSignalRefresh();
     }
   }
   setInterval(() => { if (!syncPromise) flushBuffer(); }, FLUSH_MS);
@@ -1160,11 +1222,13 @@
     if (invalidate) {
       generation++;
       buffer.clear();
+      clearTimeout(signalRefreshTimer);
+      signalRefreshTimer = null;
     }
     syncRequested = true;
     clearTimeout(syncRetryTimer);
     if (!syncPromise) {
-      syncPromise = refreshSnapshots().finally(() => { syncPromise = null; });
+      syncPromise = refreshSnapshots().finally(() => { syncPromise = null; scheduleSignalRefresh(); });
     }
     return syncPromise;
   }
@@ -1178,8 +1242,8 @@
       const advisoryCharts = advisorySymbols();
       setStatus("refreshing");
       try {
-        const [feed, windows, advisories, quotes] = await Promise.all([
-          subs.length ? get("/api/signals", { symbols: subs.join(","), limit: FEED_MAX }) : [],
+        const [signals, windows, advisories, quotes] = await Promise.all([
+          getSignals(subs),
           Promise.all(charts.map((symbol) => get("/api/ema-windows", { symbol, limit: HISTORY_MAX }))),
           Promise.all(advisoryCharts.map((symbol) => get("/api/trade-advisories", { symbol, limit: HISTORY_MAX }))),
           subs.length ? get("/api/quotes", { symbols: subs.join(",") }) : [],
@@ -1188,7 +1252,9 @@
         // The snapshot replaces the previous database state. Revisions can
         // restart after a full reset; compare only live rows buffered since
         // this refresh started against the incoming snapshot.
-        state.feed = feed;
+        state.feed = signals.rows;
+        state.signalCounts = signals.counts;
+        state.signalCountsDirty = false;
         state.quotes = {};
         for (const row of quotes) {
           const bucket = state.quotes[row.symbol] = state.quotes[row.symbol] || {};

@@ -115,6 +115,20 @@ rollback, readiness checks, exact revisions, and revisions on joined advisories.
 The materializer's integration tests also check writes, reset, and migration
 rollback with the revision columns installed.
 
+## Signal totals
+
+`GET /api/signals?symbols=A,B&limit=300&include_counts=true` keeps the existing
+array response and adds `X-Signal-Total`, `X-Signal-Buy`, and `X-Signal-Sell`
+headers. Counts include all matching stored advisories, independently of the
+recent-row limit. A single SQL statement returns the counts and recent rows
+from the same snapshot. Empty explicit symbol lists return zero counts; omitting
+the symbol parameter counts all symbols. Count-bearing responses use
+`Cache-Control: no-store`, and the count headers are exposed to browser clients.
+Clients omitting `include_counts` retain the original query and response format.
+
+Reload the Python backend to expose the new headers. This requires no new
+migration, database reset, or Docker container recreation.
+
 ## Backend readiness
 
 The watchlist uses `GET /api/quotes?symbols=A,B` to fetch the newest 24 price

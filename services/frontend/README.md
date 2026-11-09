@@ -105,6 +105,30 @@ The backend serves this browser application and its REST/SSE endpoints from
 the same origin. `app.js` loads saved history over REST and receives live rows
 through an `EventSource` connected to `/api/events` for followed symbols.
 
+## Signal activity counts
+
+The activity badge reports all stored signals for the followed symbols and the
+selected All/Buy/Sell direction. The list displays the newest 100 matching rows
+from a bounded 300-row recent-activity cache; the summary labels the displayed
+rows separately from the full total. A direction with no rows in recent activity
+does not imply its stored total is zero.
+
+The dashboard requests `/api/signals?include_counts=true`. The backend returns
+the normal row array and `X-Signal-Total`, `X-Signal-Buy`, and `X-Signal-Sell`
+headers, counted independently of the row limit from the same SQL snapshot.
+Live advisory updates schedule a throttled refresh after two seconds; totals
+are refreshed from the backend rather than incremented for each event. This
+avoids double-counting revisions or replayed messages. Late responses for an
+old subscription are discarded, and clearing follows immediately shows zero.
+
+Missing or invalid count headers (including from an older backend) are labeled
+as `loaded` counts with `Total unavailable`, rather than presenting the display
+limit as an exact total. Restart the Python backend after installing the count
+API update. No database migration or Docker data reset is required.
+
+Signal rows, counts, prices, and chart histories remain in memory. Saved
+watchlists, chart selections, theme, and metric preferences remain unchanged.
+
 ## Snapshot loading
 
 A `resync` event requests fresh symbol, window, advisory, and signal snapshots.

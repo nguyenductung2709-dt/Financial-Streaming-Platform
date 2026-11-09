@@ -9,7 +9,7 @@ from typing import Optional
 import psycopg
 import psycopg_pool
 import uvicorn
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -42,7 +42,8 @@ async def lifespan(app):
 
 #Create the FastAPI application and allow frontend requests
 app = FastAPI(title="Financial streaming backend", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                   expose_headers=["X-Signal-Total", "X-Signal-Buy", "X-Signal-Sell"])
 
 
 #Return a 503 response when the database is unavailable
@@ -100,8 +101,16 @@ async def trade_advisories(symbol: str = Query(..., min_length=1), start: Option
 
 #Return the latest signals for the requested symbols
 @app.get("/api/signals")
-async def signals(symbols: Optional[str] = Query(None, description="comma list; default all"), limit: int = Query(50, ge=1, le=1000)):
-    return await db.get_signals(parse_symbols(symbols) if symbols else None, limit)
+async def signals(response: Response, symbols: Optional[str] = Query(None, description="comma list; default all"),
+                  limit: int = Query(50, ge=1, le=1000), include_counts: bool = Query(False)):
+    selected = parse_symbols(symbols) if symbols is not None else None
+    if not include_counts:
+        return await db.get_signals(selected, limit)
+    snapshot = await db.get_signal_snapshot(selected, limit)
+    for name, value in snapshot["counts"].items():
+        response.headers["X-Signal-" + name.title()] = str(value)
+    response.headers["Cache-Control"] = "no-store"
+    return snapshot["items"]
 
 
 #Stream live updates for the requested symbols using Server-Sent Events
