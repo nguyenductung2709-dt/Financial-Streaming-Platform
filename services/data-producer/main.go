@@ -148,7 +148,7 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 			interval++
 		}
 	}
-	var nextPublish time.Time
+	pacer := ratePacer{interval: interval}
 	replay := replaySchedule{speed: cfg.speed}
 	// How far the sends fell behind the replay schedule; large values mean the
 	// producer could not keep up with -speed, so the load was not the replayed one.
@@ -183,11 +183,9 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 		}
 
 		if interval > 0 {
-			if err := waitForReplay(ctx, nextPublish); err != nil {
+			if err := waitForReplay(ctx, pacer.due(time.Now())); err != nil {
 				return err
 			}
-			// Schedule from the actual send start. Slow sends never create catch-up bursts.
-			nextPublish = time.Now().Add(interval)
 		}
 		if cfg.speed > 0 {
 			due := replay.due(event.GetTradeTime().AsTime(), time.Now())
