@@ -138,7 +138,7 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 			interval++
 		}
 	}
-	var nextPublish time.Time
+	pacer := ratePacer{interval: interval}
 	limitReached := errors.New("event limit reached")
 
 	// Keep rate, limits, and counters continuous across the entire input sequence.
@@ -169,11 +169,9 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 		}
 
 		if interval > 0 {
-			if err := waitForReplay(ctx, nextPublish); err != nil {
+			if err := waitForReplay(ctx, pacer.due(time.Now())); err != nil {
 				return err
 			}
-			// Schedule from the actual send start. Slow sends never create catch-up bursts.
-			nextPublish = time.Now().Add(interval)
 		}
 		if err := publishPriceEvent(ctx, client, cfg.topic, event); err != nil {
 			return err
