@@ -92,6 +92,7 @@ class ConfigValuesTest(unittest.TestCase):
         self.assertEqual(config.TOPIC_EMA_WINDOWS, "ema-windows")
         self.assertEqual(config.TOPIC_TRADE_ADVISORIES, "trade-advisories")
         self.assertEqual(config.TOPIC_LATENCY_STAMPS, "latency-stamps")
+        self.assertEqual(config.TOPIC_MATERIALIZE_STAMPS, "materialize-stamps")
         self.assertEqual(config.LOG_APPEND_TIME_TOPICS,
                          ("ema-windows", "trade-advisories"))
         self.assertEqual(config.LOG_APPEND_TIME_CONFIG,
@@ -237,8 +238,9 @@ class FlowScriptsFollowsConfigTest(unittest.TestCase):
         self.assertEqual(script_follows_override(
             self.RESET, {"TOPIC_EVENTS": "evt", "TOPIC_DLQ": "dlq",
                          "TOPIC_EMA_WINDOWS": "ema", "TOPIC_TRADE_ADVISORIES":
-                         "adv", "TOPIC_LATENCY_STAMPS": "lat"}, "module.TOPICS"),
-            "('evt', 'dlq', 'ema', 'adv', 'lat')")
+                         "adv", "TOPIC_LATENCY_STAMPS": "lat",
+                         "TOPIC_MATERIALIZE_STAMPS": "mat"}, "module.TOPICS"),
+            "('evt', 'dlq', 'ema', 'adv', 'lat', 'mat')")
         self.assertEqual(script_follows_override(
             self.RESET, {"LOG_APPEND_TIME_CONFIG": "k=v"},
             "module.LOG_APPEND_TIME_CONFIG"), "k=v")
