@@ -135,6 +135,19 @@ async def get_windows(symbol, start, end, limit):
     return [shape(r) for r in reversed(rows)]
 
 
+# Fetch a small price history per followed symbol using the existing primary key.
+# A single global LIMIT would let active symbols crowd out quieter symbols.
+async def get_quotes(symbols):
+    if not symbols:
+        return []
+    rows = await fetch(
+        f"SELECT q.* FROM unnest(%s::text[]) AS requested(symbol) "
+        f"CROSS JOIN LATERAL (SELECT {WINDOW_COLS} FROM ema_windows "
+        "WHERE symbol = requested.symbol ORDER BY window_start DESC LIMIT 24) q "
+        "ORDER BY q.symbol, q.window_start", [list(dict.fromkeys(symbols))])
+    return [shape(r) for r in rows]
+
+
 #Get trade advisories from newest to oldest, including the related price and EMAs
 async def get_advisories(symbols, start, end, limit):
     where, params = [], []

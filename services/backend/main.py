@@ -86,6 +86,11 @@ async def ema_windows(symbol: str = Query(..., min_length=1), start: Optional[da
     return await db.get_windows(symbol, utc(start), utc(end), limit)
 
 
+@app.get("/api/quotes")
+async def quotes(symbols: str = Query(..., min_length=1, description="comma-separated followed symbols")):
+    return await db.get_quotes(parse_symbols(symbols))
+
+
 #Return trade advisories for a symbol in chronological order
 @app.get("/api/trade-advisories")
 async def trade_advisories(symbol: str = Query(..., min_length=1), start: Optional[datetime] = None, end: Optional[datetime] = None, limit: int = Query(5000, ge=1, le=50000)):

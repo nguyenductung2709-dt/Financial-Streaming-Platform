@@ -66,6 +66,28 @@ class DatabaseTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class DatabaseIntegrationTest(DatabaseTestCase):
+    async def test_quotes_keep_latest_24_per_symbol_in_chronological_order(self):
+        await self.seed()
+        await self.conn.execute("INSERT INTO symbols VALUES ('B'), ('EMPTY')")
+        await self.conn.execute("""INSERT INTO ema_windows
+            (symbol, window_start, window_end, closing_price_micros, ema38, ema100)
+            SELECT 'A', '2021-11-08 10:00Z'::timestamptz + n * INTERVAL '5 minutes',
+                '2021-11-08 10:05Z'::timestamptz + n * INTERVAL '5 minutes',
+                15000000 + n * 1000000, 14, 13 FROM generate_series(1, 30) n""")
+        await self.conn.execute("""INSERT INTO ema_windows
+            (symbol, window_start, window_end, closing_price_micros, ema38, ema100)
+            VALUES ('B', '2021-11-08 10:00Z', '2021-11-08 10:05Z', 25000000, 24, 23)""")
+        quotes = await db.get_quotes(["A", "A", "B", "EMPTY", "MISSING", "A' OR true --"])
+        a = [r for r in quotes if r["symbol"] == "A"]
+        b = [r for r in quotes if r["symbol"] == "B"]
+        self.assertEqual(len(a), 24)
+        self.assertEqual(len(b), 1)
+        self.assertEqual(len(quotes), 25)
+        self.assertEqual([r["window_start"] for r in a], sorted(r["window_start"] for r in a))
+        self.assertEqual((a[0]["closing_price"], a[-1]["closing_price"]), (22, 45))
+        self.assertTrue(all(r["revision"].isdigit() for r in quotes))
+        self.assertEqual(await db.get_quotes([]), [])
+
     async def test_setup_initializes_fresh_database_and_serializes_repeated_runs(self):
         await self.rollback_to(0)
         results = await asyncio.gather(migrate.apply_migrations(self.dsn), migrate.apply_migrations(self.dsn))

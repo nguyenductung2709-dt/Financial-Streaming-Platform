@@ -96,6 +96,16 @@ class EventsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 503)
         self.assertIn(b"apply 004", response.body)
 
+    async def test_quotes_only_request_the_explicit_deduplicated_symbols(self):
+        with patch.object(db, "get_quotes", AsyncMock(return_value=[])) as get_quotes:
+            self.assertEqual(await main.quotes(" A, B, A, , "), [])
+        get_quotes.assert_awaited_once_with(["A", "B"])
+
+    async def test_empty_quotes_do_not_query_all_market_history(self):
+        with patch.object(db, "fetch", AsyncMock()) as fetch:
+            self.assertEqual(await db.get_quotes([]), [])
+        fetch.assert_not_awaited()
+
     async def test_health_requires_notification_listener(self):
         events.listener_ready.clear()
         with patch.object(db, "check_schema", AsyncMock()):
