@@ -65,6 +65,8 @@ services:
       - --advertise-rpc-addr redpanda-0:33145
       - --mode dev-container
       - --smp 1
+      # Without a budget Redpanda takes the whole host and keeps its read cache until then.
+      - --memory ${REDPANDA_MEMORY:-1G}
     volumes:
       - redpanda-0:/var/lib/redpanda/data
     ports:
