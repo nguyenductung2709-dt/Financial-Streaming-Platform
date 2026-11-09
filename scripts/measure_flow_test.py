@@ -4,6 +4,7 @@
 import importlib.util
 import os
 from pathlib import Path
+import signal
 import sys
 import tempfile
 import unittest
@@ -168,6 +169,14 @@ class CheckInputsTest(unittest.TestCase):
         real = self.touch("a.csv")
         with self.assertRaisesRegex(RuntimeError, "same file"):
             measure.check_inputs([f"-csvPath={real}", f"-csvPath={real}"])
+
+
+class RaiseOnSigtermTest(unittest.TestCase):
+    def test_sigterm_interrupts_the_run_so_its_children_are_stopped(self):
+        self.addCleanup(signal.signal, signal.SIGTERM, signal.signal(signal.SIGTERM, signal.SIG_DFL))
+        measure.raise_on_sigterm()
+        with self.assertRaises(KeyboardInterrupt):
+            signal.raise_signal(signal.SIGTERM)
 
 
 if __name__ == "__main__":

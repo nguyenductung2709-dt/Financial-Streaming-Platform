@@ -212,6 +212,14 @@ def wait_for_monitoring(prometheus, timeout=120):
     raise RuntimeError(f"Prometheus is not scraping {', '.join(sorted(missing))}; check make monitoring-up and the targets page")
 
 
+def raise_on_sigterm():
+    """Turn SIGTERM into KeyboardInterrupt, as flow.py does, so make reset-flow stops the children."""
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupted)
+
+
 def stop_children(children):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -353,6 +361,7 @@ def main(argv=None):
     files = check_inputs(producer_args)
     if files:
         print(f"Input: {len(files)} file(s): {', '.join(str(path) for path in files)}", flush=True)
+    raise_on_sigterm()
     result = measure(args, producer_args)
     pipeline, table = export(args, result, producer_args)
     print(f"\n{table}\n")
