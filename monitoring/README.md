@@ -48,6 +48,7 @@ close. Producer, Flink and Redpanda are containers on one host, so they share on
 
 | Moment | What happened | Where it comes from |
 | --- | --- | --- |
+| tw | The stream reached the window's end: the first event in `trade-events` whose `trade_time` reaches `window_end` was published | `trade-events` record timestamp, rebuilt by the collector |
 | t0 | The trigger event was published: the first event in `trade-events` whose `trade_time` reaches `window_end` plus the 70 s out-of-orderness allowance | `trade-events` record timestamp, rebuilt by the collector with the watermark rule |
 | t1 | Flink fired the window | stamp in `latency-stamps` |
 | t2 | Flink computed the EMA | stamp in `latency-stamps` |
@@ -66,12 +67,26 @@ close. Producer, Flink and Redpanda are containers on one host, so they share on
 | `end_to_end_advisory` | t4a - t0, for windows that emitted an advisory |
 | `ema_materialize` / `advisory_materialize` | t5e - t4e / t5a - t4a: materializer consumption and PostgreSQL commit |
 | `end_to_end_ema_materialized` / `end_to_end_advisory_materialized` | t5e - t0 / t5a - t0: the result visible in PostgreSQL |
+| `watermark_wait` | t0 - tw: the wall-clock time the producer took to replay the 70 s out-of-orderness allowance after the window's end |
+| `window_end_to_ema` | t2 - tw |
+| `window_end_to_ema_published` / `window_end_to_advisory_published` | t4e - tw / t4a - tw |
+| `window_end_to_ema_materialized` / `window_end_to_advisory_materialized` | t5e - tw / t5a - tw |
 
 Without materialize stamps (as under `run-flow`) the `*_materialized` stages stay empty.
 
-The wait for the watermark (a window fires 70 s of event time after it ends) is set by the
-data and is not counted. Gaps between stamps include queueing behind earlier records:
-they measure latency, not service time.
+The `end_to_end_*` stages start at t0 and leave out the wait for the watermark (a window
+fires 70 s of event time after it ends), which is set by the data and the replay rate.
+The `window_end_to_*` stages start at tw and include it: each is `watermark_wait` plus the
+matching `end_to_end_*` stage. Gaps between stamps include queueing behind earlier
+records: they measure latency, not service time.
+
+`window_end_to_ema` is the counterpart of the "EMA Calculation Latency" of the sample
+project (dennis-magnusson/TradingAnalyzer), which subtracts the window end from the time
+its EMA was computed. That project uses the producer's wall clock as event time, so its
+window end is a wall-clock moment and its wait is a 1 s grace period. Our event time is the
+replayed trade time, so the same wait is 70 s of trade time, and how long that takes in
+wall-clock time depends on the rate and on how dense the data is. Compare `watermark_wait`
+alongside it, or compare the `end_to_end_*` stages.
 
 ```sh
 make collect-latency OUT=bin/metrics/<run>     # a run that already finished (topics intact)
