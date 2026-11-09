@@ -1,8 +1,5 @@
-// Package stamps publishes measurement-only stage stamps: after the
-// materializer commits a batch to PostgreSQL, one market.v1.StageStamp per
-// result records the moment the results became visible in the database.
-// The stamps are collected after a run by scripts/collect-latency.py, which
-// extends the processor's latency stages through the materializer.
+// Package stamps publishes measurement-only stage stamps: one market.v1.StageStamp
+// per result a batch commits to PostgreSQL, read by scripts/collect-latency.py.
 package stamps
 
 import (
@@ -18,16 +15,14 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Publisher publishes one stamp per materialized result of a batch, all
-// carrying the batch's PostgreSQL commit time. A publish failure is an
-// error: the caller must not commit the batch's offsets, so a retried
-// batch saves and stamps again (the collector keeps the first stamp).
+// Publisher publishes one stamp per result of a committed batch. On error the
+// caller must not commit the batch's offsets; the retry stamps again and the
+// collector keeps the first stamp.
 type Publisher interface {
 	Publish(context.Context, []data.Result) error
 }
 
-// Closer is a Publisher that owns resources; the caller closes it once the
-// consumer has stopped.
+// Closer is a Publisher the caller closes once the consumer has stopped.
 type Closer interface {
 	Publisher
 	Close()
@@ -43,8 +38,7 @@ var Noop Closer = noopPublisher{}
 func (noopPublisher) Publish(context.Context, []data.Result) error { return nil }
 func (noopPublisher) Close()                                       {}
 
-// producerClient lets publishing be tested without connecting to a broker.
-// *kgo.Client implements this interface.
+// producerClient lets tests avoid a broker; *kgo.Client implements it.
 type producerClient interface {
 	ProduceSync(context.Context, ...*kgo.Record) kgo.ProduceResults
 	Close()
@@ -56,15 +50,12 @@ type kafkaPublisher struct {
 	clock  func() time.Time
 }
 
-// NewKafka returns a publisher writing to topic using a dedicated Redpanda
-// producer client, so the measurement traffic never touches the consumer.
+// NewKafka returns a publisher writing to topic through its own producer client.
 func NewKafka(brokers []string, topic string) (Closer, error) {
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(brokers...),
 		kgo.RecordDeliveryTimeout(publishTimeout),
-		// Let shutdown cancel records still in flight; a stamp that was
-		// never acknowledged by the broker is republished by the retried
-		// batch, and an unacknowledged stamp may still have been stored.
+		// Let shutdown cancel records still in flight; the retried batch republishes them.
 		kgo.AllowIdempotentProduceCancellation(),
 	)
 	if err != nil {
@@ -73,9 +64,7 @@ func NewKafka(brokers []string, topic string) (Closer, error) {
 	return &kafkaPublisher{client: client, topic: topic, clock: time.Now}, nil
 }
 
-// Publish stamps every result of a committed batch. The database has
-// committed, so publishing finishes even when the caller is shutting
-// down, bounded by publishTimeout.
+// Publish stamps a committed batch. It outlives ctx cancellation, up to publishTimeout.
 func (p *kafkaPublisher) Publish(ctx context.Context, results []data.Result) error {
 	if len(results) == 0 {
 		return nil
@@ -94,9 +83,7 @@ func (p *kafkaPublisher) Publish(ctx context.Context, results []data.Result) err
 
 func (p *kafkaPublisher) Close() { p.client.Close() }
 
-// recordsFor builds one stamp record per result: the embedded EMA window
-// identifies the window the stamp belongs to, and the topic it arrived on
-// picks the stage.
+// recordsFor builds one stamp record per result; the result's type picks the stage.
 func recordsFor(results []data.Result, topic string, at time.Time) ([]*kgo.Record, error) {
 	records := make([]*kgo.Record, 0, len(results))
 	for _, result := range results {

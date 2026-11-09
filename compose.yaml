@@ -24,9 +24,7 @@ services:
     restart: unless-stopped
 
   # Reads ema-windows and trade-advisories into PostgreSQL. Pass -init-db or
-  # -reset-db as the command to run a one-off schema task instead. A nonempty
-  # MATERIALIZER_STAMP_TOPIC also publishes one measurement stamp per committed
-  # result to that topic (measure-flow sets it to materialize-stamps).
+  # -reset-db as the command to run a one-off schema task instead.
   materializer:
     build:
       context: .

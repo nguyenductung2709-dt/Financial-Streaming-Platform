@@ -4,8 +4,7 @@
 Run it after a flow has settled (measure-flow does): the topics persist until
 reset-flow, so it also works on a run that has already finished. The Flink job
 must have been started with --latency-topic latency-stamps, and the materializer
-with MATERIALIZER_STAMP_TOPIC materialize-stamps for the database stages
-(measure-flow does both; without materialize stamps those stages stay empty).
+with MATERIALIZER_STAMP_TOPIC for the database stages (measure-flow does both).
 
 Each window is followed through these wall-clock moments (epoch milliseconds):
 
@@ -18,13 +17,11 @@ Each window is followed through these wall-clock moments (epoch milliseconds):
   t4e  the EMA landed on ema-windows          the topics' broker append time,
   t4a  the advisory landed on trade-advisories  so they must be LogAppendTime topics
   t5e  the EMA was committed to PostgreSQL  } stamps published to
-  t5a  the advisory was committed            } materialize-stamps by the materializer
+  t5a  the advisory was committed            } materialize-stamps
 
-and the stages derived from them are in STAGES: end_to_end_* ends when the
-result lands on its output topic; the *_materialized stages extend that
-boundary through the materializer to the PostgreSQL commit. Writes latency.csv
-(one row per window) and latency-summary.csv (count, mean, p50, p95, p99, max
-per stage) to --out.
+and the stages derived from them are in STAGES. Writes latency.csv (one row per
+window) and latency-summary.csv (count, mean, p50, p95, p99, max per stage) to
+--out.
 """
 
 import argparse
@@ -112,20 +109,16 @@ def first_landings(landed):
 
 
 def build_rows(stamps, ema_landed, advisory_landed, triggers, materialized=None):
-    """Join stamps, landing times, trigger times and materialize stamps into one row per measured window.
+    """Join stamps, landing times and trigger times into one row per measured window.
 
     ema_landed / advisory_landed are iterables of (symbol, window_end_ms, landed_ms).
     A window is measured when it has all three stamps, an EMA landing and a trigger;
     flushed when it has everything but a trigger (bounded runs flush their last
     windows); missing_stage when anything else is absent, including the landing of
     an advisory its crossover stamp announced. Duplicates (at-least-once delivery)
-    keep the first occurrence.
-
-    materialized is None when the run holds no materialize stamps — the
-    materializer ran without MATERIALIZER_STAMP_TOPIC, so the database stages
-    stay empty — or (ema_stamps, advisory_stamps) triples shaped like
-    ema_landed, published by the materializer after its PostgreSQL commit.
-    Then a measured window without a stamp keeps its other stages and counts
+    keep the first occurrence. materialized is None when the run has no
+    materialize stamps (the database stages stay empty), else (ema, advisory)
+    stamp triples shaped like ema_landed; a measured window without one counts
     in coverage["missing_materialize"]. Returns (rows, coverage).
     """
     duplicates = 0
@@ -227,13 +220,11 @@ def read_run(brokers, stream=None, topic_partitions=None):
     """(stamps, ema_landed, advisory_landed, materialized, triggers) for build_rows, read from the topics.
 
     `stream(brokers, topic)` yields (offset, value, timestamp_ms) like
-    kafka_topics.stream_records, and `topic_partitions(brokers, topic)` reports
-    the partitions of a topic (both the defaults). materialized is None when
-    the materialize-stamps topic is absent or empty — no materializer stamps —
-    or the (ema, advisory) stamp triples otherwise. trade-events, by far the
-    largest topic, is streamed straight into the trigger scan and never held in
-    memory; it is read last, after the cheap checks, so an empty latency-stamps
-    topic fails at once.
+    kafka_topics.stream_records and `topic_partitions` is
+    kafka_topics.topic_partitions (both the defaults). materialized is None
+    without materialize stamps. trade-events, by far the largest topic, is
+    streamed straight into the trigger scan and never held in memory; it is read
+    last, after the cheap checks, so an empty latency-stamps topic fails at once.
     """
     import bindings
     import kafka_topics
