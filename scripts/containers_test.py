@@ -382,6 +382,23 @@ class MaterializerContainerTest(unittest.TestCase):
         self.assertEqual(self.docker.commands("kill"), [])
         self.assertEqual(self.clock.now, 0.0)
 
+    def test_env_merges_over_the_process_environment_on_every_call(self):
+        clock = FakeClock()
+        seen = []
+
+        def run(command, **kwargs):
+            seen.append(kwargs.get("env"))
+            return subprocess.CompletedProcess(command, 0, stdout=ps_json("running"))
+
+        stamped = containers.MaterializerContainer(run=run, clock=clock, sleep=clock.sleep,
+                                                   env={"MATERIALIZER_STAMP_TOPIC": "materialize-stamps"})
+        stamped.start()
+        stamped.poll()
+        self.assertEqual(seen, [{**os.environ, "MATERIALIZER_STAMP_TOPIC": "materialize-stamps"}] * 2)
+
+        containers.MaterializerContainer(run=run, clock=clock, sleep=clock.sleep).start()
+        self.assertIsNone(seen[-1], "without env the process environment is inherited untouched")
+
 
 if __name__ == "__main__":
     unittest.main()

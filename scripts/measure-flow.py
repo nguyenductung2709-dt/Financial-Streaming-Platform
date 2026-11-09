@@ -17,10 +17,11 @@ be scraping. Everything after `--` goes to the producer container.
 
 Writes timeseries.csv, summary.csv and run.json (see collect-resource-metrics.py)
 plus summary.txt and pipeline.json (event counts, durations, throughput). The job
-runs with --latency-topic, and once the resources are exported collect-latency.py
-adds latency.csv and latency-summary.csv, the latency table in summary.txt and the
-coverage counts under "latency" in pipeline.json. A latency failure keeps the
-resource results and makes the run exit non-zero.
+runs with --latency-topic, the materializer with MATERIALIZER_STAMP_TOPIC, and
+once the resources are exported collect-latency.py adds latency.csv and
+latency-summary.csv, the latency table in summary.txt and the coverage counts
+under "latency" in pipeline.json — through the materializer's PostgreSQL commit.
+A latency failure keeps the resource results and makes the run exit non-zero.
 """
 
 import argparse
@@ -50,6 +51,9 @@ RESULT_TOPICS = ("ema-windows", "trade-advisories")
 REQUIRED_JOBS = ("docker", "flink-taskmanager", "redpanda")
 SOURCE_RECORDS = 'sum(flink_taskmanager_job_task_operator_numRecordsIn{operator_name=~"Source.*"})'
 JOB_ARGS = ["--starting-offsets", "earliest", "--latency-topic", config.TOPIC_LATENCY_STAMPS]
+# The materializer stamps every committed result (MATERIALIZER_STAMP_TOPIC), so
+# the latency report extends the end-to-end stages through the PostgreSQL commit.
+MATERIALIZER_STAMP_ENV = {"MATERIALIZER_STAMP_TOPIC": config.TOPIC_MATERIALIZE_STAMPS}
 PRODUCER_SUMMARY = re.compile(r"published=(\d+)\s+skipped=(\d+)\s+rejected=(\d+)")
 
 
@@ -229,7 +233,7 @@ def stop_children(children):
 def measure(args, producer_args):
     prometheus = Prometheus(args.prometheus_url)
     group = os.environ.get("MATERIALIZER_GROUP_ID", "materializer")
-    materializer = containers.MaterializerContainer(compose=COMPOSE)
+    materializer = containers.MaterializerContainer(compose=COMPOSE, env=MATERIALIZER_STAMP_ENV)
     producer_name = f"data-producer-run-{os.getpid()}"
     children = []
     producer_output = deque(maxlen=200)  # only the final summary line is needed
