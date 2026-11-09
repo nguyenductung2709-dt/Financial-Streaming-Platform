@@ -20,8 +20,10 @@ from market.v1.advisory_pb2 import (  # noqa: E402
 from market.v1.events_pb2 import SECURITY_TYPE_EQUITY, PriceEvent  # noqa: E402
 from market.v1.ema_pb2 import EmaWindow  # noqa: E402
 from market.v1.latency_pb2 import (  # noqa: E402
+    STAGE_ADVISORY_MATERIALIZED,
     STAGE_CROSSOVER_EVALUATED,
     STAGE_EMA_COMPUTED,
+    STAGE_EMA_MATERIALIZED,
     STAGE_WINDOW_FIRED,
     StageStamp,
 )
@@ -33,6 +35,8 @@ __all__ = [
     "STAGE_WINDOW_FIRED",
     "STAGE_EMA_COMPUTED",
     "STAGE_CROSSOVER_EVALUATED",
+    "STAGE_EMA_MATERIALIZED",
+    "STAGE_ADVISORY_MATERIALIZED",
     "TradeAdvisory",
     "ADVISORY_ACTION_BUY",
     "ADVISORY_ACTION_SELL",
