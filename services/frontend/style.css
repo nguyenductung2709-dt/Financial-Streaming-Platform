@@ -126,6 +126,7 @@ h2 { font-size: 15px; font-weight: 600; }
   .app { grid-template-columns: 270px minmax(0, 1fr); grid-template-rows: 74px minmax(0, 1fr) minmax(170px, 25vh) 32px; grid-template-areas: "top top" "list charts" "list feed" "footer footer"; gap: 10px; }
   .feed { padding-top: 12px; } .feed .panel-head { margin-bottom: 8px; }
   .feed .hint, .feed .panel-note { display: none; }
+  .feed .feed-summary { display: block; margin: 6px 0 0; }
   .feed-list { display: flex; gap: 12px; } .feed-item { min-width: 230px; border-bottom: 0; }
   .feed-filters { margin-bottom: 0; }
   .app.signals-hidden { grid-template-columns: 270px minmax(0, 1fr); grid-template-rows: 74px minmax(0, 1fr) 32px; }

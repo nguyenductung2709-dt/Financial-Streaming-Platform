@@ -45,6 +45,7 @@ async function dashboard(storage = {}) {
     globalThis.review = {state, mergeFeed, renderFeed, push, sync, changed, applySubscription, loadSymbols,
       panes, openSymbol, setCompare, quoteInfo, renderList, applyTheme, toggleWatch,
       comparison, comparisonData, emaSpread, spreadData, toggleComparison, addToComparison, COMPARE_MAX,
+      getSignals, refreshSignalFeed, SIGNAL_REFRESH_MS,
       getPending: () => syncPromise, getBuffer: () => buffer,
       getKnown: () => knownFeedKeys, HISTORY_MAX, BUFFER_MAX};
   })();`);
@@ -955,4 +956,88 @@ test('comparison metric preference survives reload and unknown values fall back 
   assert.equal(spread.comparison.metric, 'spread');
   const unknown = await dashboard({comparisonMetric:'raw-ema'});
   assert.equal(unknown.comparison.metric, 'price');
+});
+
+
+function signalResponses(app, feed, counts) {
+  app.ctx.fetch = async (url) => ({ ok:true,
+    headers:{get(name) {
+      const key = name.toLowerCase().replace('x-signal-', '');
+      return url.pathname === '/api/signals' && counts && Object.hasOwn(counts,key) ? String(counts[key]) : null;
+    }},
+    json:async () => url.pathname === '/api/signals' ? feed : [],
+  });
+}
+
+test('signal badge counts all stored signals rather than the 100 rendered or 300 loaded rows', async () => {
+  const app = await dashboard(); select(app);
+  const feed = Array.from({length:300},(_,i)=>({...row(15,String(i+1),i),action:i<180?'BUY':'SELL'}));
+  signalResponses(app, feed, {total:12000,buy:7000,sell:5000});
+  await app.sync(true);
+  assert.equal(app.node('signalCount').textContent, '12,000');
+  assert.match(app.node('feedSummary').textContent, /Showing 100 recent signals.*12,000 total/);
+  assert.equal((app.node('feedList').innerHTML.match(/class="signal-button"/g)||[]).length,100);
+  app.state.feedFilter='buy'; app.renderFeed();
+  assert.equal(app.node('signalCount').textContent,'7,000');
+  app.state.feedFilter='sell'; app.renderFeed();
+  assert.equal(app.node('signalCount').textContent,'5,000');
+});
+
+test('missing count headers show an honest loaded count instead of an apparent total', async () => {
+  const app = await dashboard(); select(app);
+  signalResponses(app, Array.from({length:300},(_,i)=>row(15,String(i+1),i)), null);
+  await app.sync(true);
+  assert.equal(app.node('signalCount').textContent,'300 loaded');
+  assert.match(app.node('feedSummary').textContent,/Showing 100 of 300 loaded.*Total unavailable/);
+});
+
+test('live signal totals refresh from the database without guessing or counting revisions twice', async () => {
+  const app = await dashboard(); select(app);
+  signalResponses(app,[row()],{total:1000,buy:600,sell:400});
+  await app.sync(true);
+  app.push('advisory',row(16,'2',1)); app.ctx.flush();
+  assert.equal(app.node('signalCount').textContent,'1,000');
+  assert.match(app.node('feedSummary').textContent,/Updating/);
+  const refresh=[...app.timers.values()].find(t=>t.delay===app.SIGNAL_REFRESH_MS);
+  assert.ok(refresh);
+  signalResponses(app,[row(),row(16,'2',1)],{total:1001,buy:601,sell:400});
+  await refresh.callback();
+  assert.equal(app.node('signalCount').textContent,'1,001');
+  app.push('advisory',row(17,'3',1)); app.ctx.flush();
+  await app.refreshSignalFeed();
+  assert.equal(app.node('signalCount').textContent,'1,001');
+});
+
+test('counts for an old watchlist cannot overwrite the new subscription', async () => {
+  const app=await dashboard(); select(app);
+  signalResponses(app,[row()],{total:1000,buy:600,sell:400}); await app.sync(true);
+  let release;
+  const delayed=new Promise(resolve=>{release=resolve;});
+  app.ctx.fetch=async()=>({ok:true,headers:{get:name=>String(name.toLowerCase().endsWith('total')?9999:name.toLowerCase().endsWith('buy')?5000:4999)},json:()=>delayed});
+  const old=app.refreshSignalFeed();
+  select(app,'B');
+  signalResponses(app,[row(10,'1',0,'B')],{total:2,buy:1,sell:1});
+  app.changed(); await app.getPending();
+  release([row()]); await old;
+  assert.equal(app.node('signalCount').textContent,'2');
+  app.state.watchlist=[]; app.state.slot.A=null; app.changed(); await app.getPending();
+  assert.equal(app.node('signalCount').textContent,'0');
+});
+
+test('an empty recent direction does not claim no stored signals exist', async () => {
+  const app=await dashboard(); select(app);
+  signalResponses(app,[row()],{total:1000,buy:900,sell:100}); await app.sync(true);
+  app.state.feedFilter='sell'; app.renderFeed();
+  assert.equal(app.node('signalCount').textContent,'100');
+  assert.match(app.node('feedList').innerHTML,/No matching signals in the recent activity/);
+  assert.doesNotMatch(app.node('feedList').innerHTML,/No signals yet/);
+});
+
+test('malformed count headers cannot become a false total', async () => {
+  const app=await dashboard(); select(app);
+  for(const counts of [{total:10,buy:4,sell:4},{total:'bad',buy:0,sell:0},{total:9007199254740992,buy:9007199254740992,sell:0}]) {
+    signalResponses(app,[row()],counts);
+    const response=await app.getSignals(['A']);
+    assert.equal(response.counts,null);
+  }
 });
