@@ -47,6 +47,18 @@ public final class Latency extends com.google.protobuf.GeneratedFile {
      * <code>STAGE_CROSSOVER_EVALUATED = 3;</code>
      */
     STAGE_CROSSOVER_EVALUATED(3),
+    /**
+     * <pre>
+     * The materializer committed the result's PostgreSQL transaction.
+     * </pre>
+     *
+     * <code>STAGE_EMA_MATERIALIZED = 4;</code>
+     */
+    STAGE_EMA_MATERIALIZED(4),
+    /**
+     * <code>STAGE_ADVISORY_MATERIALIZED = 5;</code>
+     */
+    STAGE_ADVISORY_MATERIALIZED(5),
     UNRECOGNIZED(-1),
     ;
 
@@ -75,6 +87,18 @@ public final class Latency extends com.google.protobuf.GeneratedFile {
      * <code>STAGE_CROSSOVER_EVALUATED = 3;</code>
      */
     public static final int STAGE_CROSSOVER_EVALUATED_VALUE = 3;
+    /**
+     * <pre>
+     * The materializer committed the result's PostgreSQL transaction.
+     * </pre>
+     *
+     * <code>STAGE_EMA_MATERIALIZED = 4;</code>
+     */
+    public static final int STAGE_EMA_MATERIALIZED_VALUE = 4;
+    /**
+     * <code>STAGE_ADVISORY_MATERIALIZED = 5;</code>
+     */
+    public static final int STAGE_ADVISORY_MATERIALIZED_VALUE = 5;
 
 
     public final int getNumber() {
@@ -105,6 +129,8 @@ public final class Latency extends com.google.protobuf.GeneratedFile {
         case 1: return STAGE_WINDOW_FIRED;
         case 2: return STAGE_EMA_COMPUTED;
         case 3: return STAGE_CROSSOVER_EVALUATED;
+        case 4: return STAGE_EMA_MATERIALIZED;
+        case 5: return STAGE_ADVISORY_MATERIALIZED;
         default: return null;
       }
     }
@@ -255,7 +281,9 @@ public final class Latency extends com.google.protobuf.GeneratedFile {
   /**
    * <pre>
    * Measurement only: one stamp per pipeline stage and window, published when the
-   * processor runs with --latency-topic. Not part of the domain data.
+   * processor runs with --latency-topic, and one per materialized result when the
+   * materializer runs with MATERIALIZER_STAMP_TOPIC (topic materialize-stamps).
+   * Not part of the domain data.
    * </pre>
    *
    * Protobuf type {@code market.v1.StageStamp}
@@ -658,7 +686,9 @@ public final class Latency extends com.google.protobuf.GeneratedFile {
     /**
      * <pre>
      * Measurement only: one stamp per pipeline stage and window, published when the
-     * processor runs with --latency-topic. Not part of the domain data.
+     * processor runs with --latency-topic, and one per materialized result when the
+     * materializer runs with MATERIALIZER_STAMP_TOPIC (topic materialize-stamps).
+     * Not part of the domain data.
      * </pre>
      *
      * Protobuf type {@code market.v1.StageStamp}
@@ -1425,11 +1455,13 @@ public final class Latency extends com.google.protobuf.GeneratedFile {
       "2\032.google.protobuf.Timestamp\022\037\n\005stage\030\003 " +
       "\001(\0162\020.market.v1.Stage\022&\n\002at\030\004 \001(\0132\032.goog" +
       "le.protobuf.Timestamp\022\030\n\020advisory_emitte" +
-      "d\030\005 \001(\010*m\n\005Stage\022\025\n\021STAGE_UNSPECIFIED\020\000\022" +
-      "\026\n\022STAGE_WINDOW_FIRED\020\001\022\026\n\022STAGE_EMA_COM" +
-      "PUTED\020\002\022\035\n\031STAGE_CROSSOVER_EVALUATED\020\003B8" +
-      "Z6financial-streaming-platform/gen/go/ma" +
-      "rket/v1;marketv1b\006proto3"
+      "d\030\005 \001(\010*\252\001\n\005Stage\022\025\n\021STAGE_UNSPECIFIED\020\000" +
+      "\022\026\n\022STAGE_WINDOW_FIRED\020\001\022\026\n\022STAGE_EMA_CO" +
+      "MPUTED\020\002\022\035\n\031STAGE_CROSSOVER_EVALUATED\020\003\022" +
+      "\032\n\026STAGE_EMA_MATERIALIZED\020\004\022\037\n\033STAGE_ADV" +
+      "ISORY_MATERIALIZED\020\005B8Z6financial-stream" +
+      "ing-platform/gen/go/market/v1;marketv1b\006" +
+      "proto3"
     };
     descriptor = com.google.protobuf.Descriptors.FileDescriptor
       .internalBuildGeneratedFileFrom(descriptorData,

@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17market/v1/latency.proto\x12\tmarket.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xaf\x01\n\nStageStamp\x12\x0e\n\x06symbol\x18\x01 \x01(\t\x12.\n\nwindow_end\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x1f\n\x05stage\x18\x03 \x01(\x0e\x32\x10.market.v1.Stage\x12&\n\x02\x61t\x18\x04 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x18\n\x10\x61\x64visory_emitted\x18\x05 \x01(\x08*m\n\x05Stage\x12\x15\n\x11STAGE_UNSPECIFIED\x10\x00\x12\x16\n\x12STAGE_WINDOW_FIRED\x10\x01\x12\x16\n\x12STAGE_EMA_COMPUTED\x10\x02\x12\x1d\n\x19STAGE_CROSSOVER_EVALUATED\x10\x03\x42\x38Z6financial-streaming-platform/gen/go/market/v1;marketv1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17market/v1/latency.proto\x12\tmarket.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xaf\x01\n\nStageStamp\x12\x0e\n\x06symbol\x18\x01 \x01(\t\x12.\n\nwindow_end\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x1f\n\x05stage\x18\x03 \x01(\x0e\x32\x10.market.v1.Stage\x12&\n\x02\x61t\x18\x04 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x18\n\x10\x61\x64visory_emitted\x18\x05 \x01(\x08*\xaa\x01\n\x05Stage\x12\x15\n\x11STAGE_UNSPECIFIED\x10\x00\x12\x16\n\x12STAGE_WINDOW_FIRED\x10\x01\x12\x16\n\x12STAGE_EMA_COMPUTED\x10\x02\x12\x1d\n\x19STAGE_CROSSOVER_EVALUATED\x10\x03\x12\x1a\n\x16STAGE_EMA_MATERIALIZED\x10\x04\x12\x1f\n\x1bSTAGE_ADVISORY_MATERIALIZED\x10\x05\x42\x38Z6financial-streaming-platform/gen/go/market/v1;marketv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,8 +33,8 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'market.v1.latency_pb2', _gl
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'Z6financial-streaming-platform/gen/go/market/v1;marketv1'
-  _globals['_STAGE']._serialized_start=249
-  _globals['_STAGE']._serialized_end=358
+  _globals['_STAGE']._serialized_start=250
+  _globals['_STAGE']._serialized_end=420
   _globals['_STAGESTAMP']._serialized_start=72
   _globals['_STAGESTAMP']._serialized_end=247
 # @@protoc_insertion_point(module_scope)
