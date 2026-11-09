@@ -120,6 +120,13 @@ separate feature. These limits bound browser state while live updates continue.
 
 ## Failures and status
 
+Symbol-list requests retry after three seconds on failure, including when a
+previous list is still displayed. Empty successful responses keep polling until
+symbols become available. A successful refresh clears the warning, and superseded
+requests cannot restore an older error. Retries are independent of SSE and keep
+the current chart selection. The initial selection is made once symbols first
+become available, including after an initial connection failure.
+
 History requests time out after 15 seconds. A failure keeps the last complete
 snapshot, shows `History unavailable; retrying…`, and schedules a retry starting
 at one second with exponential backoff capped at 30 seconds. A successful refresh

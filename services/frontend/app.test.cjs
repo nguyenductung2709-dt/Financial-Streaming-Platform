@@ -648,7 +648,56 @@ test('removing a comparison symbol invalidates its delayed snapshot and evicts i
   assert.ok(app.state.watchlist.includes('B'));
 });
 
+test('failed symbol refresh retries a populated list and clears its warning without reconnecting SSE', async () => {
+  const app = await dashboard();
+  app.state.symbols = [{symbol: 'A'}];
+  app.state.slot.A = 'A';
+  const connections = app.sources.length;
+  app.ctx.fetch = async () => ({ ok: false, status: 503 });
+  assert.equal(await app.loadSymbols(), 1);
+  assert.equal(app.node('error').hidden, false);
+  assert.match(app.node('error').textContent, /HTTP 503/);
+  assert.doesNotMatch(app.node('error').textContent, /8000/);
+  const retry = [...app.timers.values()].find(timer => timer.delay === 3000);
+  assert.ok(retry, 'cached symbols must not suppress retries');
+  app.ctx.fetch = async () => ({ ok: true, json: async () => [{symbol: 'A'}, {symbol: 'B'}] });
+  await retry.callback();
+  assert.equal(app.state.symbols.length, 2);
+  assert.equal(app.node('error').hidden, true);
+  assert.equal(app.state.slot.A, 'A');
+  assert.equal(app.sources.length, connections);
+});
 
+test('symbol loading recovers from invalid JSON shapes and preserves the cached list', async () => {
+  const app = await dashboard();
+  app.state.symbols = [{symbol: 'A'}];
+  app.state.slot.A = 'A';
+  for (const invalid of [null, {}, [{symbol: 42}]]) {
+    app.ctx.fetch = async () => ({ ok: true, json: async () => invalid });
+    await app.loadSymbols();
+    assert.equal(app.state.symbols[0].symbol, 'A');
+    assert.equal(app.node('error').hidden, false);
+  }
+  app.ctx.fetch = async () => ({ ok: true, json: async () => [{symbol: 'A'}] });
+  await app.loadSymbols();
+  assert.equal(app.node('error').hidden, true);
+});
+
+test('an obsolete symbol failure cannot restore a warning after a newer success', async () => {
+  const app = await dashboard();
+  app.state.symbols = [{symbol: 'A'}]; app.state.slot.A = 'A';
+  let fail;
+  const delayed = new Promise((_, reject) => { fail = reject; });
+  app.ctx.fetch = () => delayed;
+  const oldRequest = app.loadSymbols();
+  app.ctx.fetch = async () => ({ ok: true, json: async () => [{symbol: 'B'}] });
+  await app.loadSymbols();
+  fail(new Error('Network disconnected'));
+  await oldRequest;
+  assert.equal(app.node('error').hidden, true);
+  assert.equal(app.state.symbols[0].symbol, 'B');
+  assert.equal([...app.timers.values()].filter(timer => timer.delay === 3000).length, 0);
+});
 
 
 test('a one-price symbol cannot blank the comparison between two compatible symbols', async () => {

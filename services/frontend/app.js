@@ -57,7 +57,11 @@
     }
 
     const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+    if (!res.ok) {
+      const error = new Error(`${path}: HTTP ${res.status}`);
+      error.status = res.status;
+      throw error;
+    }
     return res.json();
   }
 
@@ -248,23 +252,49 @@
 
   //Load the available symbols from the backend
   let symbolsRequest = 0;
+  let symbolsRetryTimer = null;
+  let initialSymbolChosen = false;
   async function loadSymbols() {
     const token = ++symbolsRequest;
+    clearTimeout(symbolsRetryTimer);
+    symbolsRetryTimer = null;
+    let retry = false;
     try {
       const symbols = await get("/api/symbols");
       if (token !== symbolsRequest) return state.symbols.length;
+      if (!Array.isArray(symbols) || symbols.some((s) => !s || typeof s.symbol !== "string")) {
+        throw new Error("Unexpected symbol response");
+      }
       state.symbols = symbols;
       $("error").hidden = true;
-    } catch {
+      retry = symbols.length === 0;
+      if (symbols.length && !initialSymbolChosen) {
+        initialSymbolChosen = true;
+        if (!state.slot.A && !state.compare) {
+          const available = new Set(symbols.map((s) => s.symbol));
+          const saved = load("primarySymbol", null);
+          const symbol = available.has(saved) ? saved
+            : state.watchlist.find((s) => available.has(s)) || symbols[0].symbol;
+          openSymbol(symbol);
+        }
+      }
+    } catch (error) {
       if (token !== symbolsRequest) return state.symbols.length;
-      $("error").textContent =
-        "Can't reach the backend. Is it running on port 8000?";
+      $("error").textContent = error.status
+        ? `Market symbols unavailable (HTTP ${error.status}). Retrying…`
+        : "Could not refresh market symbols. Retrying…";
       $("error").hidden = false;
+      retry = true;
     }
 
     renderChips();
     renderList();
-
+    if (retry) {
+      symbolsRetryTimer = setTimeout(() => {
+        symbolsRetryTimer = null;
+        return loadSymbols();
+      }, 3000);
+    }
     return state.symbols.length;
   }
 
@@ -1215,17 +1245,6 @@
   updateCharts();
   applySubscription();
 
-  // Restore the primary symbol once symbols first become available.
-  (async function boot() {
-    const n = await loadSymbols();
-    if (n === 0) {
-      setTimeout(boot, 3000);
-    } else if (!state.slot.A) {
-      const available = new Set(state.symbols.map((s) => s.symbol));
-      const saved = load("primarySymbol", null);
-      const symbol = available.has(saved) ? saved
-        : state.watchlist.find((s) => available.has(s)) || state.symbols[0].symbol;
-      openSymbol(symbol);
-    }
-  })();
+  // Symbol loading retries empty results and transient failures independently of SSE.
+  loadSymbols();
 })();
