@@ -117,6 +117,12 @@ rollback with the revision columns installed.
 
 ## Backend readiness
 
+The watchlist uses `GET /api/quotes?symbols=A,B` to fetch the newest 24 price
+windows per explicit symbol, ordered by symbol and window start. Each symbol's
+history is bounded independently and includes the usual string revision. Empty
+or whitespace-only symbol lists return an empty result. This requires no new
+database migration and uses the existing `(symbol, window_start)` primary key.
+
 Backend startup verifies the database schema before starting its notification
 listener. A failed startup closes the pool. The `/api/health` endpoint reports
 503 if the schema is incomplete or the notification listener is reconnecting.
