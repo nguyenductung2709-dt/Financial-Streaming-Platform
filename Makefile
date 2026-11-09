@@ -3,6 +3,8 @@ FLINK_ARGS ?= --starting-offsets earliest
 PRODUCER_ARGS ?= -rate=1000
 FLINK_START_TIMEOUT ?= 120
 RATE ?= 0
+# Replay speed for measure-flow: the gaps between trade times divided by SPEED. Replaces RATE.
+SPEED ?=
 BOUNDED_TIMEOUT ?= 3600
 MAX_EVENTS ?=
 REFERENCE_DIR ?=
@@ -12,6 +14,8 @@ DEFAULT_REFERENCE_DIR := validation/out/reference
 shell-quote = '$(subst ','"'"',$(1))'
 REFERENCE_CSV_ARGS = $(foreach path,$(CSV),--csv $(call shell-quote,$(path)))
 PRODUCER_CSV_ARGS = $(foreach path,$(CSV),$(call shell-quote,-csvPath=$(path)))
+# measure-flow's load: a replay speed when SPEED is set, otherwise the fixed RATE.
+LOAD = $(if $(strip $(SPEED)),speed=$(SPEED),rate=$(RATE))
 # 1 also checks the materializer's PostgreSQL tables against the topics (needs .env);
 # validate-flow runs drain-materializer first so the database is complete.
 DB_CHECK ?= 1
@@ -99,15 +103,17 @@ collect-latency: ## Report EMA and trade advisory latency of the last run from t
 	python3 scripts/collect-latency.py --out $(call shell-quote,$(OUT))$(if $(strip $(BROKERS)), --brokers $(call shell-quote,$(BROKERS)))
 
 # Resets the flow first, so this permanently clears the project topics and database results.
-measure-flow: build-data-producer build-materializer build-streaming-processor ## One command: reset, run the full pipeline, time it, export resource usage; CSV=file|dir|"f1 f2" required [RATE=0] [MAX_EVENTS=n] [LABELS="k=v"] [OUT=dir]
+measure-flow: build-data-producer build-materializer build-streaming-processor ## One command: reset, run the full pipeline, time it, export resource usage; CSV=file|dir|"f1 f2" required [RATE=0 | SPEED=x] [MAX_EVENTS=n] [LABELS="k=v"] [OUT=dir]
 	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make measure-flow CSV=dataset/day08.csv MAX_EVENTS=1000000))
-	@$(materializer-env) exec python3 scripts/measure-flow.py --prometheus-url $(call shell-quote,$(PROMETHEUS_URL)) --out $(call shell-quote,$(OUT)) --label rate=$(RATE) $(if $(strip $(MAX_EVENTS)),--label max_events=$(MAX_EVENTS)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label))) -- $(PRODUCER_CSV_ARGS) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))
+	$(if $(and $(strip $(SPEED)),$(filter-out 0,$(RATE))),$(error set either RATE or SPEED, not both))
+	@$(materializer-env) exec python3 scripts/measure-flow.py --prometheus-url $(call shell-quote,$(PROMETHEUS_URL)) --out $(call shell-quote,$(OUT)) --label $(call shell-quote,$(LOAD)) $(if $(strip $(MAX_EVENTS)),--label max_events=$(MAX_EVENTS)) $(foreach label,$(LABELS),--label $(call shell-quote,$(label))) -- $(PRODUCER_CSV_ARGS) $(call shell-quote,-$(LOAD)) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))
 
-# Resets the flow before every rate, so this permanently clears the project topics and database results.
-sweep-flow: build-data-producer build-materializer build-streaming-processor ## Run measure-flow once per rate and compare the latency; RATES="500 1000" CSV=file|dir|"f1 f2" required [MAX_EVENTS=n] [OUT=dir]
+# Resets the flow before every run, so this permanently clears the project topics and database results.
+sweep-flow: build-data-producer build-materializer build-streaming-processor ## Run measure-flow once per load and compare the latency; RATES="500 1000" or SPEEDS="100 400", CSV=file|dir|"f1 f2" required [MAX_EVENTS=n] [OUT=dir]
 	$(if $(strip $(CSV)),,$(error CSV is required, e.g. make sweep-flow RATES="500 1000" CSV=dataset/day08.csv MAX_EVENTS=1000000))
-	$(if $(strip $(RATES)),,$(error RATES is required, e.g. make sweep-flow RATES="500 1000" CSV=dataset/day08.csv))
-	@$(materializer-env) exec python3 scripts/sweep-flow.py --out $(call shell-quote,$(OUT)) --rates $(RATES) -- $(PRODUCER_CSV_ARGS) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))
+	$(if $(strip $(RATES))$(strip $(SPEEDS)),,$(error RATES or SPEEDS is required, e.g. make sweep-flow RATES="500 1000" CSV=dataset/day08.csv))
+	$(if $(and $(strip $(RATES)),$(strip $(SPEEDS))),$(error set either RATES or SPEEDS, not both))
+	@$(materializer-env) exec python3 scripts/sweep-flow.py --out $(call shell-quote,$(OUT)) $(if $(strip $(SPEEDS)),--speeds $(SPEEDS),--rates $(RATES)) -- $(PRODUCER_CSV_ARGS) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS))
 
 build-data-producer: ## Build the data producer image
 	docker compose build data-producer
