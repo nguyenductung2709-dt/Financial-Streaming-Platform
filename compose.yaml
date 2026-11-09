@@ -24,7 +24,9 @@ services:
     restart: unless-stopped
 
   # Reads ema-windows and trade-advisories into PostgreSQL. Pass -init-db or
-  # -reset-db as the command to run a one-off schema task instead.
+  # -reset-db as the command to run a one-off schema task instead. A nonempty
+  # MATERIALIZER_STAMP_TOPIC also publishes one measurement stamp per committed
+  # result to that topic (measure-flow sets it to materialize-stamps).
   materializer:
     build:
       context: .
@@ -38,6 +40,7 @@ services:
       MATERIALIZER_DATABASE_URL: postgresql://${POSTGRES_USER:-financial}:${POSTGRES_PASSWORD:-financial_dev}@postgres:5432/${POSTGRES_DB:-financial_streaming}?sslmode=disable
       MATERIALIZER_BROKERS: redpanda-0:9092
       MATERIALIZER_GROUP_ID: ${MATERIALIZER_GROUP_ID:-materializer}
+      MATERIALIZER_STAMP_TOPIC: ${MATERIALIZER_STAMP_TOPIC:-}
     restart: "no"
 
   # Publishes CSV events. The profile keeps a plain `docker compose up` from
@@ -95,6 +98,8 @@ services:
           rpk topic create trade-advisories --partitions 1 --replicas 1 -c message.timestamp.type=LogAppendTime -X brokers=redpanda-0:9092
         rpk topic describe latency-stamps -X brokers=redpanda-0:9092 >/dev/null 2>&1 ||
           rpk topic create latency-stamps --partitions 1 --replicas 1 -X brokers=redpanda-0:9092
+        rpk topic describe materialize-stamps -X brokers=redpanda-0:9092 >/dev/null 2>&1 ||
+          rpk topic create materialize-stamps --partitions 1 --replicas 1 -X brokers=redpanda-0:9092
 
   console:
     image: docker.redpanda.com/redpandadata/console:v3.12.0
