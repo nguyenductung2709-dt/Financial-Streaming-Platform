@@ -37,9 +37,31 @@ of the complete flow. Print the flags with `make run-data-producer ARGS="-help"`
 | `-dlqEnabled` | off | Publish invalid rows to the dead letter topic instead of stopping |
 | `-rate` | `0` | Maximum events per second (0 is unlimited) |
 | `-maxEvents` | `0` | Stop after this many acknowledged events (0 is unlimited) |
+| `-linger` | `1ms` | How long the client waits for more records before it sends a batch |
 
 The run ends with `CSV processing <status>: published=N skipped=N rejected=N`, which
 `make measure-flow` reads.
+
+## Publishing
+
+The producer hands each record to the franz-go client and reads the next row without
+waiting for the acknowledgment. The client batches the records and sends them.
+
+- `published` and `rejected` count only records Redpanda acknowledged. At the end, the
+  producer waits for every record it sent before it prints the summary line.
+- The first failed record stops the replay: no further rows are read, the records
+  already sent still finish, and the run ends with status `stopped` and the error.
+- `-maxEvents=N` sends N events and waits for them. The status is `limit reached` only
+  when all N were acknowledged.
+- At most 10,000 records wait for an acknowledgment. Beyond that the producer blocks
+  until some finish, so a slow broker slows the replay down instead of growing memory.
+- Idempotent writes stay on, so each partition keeps the CSV order even with several
+  requests in flight. A record that is not acknowledged within 30 s fails the run.
+
+With `-rate=0` the producer reached about 100k events/s with any linger, against about
+5k events/s when it waited for each acknowledgment (issue #60; 5M events, producer and
+Redpanda in containers on one 4-core machine). Linger 0 was the slowest; 1 ms and 5 ms
+were within noise of each other, and 1 ms holds a lone record back the least.
 
 ## Notes
 
