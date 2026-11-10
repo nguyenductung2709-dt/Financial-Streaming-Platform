@@ -20,7 +20,7 @@ const publishTimeout = 30 * time.Second
 // a slow broker slows the CSV replay down instead of growing memory.
 const maxBufferedRecords = 10_000
 
-func newRedpandaClient(brokers []string) (*kgo.Client, error) {
+func newRedpandaClient(brokers []string, linger time.Duration) (*kgo.Client, error) {
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(brokers...),
 		kgo.RecordDeliveryTimeout(publishTimeout),
@@ -30,6 +30,7 @@ func newRedpandaClient(brokers []string) (*kgo.Client, error) {
 		// The client batches records per partition. Idempotent writes stay on, which
 		// keeps each partition in order with up to 5 requests in flight per broker.
 		kgo.MaxBufferedRecords(maxBufferedRecords),
+		kgo.ProducerLinger(linger),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Redpanda client: %w", err)

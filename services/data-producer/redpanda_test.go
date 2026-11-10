@@ -43,7 +43,7 @@ func (f *fakeProducer) Produce(ctx context.Context, record *kgo.Record, promise 
 
 func TestNewRedpandaClient(t *testing.T) {
 	brokers := []string{"localhost:19092", "localhost:29092"}
-	client, err := newRedpandaClient(brokers)
+	client, err := newRedpandaClient(brokers, 5*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,13 +63,16 @@ func TestNewRedpandaClient(t *testing.T) {
 	if got := client.OptValue(kgo.MaxBufferedRecords); got != int64(maxBufferedRecords) {
 		t.Fatalf("max buffered records = %v; want %d", got, maxBufferedRecords)
 	}
+	if got := client.OptValue(kgo.ProducerLinger); got != 5*time.Millisecond {
+		t.Fatalf("linger = %v; want 5ms", got)
+	}
 	if got := client.OptValue(kgo.SeedBrokers); !reflect.DeepEqual(got, brokers) {
 		t.Fatalf("seed brokers = %v; want %v", got, brokers)
 	}
 }
 
 func TestNewRedpandaClientRejectsEmptyBrokers(t *testing.T) {
-	client, err := newRedpandaClient(nil)
+	client, err := newRedpandaClient(nil, 0)
 	if client != nil {
 		client.Close()
 		t.Fatal("expected nil client")
