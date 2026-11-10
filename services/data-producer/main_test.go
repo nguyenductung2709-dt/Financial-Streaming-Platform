@@ -26,9 +26,9 @@ func TestParseConfig(t *testing.T) {
 	}{
 		{"defaults", nil, config{
 			csvPaths: []string{"dataset/debs2022-gc-trading-day-12-11-21.csv"},
-			brokers:  []string{"localhost:19092"}, topic: "trade-events", dlqTopic: "trade-events-dlq",
+			brokers:  []string{"localhost:19092"}, topic: "trade-events", dlqTopic: "trade-events-dlq", linger: defaultLinger,
 		}},
-		{"custom flags and trimmed addresses", []string{"-csvPath=/tmp/my data.csv", "-brokers= broker1:9092, broker2:9092 ", "-topic= prices "}, config{
+		{"custom flags and trimmed addresses", []string{"-csvPath=/tmp/my data.csv", "-brokers= broker1:9092, broker2:9092 ", "-topic= prices ", "-linger=0"}, config{
 			csvPaths: []string{"/tmp/my data.csv"}, brokers: []string{"broker1:9092", "broker2:9092"}, topic: "prices", dlqTopic: "trade-events-dlq",
 		}},
 	}
@@ -46,7 +46,7 @@ func TestParseConfig(t *testing.T) {
 }
 
 func TestParseConfigRejectsInvalidFlags(t *testing.T) {
-	for _, arg := range []string{"-csvPath=", "-csvPath= ", "-topic=", "-topic= ", "-brokers=", "-brokers= ", "-brokers=broker:9092,", "-brokers=,broker:9092", "-unknown=value", "-rate=-1", "-rate=1000000001", "-rate=abc", "-maxEvents=-1", "-maxEvents=abc"} {
+	for _, arg := range []string{"-csvPath=", "-csvPath= ", "-topic=", "-topic= ", "-brokers=", "-brokers= ", "-brokers=broker:9092,", "-brokers=,broker:9092", "-unknown=value", "-rate=-1", "-rate=1000000001", "-rate=abc", "-maxEvents=-1", "-maxEvents=abc", "-linger=-1ms", "-linger=abc"} {
 		t.Run(arg, func(t *testing.T) {
 			if _, err := parseConfig([]string{arg}, io.Discard); err == nil {
 				t.Fatal("expected configuration error")
@@ -61,7 +61,7 @@ func TestParseConfigHelp(t *testing.T) {
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("error = %v; want flag.ErrHelp", err)
 	}
-	for _, name := range []string{"-csvPath", "-brokers", "-topic", "-dlqTopic", "-dlqEnabled", "-rate", "-maxEvents"} {
+	for _, name := range []string{"-csvPath", "-brokers", "-topic", "-dlqTopic", "-dlqEnabled", "-rate", "-maxEvents", "-linger"} {
 		if !strings.Contains(output.String(), name) {
 			t.Fatalf("help omits %s", name)
 		}
@@ -399,6 +399,16 @@ func TestRunWithClientPublishesIndexUsingSystemDate(t *testing.T) {
 	want := "CSV processing completed: published=2 skipped=0 rejected=0 topic=\"trade-events\"\n"
 	if output.String() != want {
 		t.Fatalf("summary = %q; want %q", output.String(), want)
+	}
+}
+
+func TestParseConfigLinger(t *testing.T) {
+	cfg, err := parseConfig([]string{"-linger=1ms"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.linger != time.Millisecond {
+		t.Fatalf("linger=%v; want 1ms", cfg.linger)
 	}
 }
 

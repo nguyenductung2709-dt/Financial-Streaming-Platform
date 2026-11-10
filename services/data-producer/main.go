@@ -21,7 +21,13 @@ type config struct {
 	dlqEnabled bool
 	rate       int
 	maxEvents  uint64
+	linger     time.Duration
 }
+
+// defaultLinger is how long the client waits for more records before it sends a
+// batch. 1 ms published as fast as 5 ms and faster than 0 in the issue #60
+// benchmark, and it delays a lone record at low rates the least.
+const defaultLinger = time.Millisecond
 
 func main() {
 	cfg, err := parseConfig(os.Args[1:], os.Stderr)
@@ -59,6 +65,7 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	flags.BoolVar(&cfg.dlqEnabled, "dlqEnabled", false, "Enable the dead letter queue topic for invalid trade events")
 	flags.IntVar(&cfg.rate, "rate", 0, "Maximum events per second (0 = unlimited)")
 	flags.Uint64Var(&cfg.maxEvents, "maxEvents", 0, "Maximum acknowledged events to publish (0 = unlimited)")
+	flags.DurationVar(&cfg.linger, "linger", defaultLinger, "How long the client waits for more records before sending a batch")
 	if err := flags.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -67,6 +74,9 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	}
 	if cfg.rate < 0 || cfg.rate > int(time.Second) {
 		return config{}, fmt.Errorf("rate must be between 0 and 1000000000 events per second")
+	}
+	if cfg.linger < 0 {
+		return config{}, fmt.Errorf("linger must not be negative")
 	}
 	if len(cfg.csvPaths) == 0 {
 		cfg.csvPaths = []string{"dataset/debs2022-gc-trading-day-12-11-21.csv"}
@@ -104,7 +114,7 @@ func run(cfg config) error {
 	defer stop()
 
 	// Create the Redpanda client
-	client, err := newRedpandaClient(cfg.brokers)
+	client, err := newRedpandaClient(cfg.brokers, cfg.linger)
 	if err != nil {
 		return err
 	}
