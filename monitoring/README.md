@@ -102,12 +102,15 @@ Things to know when reading the numbers:
 
 - Stamps have 1 ms resolution, so sub-millisecond stages such as `ema_compute` mostly
   read 0 to 2 ms.
-- The producer publishes synchronously and tops out near 4.7k events/s; the pipeline kept
-  up with that (it settled within 2 to 4 s of the producer finishing), so even `RATE=0`
-  measured steady-state latency. In a 1,000 vs 20,000 events/s sweep `ingest_to_fire` was
-  lower at the higher rate, while the tails of `ema_compute`, `advisory_compute` and the
-  end-to-end stages were higher. A faster producer (issue #60) that outruns the pipeline
-  would make the figures measure backlog instead.
+- The producer used to wait for each acknowledgment and topped out near 4.7k events/s. The
+  pipeline kept up with that (it settled within 2 to 4 s of the producer finishing), so
+  `RATE=0` measured steady-state latency. In a 1,000 vs 20,000 events/s sweep
+  `ingest_to_fire` was lower at the higher rate, while the tails of `ema_compute`,
+  `advisory_compute` and the end-to-end stages were higher.
+- Since issue #60 the producer publishes asynchronously and reaches about 100k events/s
+  on its own. `RATE=0` can now outrun the pipeline, and then its figures measure the
+  backlog rather than steady-state latency. Compare `producer_s` with `total_s` and use a
+  `RATE` the pipeline settles after.
 - A bounded run flushes its last windows without a trigger event. They are counted as
   `flushed` in the coverage line and left out of the statistics.
 - `ema-windows` and `trade-advisories` must be created with `message.timestamp.type=LogAppendTime`
