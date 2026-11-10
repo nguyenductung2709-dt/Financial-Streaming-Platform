@@ -72,6 +72,7 @@ type fakeRunClient struct {
 	records         []*kgo.Record
 	pingErr         error
 	produceErr      error
+	ackDelay        time.Duration
 	pingCalls       int
 	closeCalls      int
 	pingHasDeadline bool
@@ -88,17 +89,22 @@ func (f *fakeRunClient) Ping(ctx context.Context) error {
 	return f.pingErr
 }
 func (f *fakeRunClient) Close() { f.closeCalls++ }
-func (f *fakeRunClient) ProduceSync(ctx context.Context, records ...*kgo.Record) kgo.ProduceResults {
+
+// Produce answers at once, or after ackDelay from another goroutine like the real client.
+func (f *fakeRunClient) Produce(ctx context.Context, record *kgo.Record, promise func(*kgo.Record, error)) {
 	f.produceTimes = append(f.produceTimes, time.Now())
-	f.records = append(f.records, records...)
-	results := make(kgo.ProduceResults, len(records))
-	for i, record := range records {
-		results[i] = kgo.ProduceResult{Record: record, Err: f.produceErr}
+	f.records = append(f.records, record)
+	if f.ackDelay == 0 {
+		promise(record, f.produceErr)
+	} else {
+		go func() {
+			time.Sleep(f.ackDelay)
+			promise(record, f.produceErr)
+		}()
 	}
 	if f.afterProduce != nil {
 		f.afterProduce()
 	}
-	return results
 }
 
 const validRunRow = "RUI.FR,E,28.040000,09:00:00.179,12-11-2021\n"
@@ -131,6 +137,85 @@ func TestRunWithClientPublishesAndSummarizes(t *testing.T) {
 	want := "CSV processing completed: published=1 skipped=2 rejected=0 topic=\"trade-events\"\n"
 	if output.String() != want {
 		t.Fatalf("summary = %q; want %q", output.String(), want)
+	}
+}
+
+func TestRunWithClientWaitsForAcknowledgements(t *testing.T) {
+	path := writeCSVFile(t, csvContents(testCSVHeader, "IIIFL.FR,I,57.117900,07:00:01.014,\n"+validRunRow+validRunRow+validRunRow))
+	client := &fakeRunClient{ackDelay: 20 * time.Millisecond}
+	var output bytes.Buffer
+	cfg := config{csvPaths: []string{path}, topic: "trade-events", dlqTopic: "trade-events-dlq", dlqEnabled: true}
+	if err := runWithClient(context.Background(), cfg, client, &output); err != nil {
+		t.Fatal(err)
+	}
+	want := "CSV processing completed: published=3 skipped=0 rejected=1 topic=\"trade-events\"\n"
+	if output.String() != want {
+		t.Fatalf("summary = %q; want %q", output.String(), want)
+	}
+}
+
+func TestRunWithClientReturnsDelayedPublishError(t *testing.T) {
+	path := writeCSVFile(t, csvContents(testCSVHeader, validRunRow+validRunRow+validRunRow))
+	failure := errors.New("broker rejected record")
+	client := &fakeRunClient{produceErr: failure, ackDelay: 20 * time.Millisecond}
+	var output bytes.Buffer
+	err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events"}, client, &output)
+	if !errors.Is(err, failure) {
+		t.Fatalf("error = %v; want wrapped publish error", err)
+	}
+	if client.closeCalls != 1 {
+		t.Fatalf("close calls=%d; want 1", client.closeCalls)
+	}
+	if !strings.Contains(output.String(), "stopped: published=0 skipped=0 rejected=0") {
+		t.Fatalf("failed records counted as published: %s", &output)
+	}
+}
+
+func TestRunWithClientStopsSendingAfterFailedAcknowledgement(t *testing.T) {
+	path := writeCSVFile(t, csvContents(testCSVHeader, validRunRow+validRunRow+validRunRow))
+	failure := errors.New("broker rejected record")
+	client := &fakeRunClient{}
+	client.afterProduce = func() { client.produceErr = failure }
+	var output bytes.Buffer
+	err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events"}, client, &output)
+	if !errors.Is(err, failure) {
+		t.Fatalf("error = %v; want wrapped publish error", err)
+	}
+	// The second record fails; the third row must not be sent.
+	if len(client.records) != 2 {
+		t.Fatalf("sent %d records; want 2", len(client.records))
+	}
+	if !strings.Contains(output.String(), "stopped: published=1 skipped=0") {
+		t.Fatalf("unexpected summary: %s", &output)
+	}
+}
+
+func TestRunWithClientMaxEventsWaitsForAcknowledgements(t *testing.T) {
+	path := writeCSVFile(t, csvContents(testCSVHeader, validRunRow+validRunRow+validRunRow))
+	client := &fakeRunClient{ackDelay: 20 * time.Millisecond}
+	var output bytes.Buffer
+	if err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events", maxEvents: 2}, client, &output); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.records) != 2 {
+		t.Fatalf("sent %d records; want 2", len(client.records))
+	}
+	if !strings.Contains(output.String(), "limit reached: published=2 skipped=0") {
+		t.Fatalf("unexpected summary: %s", &output)
+	}
+}
+
+func TestRunWithClientMaxEventsReportsFailedAcknowledgement(t *testing.T) {
+	path := writeCSVFile(t, csvContents(testCSVHeader, validRunRow+validRunRow))
+	failure := errors.New("broker rejected record")
+	client := &fakeRunClient{produceErr: failure, ackDelay: 20 * time.Millisecond}
+	var output bytes.Buffer
+	err := runWithClient(context.Background(), config{csvPaths: []string{path}, topic: "trade-events", maxEvents: 1}, client, &output)
+	if !errors.Is(err, failure) {
+		t.Fatalf("error = %v; want wrapped publish error", err)
+	}
+	if !strings.Contains(output.String(), "stopped: published=0 skipped=0") {
+		t.Fatalf("unacknowledged limit reported as reached: %s", &output)
 	}
 }
 
