@@ -129,7 +129,10 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 		return fmt.Errorf("connect to Redpanda: %w", err)
 	}
 
-	var published, skipped, rejected uint64
+	// Records are sent without waiting for each acknowledgment; the publisher
+	// counts them once Redpanda acknowledges them.
+	pub := &publisher{client: client}
+	var sent, skipped uint64
 	var interval time.Duration
 	if cfg.rate > 0 {
 		interval = time.Second / time.Duration(cfg.rate)
@@ -146,6 +149,10 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		// Stop at the first failed acknowledgment; records already sent still finish.
+		if err := pub.failed(); err != nil {
+			return err
+		}
 
 		event, skip, err := rowToPriceEvent(row)
 		if err != nil {
@@ -157,15 +164,20 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 			if dlqErr != nil {
 				return dlqErr
 			}
-			if dlqErr := publishPriceEventDLQ(ctx, client, cfg.dlqTopic, rejectedEvent); dlqErr != nil {
+			record, dlqErr := rejectedRowRecord(cfg.dlqTopic, rejectedEvent)
+			if dlqErr != nil {
 				return dlqErr
 			}
-			rejected++
+			pub.publish(ctx, record, true)
 			return nil
 		}
 		if skip {
 			skipped++
 			return nil
+		}
+		record, err := priceEventRecord(cfg.topic, event)
+		if err != nil {
+			return err
 		}
 
 		if interval > 0 {
@@ -173,22 +185,26 @@ func runWithClient(ctx context.Context, cfg config, client producerClient, outpu
 				return err
 			}
 		}
-		if err := publishPriceEvent(ctx, client, cfg.topic, event); err != nil {
-			return err
-		}
+		pub.publish(ctx, record, false)
 
-		published++
-		if cfg.maxEvents > 0 && published >= cfg.maxEvents {
+		sent++
+		if cfg.maxEvents > 0 && sent >= cfg.maxEvents {
 			return limitReached
 		}
 		return nil
 	})
+
+	// Wait for every sent record, so the summary counts only acknowledged ones.
+	published, rejected, publishErr := pub.wait()
 
 	// Report acknowledged events and intentionally skipped rows, including partial runs.
 	status := "completed"
 	if errors.Is(err, limitReached) {
 		status = "limit reached"
 		err = nil
+	}
+	if err == nil {
+		err = publishErr
 	}
 	if err != nil {
 		status = "stopped"
