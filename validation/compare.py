@@ -14,6 +14,15 @@ the design's order:
                       model does not reproduce actual;
   unexplained        anything else; `passed` iff this class is empty.
 
+With live=True (the processor ran as an unbounded job) a window that is
+missing from actual entirely, and that the final watermark has not passed,
+is open_at_end instead: no later event closed it, so the job is still
+waiting for it, exactly as Flink should.  The test is Flink's firing rule
+(is_late on the window's start with the stream's final max trade time),
+so a missing window the watermark did pass stays unexplained.  Bounded
+runs (live=False) flush every window when the input ends, and keep
+expecting all of them.
+
 Set inequality in both directions is a mismatch: a shadow window with no
 actual window (all its events dropped) and an actual window with no
 shadow window (should not happen; defensive).  Malformed records (empty
@@ -27,7 +36,7 @@ from decimal import Decimal, InvalidOperation
 from typing import NamedTuple
 
 from bindings import ADVISORY_ACTION_BUY, ADVISORY_ACTION_SELL
-from ema_replay import WindowMs
+from ema_replay import OutOfOrdernessMs, WindowMs, is_late
 
 MICROS = Decimal(10**6)       # shadow EMAs are micros; actuals are price strings
 MAX_REPORT_MISMATCHES = config.MAX_REPORT_MISMATCHES   # per-class cap in the JSON report
@@ -62,7 +71,9 @@ class Mismatch(NamedTuple):
 
 
 class CompareResult(NamedTuple):
-    """Classification of every window in the actual | keep-all union."""
+    """Classification of every window in the actual | keep-all union.
+
+    open_at_end is only ever filled for live comparisons (live=True)."""
 
     total_windows: int
     matched: int
@@ -70,6 +81,8 @@ class CompareResult(NamedTuple):
     lateness_related: list[Mismatch]
     unexplained: list[Mismatch]
     passed: bool
+    open_at_end: tuple[Mismatch, ...] = ()
+    live: bool = False
 
 
 def _parse_price(text: str) -> Decimal | None:
@@ -201,22 +214,36 @@ def _model_diverges(shadow, shadow_key, tolerance: Decimal) -> bool:
     return bool(_window_diff(window, advisory, keep_row, tolerance))
 
 
+def still_open(shadow, window_start_ms: int) -> bool:
+    """Whether an unbounded job can not have fired this window yet: the
+    final watermark (the stream's max trade time - out-of-orderness - 1 ms)
+    has not reached the window's last timestamp.  Allowed lateness keeps
+    late events, it does not delay firing, hence 0."""
+    if shadow.final_max_tt_ms is None:
+        return False
+    return not is_late(window_start_ms, shadow.final_max_tt_ms,
+                       OutOfOrdernessMs, allowed_lateness_ms=0)
+
+
 def compare(ema_actual: list[ActualEmaWindow],
             advisories_actual: list[ActualAdvisory],
-            shadow, tolerance: Decimal = config.EMA_TOLERANCE) -> CompareResult:
+            shadow, tolerance: Decimal = config.EMA_TOLERANCE,
+            live: bool = False) -> CompareResult:
     """Join actual windows/advisories against the shadow and classify mismatches.
 
     The union is keyed over (symbol, window_start_ms); a shadow window's
     start is window_index * WindowMs.  Classification order: keep-all
-    match, then drop-model reproduction (lateness_explained), then
-    keep-all/drop-model row divergence (lateness_related), else
-    unexplained.  `passed` iff unexplained is empty.
+    match, then (live only) a window absent from actual that is still
+    open at the end of the stream (open_at_end), then drop-model
+    reproduction (lateness_explained), then keep-all/drop-model row
+    divergence (lateness_related), else unexplained.  `passed` iff
+    unexplained is empty.
     """
     windows = {(w.symbol, w.window_start_ms): w for w in ema_actual}
     advisories = {(a.symbol, a.window_start_ms): a for a in advisories_actual}
     keys = sorted(set(windows) | set(advisories)
                   | {(s, widx * WindowMs) for s, widx in shadow.keep_all})
-    explained, related, unexplained = [], [], []
+    explained, related, unexplained, still_open_windows = [], [], [], []
     matched = 0
     for key in keys:
         shadow_key = (key[0], key[1] // WindowMs)
@@ -228,7 +255,10 @@ def compare(ema_actual: list[ActualEmaWindow],
             matched += 1
             continue
         mismatch = Mismatch(key[0], key[1], parts)
-        if not _window_diff(window, advisory,
+        if (live and window is None and advisory is None
+                and shadow_key in shadow.keep_all and still_open(shadow, key[1])):
+            still_open_windows.append(mismatch)
+        elif not _window_diff(window, advisory,
                            shadow.drop_model.get(shadow_key), tolerance):
             explained.append(mismatch)
         elif _model_diverges(shadow, shadow_key, tolerance):
@@ -236,7 +266,7 @@ def compare(ema_actual: list[ActualEmaWindow],
         else:
             unexplained.append(mismatch)
     return CompareResult(len(keys), matched, explained, related, unexplained,
-                         not unexplained)
+                         not unexplained, tuple(still_open_windows), live)
 
 
 def _mismatch_entry(mismatches: list[Mismatch]) -> dict:
@@ -268,5 +298,7 @@ def build_report(shadow, result: CompareResult, tolerance: Decimal,
         "lateness_explained": _mismatch_entry(result.lateness_explained),
         "lateness_related": _mismatch_entry(result.lateness_related),
         "unexplained": _mismatch_entry(result.unexplained),
+        "live": result.live,
+        "open_at_end": _mismatch_entry(list(result.open_at_end)),
         "passed": result.passed,
     }
