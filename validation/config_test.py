@@ -73,7 +73,7 @@ def script_follows_override(script, overrides, expression):
 
 class ConfigValuesTest(unittest.TestCase):
     def test_constants(self):
-        self.assertEqual(config.OUT_OF_ORDERNESS_MS, 70_000)
+        self.assertEqual(config.OUT_OF_ORDERNESS_MS, 5_000)
         self.assertEqual(config.WINDOW_MS, 300_000)
         self.assertEqual(config.EMA_J_SHORT, 38)
         self.assertEqual(config.EMA_J_LONG, 100)

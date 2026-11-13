@@ -28,7 +28,7 @@ import bindings  # noqa: E402  (collect-latency.py put validation/ on sys.path)
 import config  # noqa: E402
 
 WINDOW = 300_000
-ALLOWANCE = 70_000
+ALLOWANCE = 70_000  # an explicit allowance for the scan unit tests, not the configured one
 B = 3_000_000  # a window boundary: a multiple of WINDOW
 END = B + WINDOW
 
@@ -354,8 +354,10 @@ def full_run(advisory=True, materialized=False):
             (stamp_record(bindings.STAGE_CROSSOVER_EVALUATED, BASE + 1503, advisory), 0)],
         config.TOPIC_EMA_WINDOWS: [(ema, BASE + 1510)],
         config.TOPIC_TRADE_ADVISORIES: [(advice, BASE + 1512)] if advisory else [],
-        config.TOPIC_EVENTS: [(event(E - 60_000), BASE + 1000), (event(E + 10_000), BASE + 1200),
-                              (event(E + 70_000), BASE + 1400)],
+        # reaches the window end (tw), then the end plus the configured allowance (t0)
+        config.TOPIC_EVENTS: [(event(E - 60_000), BASE + 1000),
+                              (event(E + config.OUT_OF_ORDERNESS_MS // 2), BASE + 1200),
+                              (event(E + config.OUT_OF_ORDERNESS_MS), BASE + 1400)],
     }
     if materialized:
         stamps = [(stamp_record(bindings.STAGE_EMA_MATERIALIZED, BASE + 1520), 0)]
