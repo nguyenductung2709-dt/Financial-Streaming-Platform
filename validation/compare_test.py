@@ -319,8 +319,12 @@ class LiveOpenAtEndTest(unittest.TestCase):
     """live=True: windows the final watermark has not passed may be absent.
 
     A window [s, s+300_000) fires once max trade time >= s + 300_000 +
-    70_000 (watermark = max - 70_000 - 1 reaches its last ms s + 299_999).
+    OutOfOrdernessMs (watermark = max - OutOfOrdernessMs - 1 reaches its last
+    ms s + 299_999). Boundaries derive from the configured allowance.
     """
+
+    # max trade time at which window 0 has just fired
+    BOUNDARY = er.WindowMs + er.OutOfOrdernessMs
 
     def test_missing_open_window_is_open_at_end_and_passes(self):
         result = sh.shadow_replay([make_event(SYM, 10_000, 15_000_000, 1)])
@@ -340,7 +344,8 @@ class LiveOpenAtEndTest(unittest.TestCase):
         self.assertEqual(len(compared.unexplained), 1)
 
     def test_missing_window_the_watermark_passed_still_fails(self):
-        # max 700_000: w0 (fires at 370_000) is closed, w2 is still open
+        # max 700_000: w0 (fires at BOUNDARY) is closed, w2 (600_000) is still open
+        self.assertLess(self.BOUNDARY, 700_000)
         result = sh.shadow_replay([
             make_event(SYM, 10_000, 15_000_000, 1),    # w0
             make_event(SYM, 700_000, 25_000_000, 2),   # w2
@@ -355,12 +360,12 @@ class LiveOpenAtEndTest(unittest.TestCase):
             make_event(SYM, 10_000, 15_000_000, 1),           # w0
             make_event(OTHER, last_tt, 11_000_000, 2),        # moves the max
         ])
-        # max = 370_000: w0's watermark reaches 299_999, so w0 has fired
-        closed = windows_for(370_000)
+        # max = BOUNDARY: w0's watermark reaches 299_999, so w0 has fired
+        closed = windows_for(self.BOUNDARY)
         compared = cmp.compare([], [], closed, live=True)
         self.assertIn((SYM, 0), [(m.symbol, m.window_start_ms) for m in compared.unexplained])
         # 1 ms earlier the watermark is 299_998: w0 is still open
-        still_open = windows_for(369_999)
+        still_open = windows_for(self.BOUNDARY - 1)
         compared = cmp.compare([], [], still_open, live=True)
         self.assertIn((SYM, 0), [(m.symbol, m.window_start_ms) for m in compared.open_at_end])
         self.assertNotIn((SYM, 0), [(m.symbol, m.window_start_ms) for m in compared.unexplained])
