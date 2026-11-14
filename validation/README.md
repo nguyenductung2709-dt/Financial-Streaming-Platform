@@ -58,8 +58,8 @@ make compare-flow LIVE=1
 ```
 
 A window that is missing from the output and that the final watermark (max trade
-time - 70 s) has not passed is then reported as `open at end` instead of
-`unexplained`, and listed under `open_at_end` in the report. A missing window the
-watermark did pass still fails the run, and so does any window present with wrong
-values. Without `LIVE=1` (and always inside `validate-flow`) every window must be
-present.
+time minus the out-of-orderness allowance) has not passed is then reported as
+`open at end` instead of `unexplained`, and listed under `open_at_end` in the
+report. A missing window the watermark did pass still fails the run, and so does
+any window present with wrong values. Without `LIVE=1` (and always inside
+`validate-flow`) every window must be present.
