@@ -216,13 +216,17 @@ def _model_diverges(shadow, shadow_key, tolerance: Decimal) -> bool:
 
 def still_open(shadow, window_start_ms: int) -> bool:
     """Whether an unbounded job can not have fired this window yet: the
-    final watermark (the stream's max trade time - out-of-orderness - 1 ms)
+    final watermark (the minimum over the partitions of their max trade
+    time, - out-of-orderness - 1 ms; with one partition the stream's max)
     has not reached the window's last timestamp.  Allowed lateness keeps
     late events, it does not delay firing, hence 0."""
-    if shadow.final_max_tt_ms is None:
+    final_max = getattr(shadow, "final_watermark_max_tt_ms", None)
+    if final_max is None:
+        final_max = shadow.final_max_tt_ms
+    if final_max is None:
         return False
-    return not is_late(window_start_ms, shadow.final_max_tt_ms,
-                       OutOfOrdernessMs, allowed_lateness_ms=0)
+    return not is_late(window_start_ms, final_max, OutOfOrdernessMs,
+                       allowed_lateness_ms=0)
 
 
 def compare(ema_actual: list[ActualEmaWindow],

@@ -402,6 +402,18 @@ class LiveOpenAtEndTest(unittest.TestCase):
         self.assertTrue(compared.passed)
         self.assertEqual(compared.open_at_end, ())
 
+    def test_a_lagging_partition_keeps_windows_open(self):
+        # p0 is far ahead, but p1 only reached 10_000: the job watermark is the
+        # minimum, so p0's window 0 can not have fired either
+        result = sh.shadow_replay([
+            sh.ShadowEvent(SYM, 10_000, 15_000_000, 1, partition=0),
+            sh.ShadowEvent(SYM, 700_000, 25_000_000, 2, partition=0),
+            sh.ShadowEvent(OTHER, 10_000, 11_000_000, 1, partition=1),
+        ])
+        compared = cmp.compare([], [], result, live=True)
+        self.assertTrue(compared.passed)
+        self.assertIn((SYM, 0), [(m.symbol, m.window_start_ms) for m in compared.open_at_end])
+
     def test_report_lists_open_windows(self):
         result = sh.shadow_replay([make_event(SYM, 10_000, 15_000_000, 1)])
         compared = cmp.compare([], [], result, live=True)

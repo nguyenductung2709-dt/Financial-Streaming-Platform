@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Quiescent single-partition topic consumption for the full-flow validation.
+"""Quiescent topic consumption for the full-flow validation.
 
-iter_records(brokers, topic) yields every record currently in a topic as
-(offset, value) pairs in offset order; stream_records yields the same
-records as (offset, value, timestamp_ms) triples; consume_all collects
-iter_records into a list.  The topics under test are single-partition and
-quiescent once the flow has finished, so the read is a simple drain:
-capture the high watermark up front, consume from the beginning until
-reaching it, then re-check — a watermark that grew mid-read means records
+stream_partitioned(brokers, topic) yields every record currently in a topic
+as (partition, offset, value, timestamp_ms), one partition after another;
+stream_records drops the partition, iter_records also the timestamp, and
+consume_all collects iter_records into a list.  The topics under test are
+quiescent once the flow has finished, so each partition is a simple drain:
+capture its high watermark up front, consume from the beginning until
+reaching it, then re-check -- a watermark that grew mid-read means records
 appeared while reading and the result would be silently partial, so that
-(and more than one partition, or a poll error) raises RuntimeError.
-Retention truncation is the same sin in two shapes — a purged segment
-mid-read (polled offsets skip forward) and a topic head already truncated
-(low watermark past 0) — and both raise RuntimeError rather than silently
+(or a missing topic, or a poll error) raises RuntimeError.  Retention
+truncation is the same sin in two shapes -- a purged segment mid-read
+(polled offsets skip forward) and a partition head already truncated (low
+watermark past 0) -- and both raise RuntimeError rather than silently
 under-validate.
 
 The default consumer factory is the only place confluent_kafka appears;
@@ -122,61 +122,98 @@ def topic_partitions(brokers: str, topic: str,
         consumer.close()
 
 
-def stream_records(brokers: str, topic: str,
-                   consumer_factory=None) -> Iterator[tuple[int, bytes, int]]:
-    """Yield every record currently in `topic` as (offset, value, timestamp_ms).
+def _drain_partition(consumer, topic: str, partition: int
+                     ) -> Iterator[tuple[int, bytes, int]]:
+    """Yield every record of one partition as (offset, value, timestamp_ms).
+
+    Raises RuntimeError when the partition's head is already truncated
+    (low watermark past 0), when a polled offset skips past the next
+    expected one (a segment purged mid-read), or when its high watermark
+    grew during the read (raised once its last record has been yielded):
+    either way the read would be silently partial.  A consumer that
+    carries no timestamp reports -1.
+    """
+    low, high = _watermarks(consumer, topic, partition)
+    if low > 0:
+        raise RuntimeError(
+            f"topic {topic!r} partition {partition} head already truncated by"
+            f" retention: low watermark is {low}, not 0 (records [0, {low}) are"
+            " gone; reading now would be silently partial)")
+    consumer.assign(topic, partition)
+    next_offset = low
+    while next_offset < high:
+        record = consumer.poll(POLL_TIMEOUT_S)
+        if record is None:
+            continue
+        offset, value, *rest = record
+        if offset != next_offset:
+            raise RuntimeError(
+                f"topic {topic!r} partition {partition} read gap: polled offset"
+                f" {offset}, expected {next_offset} (retention likely purged a"
+                " segment mid-read; the skipped records would make"
+                " the read silently partial)")
+        next_offset = offset + 1
+        yield offset, value, rest[0] if rest else -1
+    if _watermarks(consumer, topic, partition)[1] > high:
+        raise RuntimeError(
+            f"topic {topic!r} is not quiescent: partition {partition}'s high"
+            f" watermark grew past {high} during the read")
+
+
+def stream_partitioned(brokers: str, topic: str, consumer_factory=None
+                       ) -> Iterator[tuple[int, int, bytes, int]]:
+    """Yield every record currently in `topic` as
+    (partition, offset, value, timestamp_ms), one partition after another
+    in ascending partition order, each in offset order.
 
     One record at a time, so a caller that folds them into a smaller
-    summary never holds the whole topic.  The checks that can only be
-    made at the end (a high watermark that grew during the read) run when
-    the iterator is exhausted, so the caller must consume it fully; the
-    consumer is closed when it ends, fails, or is closed early.
-
-    Requires exactly one partition and a quiescent topic: raises
-    RuntimeError when the topic has more than one partition, when its
-    high watermark grew between the pre-read capture and the post-read
-    re-check (records appeared mid-read; raised once the last record has
-    been yielded), or when a poll fails.  Retention truncation also
-    raises: a low watermark already past 0 (the head was purged before
-    the run) or a polled offset skipping past the expected next offset
-    (a segment was purged mid-read) - either way the read would be
-    silently partial.  A consumer that carries no timestamp reports -1.
+    summary never holds the whole topic.  Each partition gets the checks of
+    _drain_partition; a topic without partitions (missing) raises.  The
+    caller must consume the iterator fully for the end-of-partition checks
+    to run; the consumer is closed when it ends, fails, or is closed early.
     """
     consumer = (consumer_factory or _default_consumer_factory)(brokers)
     try:
         partitions = consumer.list_topics(topic)
-        if len(partitions) != 1:
-            raise RuntimeError(
-                f"topic {topic!r} is missing or has {len(partitions)}"
-                " partitions, expected exactly one")
-        partition = next(iter(partitions))
-        low, high = _watermarks(consumer, topic, partition)
-        if low > 0:
-            raise RuntimeError(
-                f"topic {topic!r} head already truncated by retention:"
-                f" low watermark is {low}, not 0 (records [0, {low}) are"
-                " gone; reading now would be silently partial)")
-        consumer.assign(topic, partition)
-        next_offset = low
-        while next_offset < high:
-            record = consumer.poll(POLL_TIMEOUT_S)
-            if record is None:
-                continue
-            offset, value, *rest = record
-            if offset != next_offset:
-                raise RuntimeError(
-                    f"topic {topic!r} read gap: polled offset {offset},"
-                    f" expected {next_offset} (retention likely purged a"
-                    " segment mid-read; the skipped records would make"
-                    " the read silently partial)")
-            next_offset = offset + 1
-            yield offset, value, rest[0] if rest else -1
-        if _watermarks(consumer, topic, partition)[1] > high:
-            raise RuntimeError(
-                f"topic {topic!r} is not quiescent: high watermark grew past"
-                f" {high} during the read")
+        if not partitions:
+            raise RuntimeError(f"topic {topic!r} is missing (it has no partitions)")
+        for partition in sorted(partitions):
+            for record in _drain_partition(consumer, topic, partition):
+                yield (partition, *record)
     finally:
         consumer.close()
+
+
+def stream_partition(brokers: str, topic: str, partition: int,
+                     consumer_factory=None) -> Iterator[tuple[int, bytes, int]]:
+    """Yield one partition's records as (offset, value, timestamp_ms), with
+    its own consumer, so several partitions can be read side by side (for a
+    merge across partitions).  Same checks as _drain_partition."""
+    consumer = (consumer_factory or _default_consumer_factory)(brokers)
+    try:
+        if partition not in consumer.list_topics(topic):
+            raise RuntimeError(f"topic {topic!r} has no partition {partition}")
+        yield from _drain_partition(consumer, topic, partition)
+    finally:
+        consumer.close()
+
+
+def stream_records(brokers: str, topic: str,
+                   consumer_factory=None) -> Iterator[tuple[int, bytes, int]]:
+    """Yield every record currently in `topic` as (offset, value, timestamp_ms).
+
+    stream_partitioned without the partition: every partition in turn, with
+    the same checks.  Offsets restart at 0 in each partition, so callers that
+    need a unique order or a total order across partitions use
+    stream_partitioned; with one partition the stream is the topic in
+    offset order.
+    """
+    records = stream_partitioned(brokers, topic, consumer_factory)
+    try:
+        for _, offset, value, timestamp in records:
+            yield offset, value, timestamp
+    finally:
+        records.close()
 
 
 def iter_records(brokers: str, topic: str,

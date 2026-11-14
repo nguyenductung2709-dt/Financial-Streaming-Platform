@@ -114,7 +114,8 @@ def corrupt_closes(ema_records, indices, delta=1):
 def patched_topics(consume):
     """Route both topic readers run() defaults to through one fake."""
     with mock.patch("kafka_topics.consume_all", consume), \
-            mock.patch("kafka_topics.iter_records", consume):
+            mock.patch("kafka_topics.iter_records", consume), \
+            mock.patch("kafka_topics.stream_partitioned", consume):
         yield
 
 

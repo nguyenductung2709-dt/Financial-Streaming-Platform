@@ -46,13 +46,22 @@ def _decode(msg_type, value: bytes):
     return msg
 
 
-def _shadow_event(offset: int, value: bytes) -> sh.ShadowEvent:
-    """One trade-events record -> ShadowEvent (order = its Kafka offset)."""
+def _shadow_event(record) -> sh.ShadowEvent:
+    """One trade-events record -> ShadowEvent.
+
+    Records are (partition, offset, value, timestamp_ms) from
+    kafka_topics.stream_partitioned, or (offset, value) pairs, which are
+    partition 0.  Order is the Kafka offset: it breaks close ties within a
+    symbol, and a symbol's events all share one partition (the key)."""
+    if len(record) == 2:
+        partition, (offset, value) = 0, record
+    else:
+        partition, offset, value = record[0], record[1], record[2]
     msg = _decode(bindings.PriceEvent, value)
     tt = msg.trade_time
     return sh.ShadowEvent(msg.symbol,
                           tt.seconds * 1000 + tt.nanos // 1_000_000,
-                          msg.last_price_micros, offset)
+                          msg.last_price_micros, offset, partition)
 
 
 class FlowResult(NamedTuple):
@@ -130,11 +139,11 @@ def run(brokers: str, topics: dict[str, str], report_path: Path,
     report dict to report_path (creating parent directories), prints the
     console summary, and returns every result with the overall verdict.
     `consume`, `stream` and `db_connect` are injectable for tests and
-    default to kafka_topics.consume_all, kafka_topics.iter_records and
+    default to kafka_topics.consume_all, kafka_topics.stream_partitioned and
     db_check.connect; an injected `consume` also serves as the default
     `stream`, since a list is iterable.
     """
-    stream = stream or consume or kafka_topics.iter_records
+    stream = stream or consume or kafka_topics.stream_partitioned
     consume = consume or kafka_topics.consume_all
     reference = ref.load_reference(reference_dir) if reference_dir is not None else None
     conn = (db_connect or db_check.connect)(db_url) if db_url is not None else None
@@ -144,7 +153,7 @@ def run(brokers: str, topics: dict[str, str], report_path: Path,
         ema_records = consume(brokers, topics["ema"])
         advisory_records = consume(brokers, topics["advisories"])
         shadow = sh.shadow_replay(
-            _shadow_event(offset, value) for offset, value in event_records)
+            _shadow_event(record) for record in event_records)
         ema_actual = [cmp.decode_ema_window(_decode(bindings.EmaWindow, value))
                       for _, value in ema_records]
         advisories_actual = [cmp.decode_advisory(

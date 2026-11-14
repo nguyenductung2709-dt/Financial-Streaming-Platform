@@ -336,5 +336,43 @@ class GeneratorInputTest(unittest.TestCase):
         self.assertEqual(keys(result.drop_model), {(SYM, 3)})
 
 
+class PartitionedWatermarkTest(unittest.TestCase):
+    """Several partitions: each event is tested against its own partition's
+    max (a superset of Flink's drops, whose job watermark is the minimum
+    over the partitions); the final watermark derives from that minimum."""
+
+    def test_late_overall_but_not_in_its_partition_is_kept(self):
+        events = [
+            sh.ShadowEvent(SYM, 1_000_000, 10_000_000, 1, partition=0),  # p0 max far ahead
+            sh.ShadowEvent("OTH.NL", 150_000, 9_000_000, 1, partition=1),  # p1's first event
+        ]
+        result = sh.shadow_replay(events)
+        self.assertIn(("OTH.NL", 0), keys(result.drop_model))
+        self.assertEqual(result.at_risk_events, 0)
+
+    def test_late_in_its_own_partition_is_dropped(self):
+        events = [
+            sh.ShadowEvent(SYM, 1_000_000, 10_000_000, 1, partition=1),
+            sh.ShadowEvent(SYM, 150_000, 9_000_000, 2, partition=1),
+        ]
+        result = sh.shadow_replay(events)
+        self.assertNotIn((SYM, 0), keys(result.drop_model))
+        self.assertEqual(result.at_risk_events, 1)
+
+    def test_final_watermark_is_the_minimum_over_partitions(self):
+        events = [
+            sh.ShadowEvent(SYM, 1_000_000, 10_000_000, 1, partition=0),
+            sh.ShadowEvent("OTH.NL", 400_000, 9_000_000, 1, partition=1),
+        ]
+        result = sh.shadow_replay(events)
+        self.assertEqual(result.final_max_tt_ms, 1_000_000)
+        self.assertEqual(result.final_watermark_max_tt_ms, 400_000)
+
+    def test_one_partition_matches_the_global_values(self):
+        result = sh.shadow_replay([make_event(SYM, 10_000, 1, 1),
+                                   make_event(SYM, 700_000, 2, 2)])
+        self.assertEqual(result.final_watermark_max_tt_ms, result.final_max_tt_ms)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
