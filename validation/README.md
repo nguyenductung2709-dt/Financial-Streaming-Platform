@@ -9,7 +9,7 @@ python3 validation/validation_generator_test.py
 
 Writes `ema_windows.csv`, `advisories.csv` and `summary.json` (`--help` lists
 the other options). Like the processor, it drops a price event once the
-watermark (max trade time - 70 s) has passed its 5-minute window and counts the
+watermark (max trade time - 5 s) has passed its 5-minute window and counts the
 drops in `summary.json`. Flink's watermark only advances every 200 ms, so it may
 keep a few events the generator drops; those are listed in
 `drops_pending_watermark_emission.csv`.
