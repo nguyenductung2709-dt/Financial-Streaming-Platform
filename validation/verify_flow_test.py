@@ -583,6 +583,49 @@ class MainTest(unittest.TestCase):
             self.assertEqual(report["tolerance"], str(Decimal("1e-9")))
             self.assertTrue(report["passed"])
 
+    def run_main_on_open_last_window(self, extra_args):
+        # w0 is closed by the w2 event, w2 is still open; actual only has w0
+        event_records, shadow_out = make_stream([(SYM, 10_000, 15_000_000, 1),
+                                                 (SYM, 700_000, 25_000_000, 2)])
+        ema_records, advisory_records = actual_topic_records(shadow_out)
+
+        def starts_at_zero(record, msg_type):
+            msg = msg_type()
+            msg.ParseFromString(record[1])
+            window = msg if msg_type is bindings.EmaWindow else msg.ema_window
+            return window.window_start.seconds == 0
+
+        # keep everything for the closed w0 (incl. its first-window advisory)
+        consume = fake_consume(
+            event_records,
+            [r for r in ema_records if starts_at_zero(r, bindings.EmaWindow)],
+            [r for r in advisory_records if starts_at_zero(r, bindings.TradeAdvisory)])
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "report.json"
+            out = io.StringIO()
+            with patched_topics(consume), redirect_stdout(out):
+                code = vf.main(self.ARGS + ["--report", str(report_path)] + extra_args)
+            return code, json.loads(report_path.read_text()), out.getvalue()
+
+    def test_live_flag_reports_the_open_last_window_and_passes(self):
+        code, report, text = self.run_main_on_open_last_window(["--live"])
+        self.assertEqual(code, 0)
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["live"])
+        self.assertEqual(report["open_at_end"]["count"], 1)
+        self.assertEqual(report["open_at_end"]["windows"][0]["window_start_ms"], 600_000)
+        self.assertEqual(report["unexplained"]["count"], 0)
+        self.assertIn("open at end: 1 windows", text)
+        self.assertIn("passed: True", text)
+
+    def test_without_live_flag_the_open_last_window_fails(self):
+        code, report, text = self.run_main_on_open_last_window([])
+        self.assertEqual(code, 1)
+        self.assertFalse(report["live"])
+        self.assertEqual(report["open_at_end"]["count"], 0)
+        self.assertEqual(report["unexplained"]["count"], 1)
+        self.assertNotIn("open at end", text)
+
     def test_returns_1_on_unexplained_mismatch(self):
         event_records, shadow_out = make_stream([(SYM, 10_000, 15_000_000, 1)])
         ema_records, advisory_records = actual_topic_records(shadow_out)
