@@ -31,6 +31,7 @@ p95, p99, max per stage) to --out.
 import argparse
 import collections
 import csv
+import heapq
 import math
 from pathlib import Path
 import sys
@@ -58,30 +59,42 @@ class LatencyError(RuntimeError):
     """The topics cannot be turned into a trustworthy latency report."""
 
 
-def crossing_times(events, window_ms, allowances):
+def crossing_times(events, window_ms, allowances, partitions=1):
     """One {window_end_ms: publish_ms} per allowance, in one pass over `events`.
 
-    `events` is an iterable of (trade_time_ms, publish_ms) in log order. For each
-    allowance, the event recorded for a window ending at `e` is the first whose
-    trade time takes the highest trade time seen to `e + allowance` or beyond.
-    Flink's watermark is the highest trade time minus the out-of-orderness
-    allowance, so with that allowance this is the event that let the window fire;
-    with 0 it is the event at which the stream reached the window's end. Late
-    events still raise the maximum when they exceed it, and never lower it. The
-    first event records nothing: windows it would cross have no events.
+    `events` is an iterable of (trade_time_ms, publish_ms) or
+    (trade_time_ms, publish_ms, partition) in publish order; pairs are
+    partition 0. Flink keeps one watermark per partition (its highest trade time
+    minus the out-of-orderness allowance) and the job's watermark is the
+    minimum over the `partitions` partitions, defined once each has had an
+    event. For each allowance, the event recorded for a window ending at `e` is
+    the first that takes that minimum to `e + allowance` or beyond: with the
+    out-of-orderness allowance the event that let the window fire, with 0 the
+    event at which the stream reached the window's end. With one partition the
+    minimum is simply the highest trade time seen. Late events raise their
+    partition's maximum when they exceed it, and never lower it. The event that
+    first defines the minimum records nothing: windows it would cross have no
+    events.
     """
     crossings = [{} for _ in allowances]
-    highest = None
-    for trade_time, published in events:
-        if highest is not None and trade_time > highest:
+    partition_max = {}
+    base = None
+    for event in events:
+        trade_time, published, partition = (*event, 0) if len(event) == 2 else event
+        if trade_time <= partition_max.get(partition, trade_time - 1):
+            continue
+        partition_max[partition] = trade_time
+        if len(partition_max) < partitions:
+            continue
+        new_base = min(partition_max.values())
+        if base is not None and new_base > base:
             for allowance, crossed in zip(allowances, crossings):
-                end = (highest - allowance) // window_ms * window_ms + window_ms
-                limit = trade_time - allowance
+                end = (base - allowance) // window_ms * window_ms + window_ms
+                limit = new_base - allowance
                 while end <= limit:
                     crossed[end] = published
                     end += window_ms
-        if highest is None or trade_time > highest:
-            highest = trade_time
+        base = new_base
     return crossings
 
 
@@ -249,7 +262,7 @@ def timestamp_ms(timestamp):
     return timestamp.seconds * 1000 + timestamp.nanos // 1_000_000
 
 
-def read_run(brokers, stream=None, topic_partitions=None):
+def read_run(brokers, stream=None, topic_partitions=None, stream_partition=None):
     """(stamps, ema_landed, advisory_landed, materialized, triggers, window_ends) for build_rows.
 
     `stream(brokers, topic)` yields (offset, value, timestamp_ms) like
@@ -264,6 +277,7 @@ def read_run(brokers, stream=None, topic_partitions=None):
 
     stream = stream or kafka_topics.stream_records
     topic_partitions = topic_partitions or kafka_topics.topic_partitions
+    stream_partition = stream_partition or kafka_topics.stream_partition
     stage_names = {bindings.STAGE_WINDOW_FIRED: "fired", bindings.STAGE_EMA_COMPUTED: "ema",
                    bindings.STAGE_CROSSOVER_EVALUATED: "crossover"}
     stamps = []
@@ -303,12 +317,26 @@ def read_run(brokers, stream=None, topic_partitions=None):
             materialized = (stage_targets[bindings.STAGE_EMA_MATERIALIZED],
                             stage_targets[bindings.STAGE_ADVISORY_MATERIALIZED])
 
+    event_partitions = sorted(topic_partitions(brokers, config.TOPIC_EVENTS)) or [0]
+
     def published_events():
-        for _, value, published in stream(brokers, config.TOPIC_EVENTS):
-            yield timestamp_ms(bindings.PriceEvent.FromString(value).trade_time), published
+        if len(event_partitions) == 1:
+            for _, value, published in stream(brokers, config.TOPIC_EVENTS):
+                yield timestamp_ms(bindings.PriceEvent.FromString(value).trade_time), published
+            return
+        # One producer publishes in CSV order, so merging the partitions by
+        # source row restores the publish order across them.
+        def decoded(partition):
+            for _, value, published in stream_partition(brokers, config.TOPIC_EVENTS, partition):
+                event = bindings.PriceEvent.FromString(value)
+                yield event.source_row, timestamp_ms(event.trade_time), published, partition
+        for _, trade_time, published, partition in heapq.merge(
+                *(decoded(p) for p in event_partitions)):
+            yield trade_time, published, partition
 
     window_ends, triggers = crossing_times(published_events(), config.WINDOW_MS,
-                                           (0, config.OUT_OF_ORDERNESS_MS))
+                                           (0, config.OUT_OF_ORDERNESS_MS),
+                                           partitions=len(event_partitions))
     return stamps, ema_landed, advisory_landed, materialized, triggers, window_ends
 
 

@@ -7,14 +7,13 @@ cross-checks against an independent exact-rational model
 (fractions.Fraction), mirroring ema_replay_test.py.
 
 The drop rule is ema_replay.is_late, shared with the CSV generator: the
-watermark is `max_tt_so_far - 70_000 - 1` (Flink's
+watermark is `max_tt_so_far - OutOfOrdernessMs - 1` (Flink's
 BoundedOutOfOrdernessWatermarks emits `maxTimestamp - delay - 1`), and a
 window dies for an event when its maxTimestamp reaches that watermark.
 Timelines are chosen so window maxTimestamps land exactly on watermark
-boundaries: (w + 1) * 300_000 - 1 + 70_001 = (w + 1) * 300_000 + 70_000,
-so a max of 370_000 makes window 0's maxTimestamp (299_999) exactly
-equal to the watermark (299_999), and a max of 369_999 sits it one ms
-above.
+boundaries: a max of 300_000 + OutOfOrdernessMs (BOUNDARY) makes window
+0's maxTimestamp (299_999) exactly equal to the watermark (299_999), and
+a max of BOUNDARY - 1 sits it one ms above.
 """
 
 import random
@@ -27,6 +26,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ema_replay as er  # noqa: E402
 import shadow as sh  # noqa: E402
+
+# max trade time at which window 0 (maxTimestamp 299_999) has just fired
+BOUNDARY = er.WindowMs + er.OutOfOrdernessMs
 
 
 def model_series(closes_micros):
@@ -83,7 +85,7 @@ class LateEventTest(unittest.TestCase):
             make_event(SYM, 150_000, 9_000_000, 2),      # w0, late
         ]
         result = sh.shadow_replay(events)
-        # drop rule: w0 maxTimestamp 299_999 <= watermark 1_000_000 - 70_000 - 1
+        # drop rule: w0 maxTimestamp 299_999 <= watermark 1_000_000 - OutOfOrdernessMs - 1
         self.assertEqual(keys(result.keep_all), {(SYM, 0), (SYM, 3)})
         self.assertEqual(keys(result.drop_model), {(SYM, 3)})
         self.assertEqual(result.keep_all[(SYM, 0)].close_micros, 9_000_000)
@@ -100,9 +102,9 @@ class BoundaryTest(unittest.TestCase):
     """Window maxTimestamp exactly at the watermark is dropped (<=)."""
 
     def test_exact_equality_is_dropped(self):
-        # max 370_000 -> watermark 299_999; w0 maxTimestamp is exactly 299_999
+        # max BOUNDARY -> watermark 299_999; w0 maxTimestamp is exactly 299_999
         events = [
-            make_event(SYM, 370_000, 10_000_000, 1),  # w1
+            make_event(SYM, BOUNDARY, 10_000_000, 1),  # w1
             make_event(SYM, 100_000, 9_000_000, 2),   # w0, maxTimestamp == watermark
         ]
         result = sh.shadow_replay(events)
@@ -110,9 +112,9 @@ class BoundaryTest(unittest.TestCase):
         self.assertEqual(keys(result.drop_model), {(SYM, 1)})
 
     def test_one_ms_above_is_kept(self):
-        # max 369_999 -> watermark 299_998; w0 maxTimestamp 299_999 is above
+        # max BOUNDARY - 1 -> watermark 299_998; w0 maxTimestamp 299_999 is above
         events = [
-            make_event(SYM, 369_999, 10_000_000, 1),
+            make_event(SYM, BOUNDARY - 1, 10_000_000, 1),
             make_event(SYM, 100_000, 9_000_000, 2),
         ]
         result = sh.shadow_replay(events)
@@ -127,7 +129,7 @@ class WatermarkAdvanceTest(unittest.TestCase):
     The running max comes from ALL events (watermarks are generated at
     the source, before the window operator) and is updated before each
     event's drop test, so a chain of drops lands on the formula
-    `wmax <= max_so_far - 70_000 - 1` against the all-events max.
+    `wmax <= max_so_far - OutOfOrdernessMs - 1` against the all-events max.
     """
 
     def test_dropped_events_advance_watermark_for_subsequent_decisions(self):
@@ -255,7 +257,7 @@ class RandomizedAgainstSpecFormulaTest(unittest.TestCase):
 
     Reference: update max from ALL events first, then drop iff the
     window's maxTimestamp `(tt // WindowMs + 1) * WindowMs - 1` is <=
-    the watermark `max_so_far - 70_000 - 1`; at-risk is the set of
+    the watermark `max_so_far - OutOfOrdernessMs - 1`; at-risk is the set of
     windows the drop test rejected events for.
     """
 
@@ -332,6 +334,44 @@ class GeneratorInputTest(unittest.TestCase):
         result = sh.shadow_replay(iter(events))
         self.assertEqual(result.total_events, 2)
         self.assertEqual(keys(result.drop_model), {(SYM, 3)})
+
+
+class PartitionedWatermarkTest(unittest.TestCase):
+    """Several partitions: each event is tested against its own partition's
+    max (a superset of Flink's drops, whose job watermark is the minimum
+    over the partitions); the final watermark derives from that minimum."""
+
+    def test_late_overall_but_not_in_its_partition_is_kept(self):
+        events = [
+            sh.ShadowEvent(SYM, 1_000_000, 10_000_000, 1, partition=0),  # p0 max far ahead
+            sh.ShadowEvent("OTH.NL", 150_000, 9_000_000, 1, partition=1),  # p1's first event
+        ]
+        result = sh.shadow_replay(events)
+        self.assertIn(("OTH.NL", 0), keys(result.drop_model))
+        self.assertEqual(result.at_risk_events, 0)
+
+    def test_late_in_its_own_partition_is_dropped(self):
+        events = [
+            sh.ShadowEvent(SYM, 1_000_000, 10_000_000, 1, partition=1),
+            sh.ShadowEvent(SYM, 150_000, 9_000_000, 2, partition=1),
+        ]
+        result = sh.shadow_replay(events)
+        self.assertNotIn((SYM, 0), keys(result.drop_model))
+        self.assertEqual(result.at_risk_events, 1)
+
+    def test_final_watermark_is_the_minimum_over_partitions(self):
+        events = [
+            sh.ShadowEvent(SYM, 1_000_000, 10_000_000, 1, partition=0),
+            sh.ShadowEvent("OTH.NL", 400_000, 9_000_000, 1, partition=1),
+        ]
+        result = sh.shadow_replay(events)
+        self.assertEqual(result.final_max_tt_ms, 1_000_000)
+        self.assertEqual(result.final_watermark_max_tt_ms, 400_000)
+
+    def test_one_partition_matches_the_global_values(self):
+        result = sh.shadow_replay([make_event(SYM, 10_000, 1, 1),
+                                   make_event(SYM, 700_000, 2, 2)])
+        self.assertEqual(result.final_watermark_max_tt_ms, result.final_max_tt_ms)
 
 
 if __name__ == "__main__":

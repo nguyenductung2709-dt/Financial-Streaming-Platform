@@ -150,12 +150,71 @@ class TruncatedHeadTest(unittest.TestCase):
         self.assertTrue(fake.closed)
 
 
+class PartitionedConsumer:
+    """FakeConsumer with one message queue per partition; assign() picks
+    the queue that poll() and the watermarks then refer to."""
+
+    def __init__(self, by_partition, lows=None):
+        self.by_partition = {p: list(msgs) for p, msgs in by_partition.items()}
+        self.lows = lows or {}
+        self.highs = {p: max((o for o, *_ in msgs), default=-1) + 1
+                      for p, msgs in self.by_partition.items()}
+        self.current = None
+        self.assignments = []
+        self.closed = False
+
+    def list_topics(self, topic):
+        return set(self.by_partition)
+
+    def get_watermark_offsets(self, topic, partition):
+        return (self.lows.get(partition, 0), self.highs[partition])
+
+    def assign(self, topic, partition):
+        self.current = partition
+        self.assignments.append(partition)
+
+    def poll(self, timeout):
+        queue = self.by_partition[self.current]
+        return queue.pop(0) if queue else None
+
+    def close(self):
+        self.closed = True
+
+
 class MultiPartitionTest(unittest.TestCase):
-    def test_two_partitions_raise(self):
-        fake = FakeConsumer([(0, b"m0")], partitions=(0, 1))
-        with self.assertRaises(RuntimeError):
-            kafka_topics.consume_all(
-                "localhost:19092", "trade-events", consumer_factory=lambda _: fake)
+    def read(self, fake):
+        return list(kafka_topics.stream_partitioned(
+            "localhost:19092", "trade-events", consumer_factory=lambda _: fake))
+
+    def test_reads_every_partition_in_ascending_order(self):
+        fake = PartitionedConsumer({1: [(0, b"b0", 7), (1, b"b1", 8)],
+                                    0: [(0, b"a0", 5)]})
+        self.assertEqual(self.read(fake), [(0, 0, b"a0", 5), (1, 0, b"b0", 7),
+                                           (1, 1, b"b1", 8)])
+        self.assertEqual(fake.assignments, [0, 1])
+        self.assertTrue(fake.closed)
+
+    def test_an_empty_partition_is_skipped(self):
+        fake = PartitionedConsumer({0: [], 1: [(0, b"b0", 1)]})
+        self.assertEqual(self.read(fake), [(1, 0, b"b0", 1)])
+
+    def test_consume_all_and_stream_records_cover_all_partitions(self):
+        fake = PartitionedConsumer({0: [(0, b"a0", 1)], 1: [(0, b"b0", 2)]})
+        self.assertEqual(kafka_topics.consume_all(
+            "localhost:19092", "t", consumer_factory=lambda _: fake), [(0, b"a0"), (0, b"b0")])
+
+    def test_a_truncated_partition_raises(self):
+        fake = PartitionedConsumer({0: [(0, b"a0", 1)], 1: [(3, b"b3", 2)]}, lows={1: 3})
+        with self.assertRaises(RuntimeError) as ctx:
+            self.read(fake)
+        self.assertIn("partition 1", str(ctx.exception))
+        self.assertTrue(fake.closed)
+
+    def test_a_missing_topic_raises(self):
+        fake = PartitionedConsumer({})
+        with self.assertRaises(RuntimeError) as ctx:
+            self.read(fake)
+        self.assertIn("missing", str(ctx.exception))
 
 
 class OffsetOrderTest(unittest.TestCase):
@@ -196,8 +255,8 @@ class StreamRecordsTest(unittest.TestCase):
         fake = FakeConsumer([(0, b"m0"), (1, b"m1")])
         self.assertEqual(list(self.stream(fake)), [(0, b"m0", -1), (1, b"m1", -1)])
 
-    def test_multi_partition_topic_raises(self):
-        fake = FakeConsumer([(0, b"m0")], partitions=(0, 1))
+    def test_missing_topic_raises(self):
+        fake = FakeConsumer([(0, b"m0")], partitions=())
         with self.assertRaises(RuntimeError):
             list(self.stream(fake))
         self.assertTrue(fake.closed)

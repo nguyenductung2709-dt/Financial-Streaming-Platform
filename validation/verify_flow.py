@@ -46,13 +46,22 @@ def _decode(msg_type, value: bytes):
     return msg
 
 
-def _shadow_event(offset: int, value: bytes) -> sh.ShadowEvent:
-    """One trade-events record -> ShadowEvent (order = its Kafka offset)."""
+def _shadow_event(record) -> sh.ShadowEvent:
+    """One trade-events record -> ShadowEvent.
+
+    Records are (partition, offset, value, timestamp_ms) from
+    kafka_topics.stream_partitioned, or (offset, value) pairs, which are
+    partition 0.  Order is the Kafka offset: it breaks close ties within a
+    symbol, and a symbol's events all share one partition (the key)."""
+    if len(record) == 2:
+        partition, (offset, value) = 0, record
+    else:
+        partition, offset, value = record[0], record[1], record[2]
     msg = _decode(bindings.PriceEvent, value)
     tt = msg.trade_time
     return sh.ShadowEvent(msg.symbol,
                           tt.seconds * 1000 + tt.nanos // 1_000_000,
-                          msg.last_price_micros, offset)
+                          msg.last_price_micros, offset, partition)
 
 
 class FlowResult(NamedTuple):
@@ -90,6 +99,9 @@ def _print_summary(shadow, result: cmp.CompareResult,
           f" unexplained {len(result.unexplained)}")
     print(f"at-risk: {len(shadow.at_risk_windows)} windows,"
           f" {shadow.at_risk_events} events")
+    if result.live:
+        print(f"open at end: {len(result.open_at_end)} windows the final watermark"
+              " has not passed (live run: no later event closed them)")
     if reference is not None:
         print(f"reference ({reference.side}): {reference.matched} of"
               f" {reference.reference_windows} windows match,"
@@ -109,8 +121,12 @@ def _print_summary(shadow, result: cmp.CompareResult,
 
 def run(brokers: str, topics: dict[str, str], report_path: Path,
         tolerance: Decimal, consume=None, reference_dir=None,
-        db_url=None, db_connect=None, stream=None) -> FlowResult:
+        db_url=None, db_connect=None, stream=None, live=False) -> FlowResult:
     """Validate one finished flow and write its JSON report.
+
+    live=True is for an unbounded processor run (measure-flow, run-flow):
+    windows still open at the end of the stream are reported as
+    open_at_end instead of failing the comparison (compare.compare).
 
     Reads the three topics (events feed the shadow replay as a stream and
     are never held in memory; ema and advisories are the actual, read into
@@ -123,11 +139,11 @@ def run(brokers: str, topics: dict[str, str], report_path: Path,
     report dict to report_path (creating parent directories), prints the
     console summary, and returns every result with the overall verdict.
     `consume`, `stream` and `db_connect` are injectable for tests and
-    default to kafka_topics.consume_all, kafka_topics.iter_records and
+    default to kafka_topics.consume_all, kafka_topics.stream_partitioned and
     db_check.connect; an injected `consume` also serves as the default
     `stream`, since a list is iterable.
     """
-    stream = stream or consume or kafka_topics.iter_records
+    stream = stream or consume or kafka_topics.stream_partitioned
     consume = consume or kafka_topics.consume_all
     reference = ref.load_reference(reference_dir) if reference_dir is not None else None
     conn = (db_connect or db_check.connect)(db_url) if db_url is not None else None
@@ -137,13 +153,13 @@ def run(brokers: str, topics: dict[str, str], report_path: Path,
         ema_records = consume(brokers, topics["ema"])
         advisory_records = consume(brokers, topics["advisories"])
         shadow = sh.shadow_replay(
-            _shadow_event(offset, value) for offset, value in event_records)
+            _shadow_event(record) for record in event_records)
         ema_actual = [cmp.decode_ema_window(_decode(bindings.EmaWindow, value))
                       for _, value in ema_records]
         advisories_actual = [cmp.decode_advisory(
             _decode(bindings.TradeAdvisory, value))
             for _, value in advisory_records]
-        result = cmp.compare(ema_actual, advisories_actual, shadow, tolerance)
+        result = cmp.compare(ema_actual, advisories_actual, shadow, tolerance, live)
         reference_result = (ref.compare_reference(shadow, reference)
                             if reference is not None else None)
         database_result = (db_check.compare_db(
@@ -203,6 +219,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db-url", default=None,
                         help="PostgreSQL URL of the materializer's database to also"
                              " check against the topics (drain the materializer first)")
+    parser.add_argument("--live", action="store_true",
+                        help="the processor ran as an unbounded job: report windows"
+                             " the final watermark has not passed as open instead of"
+                             " missing")
     return parser
 
 
@@ -212,7 +232,8 @@ def main(argv=None) -> int:
     topics = {"events": args.events_topic, "ema": args.ema_topic,
               "advisories": args.advisory_topic}
     result = run(args.brokers, topics, Path(args.report), args.tolerance,
-                 reference_dir=args.reference_dir, db_url=args.db_url)
+                 reference_dir=args.reference_dir, db_url=args.db_url,
+                 live=args.live)
     return 0 if result.passed else 1
 
 

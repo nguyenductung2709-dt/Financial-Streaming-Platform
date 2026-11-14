@@ -174,7 +174,7 @@ class IsLateTest(unittest.TestCase):
     """Flink drops an event once the watermark (max trade time - delay - 1 ms)
     reaches its window's last timestamp (allowed lateness 0)."""
 
-    DELAY = 70_000  # StreamingProcessor.OutOfOrdernessAllowance
+    DELAY = 70_000  # an explicit delay: the rule itself, independent of the configured default
 
     def test_late_exactly_when_watermark_reaches_window_end(self):
         event = tt(8, 3)  # window 08:00-08:05, last timestamp 08:04:59.999
@@ -384,7 +384,7 @@ class EndToEndTest(SyntheticCsvTestCase):
 
 class LateEventDropTest(SyntheticCsvTestCase):
     """Mirrors StreamingProcessor: one global watermark (max trade time seen
-    - 70 s - 1 ms) across all symbols, no allowed lateness, late events dropped."""
+    - 5 s - 1 ms) across all symbols, no allowed lateness, late events dropped."""
 
     def window_starts(self):
         return [r["window_start"][-5:] for r in read_csv(self.out_dir / "ema_windows.csv")]
@@ -392,9 +392,9 @@ class LateEventDropTest(SyntheticCsvTestCase):
     def test_other_symbol_advances_the_watermark_at_the_exact_boundary(self):
         summary = self.run_csv([
             data_row("AAA.NL", "E", "08:01:00.000", "10.000000"),
-            data_row("BBB.NL", "E", "08:06:09.999", "1.000000"),   # watermark 08:04:59.998
+            data_row("BBB.NL", "E", "08:05:04.999", "1.000000"),   # watermark 08:04:59.998
             data_row("AAA.NL", "E", "08:02:00.000", "20.000000"),  # window 08:00 still open
-            data_row("BBB.NL", "E", "08:06:10.000", "2.000000"),   # watermark 08:04:59.999
+            data_row("BBB.NL", "E", "08:05:05.000", "2.000000"),   # watermark 08:04:59.999
             data_row("AAA.NL", "E", "08:03:00.000", "30.000000"),  # window 08:00 closed: dropped
         ])
         aaa = read_csv(self.out_dir / "ema_windows.csv")[0]
@@ -452,10 +452,11 @@ class LateEventDropCliTest(SyntheticCsvTestCase):
             self.run_cli(*flags)
         return stderr.getvalue()
 
-    def test_default_follows_the_processor_70_seconds(self):
+    def test_default_follows_the_processor_allowance(self):
         windows, summary = self.run_cli()
         self.assertEqual(windows, ["10:00", "10:10"])
-        self.assertEqual(summary["spec"]["out_of_orderness_ms"], 70_000)
+        self.assertEqual(summary["spec"]["out_of_orderness_ms"], gvd.OUT_OF_ORDERNESS_MS)
+        self.assertEqual(gvd.OUT_OF_ORDERNESS_MS, 5_000)  # StreamingProcessor.OutOfOrdernessAllowance
 
     def test_keep_late_events(self):
         windows, summary = self.run_cli("--keep-late-events")

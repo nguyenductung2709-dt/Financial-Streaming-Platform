@@ -20,9 +20,9 @@ integers in millionths (micros); rows the producer would reject are excluded
 and counted as would-DLQ.
 
 Late events follow services/streaming-processor: its watermark is
-forBoundedOutOfOrderness(70 s) over all symbols (the trade-events topic has
+forBoundedOutOfOrderness(5 s) over all symbols (the trade-events topic has
 one partition) with zero allowed lateness, so a price event whose 5-minute
-window the watermark (max trade time seen - 70 s - 1 ms) has already passed is
+window the watermark (max trade time seen - 5 s - 1 ms) has already passed is
 dropped by Flink.  The script applies the same rule in file order and only
 counts the dropped events (rows.dropped_late_by_watermark).
 --out-of-orderness-seconds changes the delay, --keep-late-events disables the
@@ -83,7 +83,7 @@ WINDOW_MS = config.WINDOW_MS  # 5-minute tumbling windows anchored at 00:00 CEST
 MS_PER_DAY = 86_400_000
 PRICE_SCALE = 1_000_000    # prices are exact integers in millionths, like last_price_micros
 UINT64_MAX = 2**64 - 1
-# StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s), allowed lateness 0.
+# StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(5 s), allowed lateness 0.
 OUT_OF_ORDERNESS_MS = config.OUT_OF_ORDERNESS_MS
 # Rows extracted to drops_pending_watermark_emission.csv (the summary count is exact).
 EMISSION_CASES_CAP = config.EMISSION_CASES_CAP

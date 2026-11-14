@@ -20,7 +20,24 @@ BACKEND_PYTHON := $(abspath $(BACKEND_VENV))/bin/python
 BACKEND_HOST ?= 127.0.0.1
 BACKEND_PORT ?= 8000
 PROMETHEUS_URL ?= http://localhost:9090
-COMPOSE_MONITORING = docker compose -f compose.yaml -f compose.monitoring.yaml
+# CLUSTER=1 runs Redpanda as the 3-broker cluster of compose.cluster.yaml (topics
+# replicated to all three brokers). COMPOSE_FILE reaches every `docker compose` call,
+# including the scripts'. Switch modes only after `make reset-flow` in the old mode.
+# PARTITIONS=N gives every project topic N partitions (default 1); match it with
+# FLINK_PARALLELISM=N so each Flink source task reads one partition.
+CLUSTER ?= 0
+COMPOSE_FILES := compose.yaml$(if $(filter 1,$(CLUSTER)), compose.cluster.yaml)
+export COMPOSE_FILE := $(subst $() ,:,$(COMPOSE_FILES))
+ifeq ($(CLUSTER),1)
+export REDPANDA_REPLICAS := 3
+endif
+ifneq ($(strip $(PARTITIONS)),)
+export REDPANDA_PARTITIONS := $(PARTITIONS)
+endif
+ifneq ($(strip $(FLINK_PARALLELISM)),)
+export FLINK_PARALLELISM
+endif
+COMPOSE_MONITORING = docker compose $(foreach file,$(COMPOSE_FILES) compose.monitoring.yaml,-f $(file))
 MONITORING_SERVICES = docker-stats-exporter prometheus grafana
 OUT ?= bin/metrics/$(shell date +%Y%m%d-%H%M%S)
 
@@ -158,11 +175,12 @@ drain-materializer: build-materializer ## Run the materializer until it has cons
 	@$(materializer-env) exec python3 scripts/drain-materializer.py
 
 # DB_CHECK=1 (default) reads the database URL from .env and needs a drained materializer.
-compare-flow: ## Compare ema-windows and trade-advisories against the Python shadow; REFERENCE_DIR=... also checks the shadow against a generate-reference output, DB_CHECK=1 the PostgreSQL tables
+# LIVE=1 after an unbounded run (measure-flow, run-flow): windows still open at the end are reported, not failed.
+compare-flow: ## Compare ema-windows and trade-advisories against the Python shadow; REFERENCE_DIR=... also checks the shadow against a generate-reference output, DB_CHECK=1 the PostgreSQL tables, LIVE=1 after an unbounded run
 ifeq ($(DB_CHECK),1)
-	@$(materializer-env) exec python3 validation/verify_flow.py $(if $(strip $(REFERENCE_DIR)),--reference-dir $(REFERENCE_DIR)) --db-url "$$MATERIALIZER_DATABASE_URL"
+	@$(materializer-env) exec python3 validation/verify_flow.py $(if $(strip $(REFERENCE_DIR)),--reference-dir $(REFERENCE_DIR)) --db-url "$$MATERIALIZER_DATABASE_URL"$(if $(filter 1,$(LIVE)), --live)
 else
-	python3 validation/verify_flow.py $(if $(strip $(REFERENCE_DIR)),--reference-dir $(REFERENCE_DIR))
+	python3 validation/verify_flow.py $(if $(strip $(REFERENCE_DIR)),--reference-dir $(REFERENCE_DIR))$(if $(filter 1,$(LIVE)), --live)
 endif
 
 # The CSV reference needs the whole file, so a MAX_EVENTS prefix run skips it.
@@ -175,7 +193,7 @@ validate-flow: ## Full validation run; CSV=file, directory, or "file1 file2" req
 	$(MAKE) run-data-producer ARGS=$(call shell-quote,$(PRODUCER_CSV_ARGS) -rate=$(RATE) -dlqEnabled$(if $(strip $(MAX_EVENTS)), -maxEvents=$(MAX_EVENTS)))
 	$(MAKE) run-bounded-processor
 	$(if $(filter 1,$(DB_CHECK)),$(MAKE) drain-materializer)
-	$(MAKE) compare-flow REFERENCE_DIR=$(if $(strip $(MAX_EVENTS)),,$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
+	$(MAKE) compare-flow LIVE=0 REFERENCE_DIR=$(if $(strip $(MAX_EVENTS)),,$(or $(strip $(REFERENCE_DIR)),$(DEFAULT_REFERENCE_DIR)))
 
 test-validation: ## Run all Python validation and flow tests
 	for t in validation/*_test.py scripts/submit_flink_job_test.py scripts/reset_flow_test.py scripts/drain_materializer_test.py scripts/csv_make_test.py scripts/test_flow.py scripts/collect_resource_metrics_test.py scripts/collect_latency_test.py scripts/measure_flow_test.py scripts/sweep_flow_test.py scripts/containers_test.py scripts/run_producer_test.py monitoring/docker-stats-exporter/exporter_test.py; do \
