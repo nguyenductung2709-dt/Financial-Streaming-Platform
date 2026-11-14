@@ -171,7 +171,7 @@ class LoadReferenceTest(ReferenceTestCase):
     def test_loads_windows_and_the_spec_flags(self):
         reference = ref.load_reference(self.generate(SCENARIO))
         self.assertEqual(len(reference.windows), 4)
-        self.assertEqual(reference.out_of_orderness_ms, 70_000)
+        self.assertEqual(reference.out_of_orderness_ms, config.OUT_OF_ORDERNESS_MS)
         window = reference.windows[(AAA, epoch_ms(8, 15))]
         self.assertEqual((window.event_count, window.close_micros), (2, 25_000_000))
 

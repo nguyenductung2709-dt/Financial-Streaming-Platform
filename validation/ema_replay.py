@@ -8,7 +8,7 @@ documents/CS_E4780_Course_Project_2026.pdf.
 
 Also the processor's late-event rule (is_late), shared by the CSV
 generator and the stream shadow: services/streaming-processor uses
-forBoundedOutOfOrderness(70 s), so the watermark is
+forBoundedOutOfOrderness(5 s), so the watermark is
 `max trade time seen - OutOfOrdernessMs - 1 ms` and an event is
 dropped once its window's last timestamp has reached that watermark
 plus any AllowedLatenessMs (the processor sets none: 0).
@@ -31,7 +31,7 @@ from typing import NamedTuple
 WindowMs = config.WINDOW_MS             # 5-minute tumbling windows (PDF 3.1)
 JShort, JLong = config.EMA_J_SHORT, config.EMA_J_LONG
 DECIMAL_PREC = config.DECIMAL_PREC
-# StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s), allowed lateness 0.
+# StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(5 s), allowed lateness 0.
 OutOfOrdernessMs = config.OUT_OF_ORDERNESS_MS
 
 
