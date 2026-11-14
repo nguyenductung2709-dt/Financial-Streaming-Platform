@@ -96,6 +96,30 @@ Run the flow lifecycle tests with:
 python3 -m unittest discover -s scripts -p 'test_flow.py' -v
 ```
 
+## Run on a 3-broker Redpanda cluster
+
+By default Redpanda is one broker and every topic has one partition. For
+scalability experiments, `CLUSTER=1` adds `compose.cluster.yaml`: three brokers,
+with every topic replicated to all three, so the cluster keeps working when one
+broker fails. `PARTITIONS=N` gives every project topic N partitions, and
+`FLINK_PARALLELISM=N` runs the Flink job with N parallel tasks (at most 4 per
+TaskManager by default; `FLINK_TASK_SLOTS` changes that). Use the same N for both,
+so each Flink source task reads one partition:
+
+```sh
+make reset-flow                                  # leave the single-broker mode first
+make measure-flow CLUSTER=1 PARTITIONS=4 FLINK_PARALLELISM=4 CSV=dataset RATE=50000
+make reset-flow CLUSTER=1                        # before going back to one broker
+```
+
+Pass the same `CLUSTER` value to every command of a session: broker data written in
+one mode doesn't fit the other, so switch modes only after `make reset-flow` in the
+mode you are leaving. Each broker gets `REDPANDA_MEMORY` (default `2G`), so give
+Docker enough memory for three of them next to Flink. The brokers are reachable
+from the host on `localhost:19092`, `29092` and `39092`. Producers and consumers
+keep each symbol in one partition (the message key is the symbol), so its events
+stay in order.
+
 ## Local PostgreSQL
 
 Start the database and open its SQL shell from the repository root:

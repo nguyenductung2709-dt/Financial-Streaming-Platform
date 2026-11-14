@@ -24,8 +24,10 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parent / "reset-flow-data.py"
 
@@ -112,11 +114,23 @@ class RecreateTopicsTest(unittest.TestCase):
         self.mod = load_module()
         self.time = FakeTime()
 
-    def recreate(self, topics):
+    def recreate(self, topics, env=None):
         runner = FakeRunner(topics)
-        self.mod.recreate_topics(run=runner, sleep=self.time.sleep,
-                                 clock=self.time.monotonic)
+        layout = {k: v for k, v in os.environ.items()
+                  if k not in ("REDPANDA_PARTITIONS", "REDPANDA_REPLICAS")}
+        with mock.patch.dict(os.environ, {**layout, **(env or {})}, clear=True):
+            self.mod.recreate_topics(run=runner, sleep=self.time.sleep,
+                                     clock=self.time.monotonic)
         return runner
+
+    def test_cluster_layout_creates_partitions_and_replicas(self):
+        runner = self.recreate({name: [(0, 0)] * 4 for name in self.mod.TOPICS},
+                               env={"REDPANDA_PARTITIONS": "4", "REDPANDA_REPLICAS": "3"})
+        creates = [c for c in runner.commands if "create" in c]
+        self.assertEqual(len(creates), len(self.mod.TOPICS))
+        for command in creates:
+            i = command.index("--partitions")
+            self.assertEqual(command[i:i + 4], ["--partitions", "4", "--replicas", "3"])
 
     def failing_recreate(self, topics):
         runner = FakeRunner(topics)
@@ -260,6 +274,25 @@ class TopicReadinessTest(unittest.TestCase):
     def test_the_wait_defaults_come_from_config(self):
         self.assertEqual(self.mod.TOPIC_READY_TIMEOUT_S, 120.0)
         self.assertEqual(self.mod.TOPIC_READY_POLL_S, 1.0)
+
+
+
+class TopicLayoutTest(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_module()
+
+    def test_defaults_to_one_partition_and_one_replica(self):
+        self.assertEqual(self.mod.topic_layout({}), (1, 1))
+        self.assertEqual(self.mod.topic_layout({"REDPANDA_PARTITIONS": " "}), (1, 1))
+
+    def test_reads_partitions_and_replicas(self):
+        self.assertEqual(self.mod.topic_layout(
+            {"REDPANDA_PARTITIONS": "4", "REDPANDA_REPLICAS": "3"}), (4, 3))
+
+    def test_rejects_non_positive_or_non_numeric_values(self):
+        for bad in ("0", "-1", "two", "1.5"):
+            with self.assertRaises(RuntimeError):
+                self.mod.topic_layout({"REDPANDA_PARTITIONS": bad})
 
 
 if __name__ == "__main__":

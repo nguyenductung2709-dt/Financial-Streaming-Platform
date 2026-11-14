@@ -20,7 +20,24 @@ BACKEND_PYTHON := $(abspath $(BACKEND_VENV))/bin/python
 BACKEND_HOST ?= 127.0.0.1
 BACKEND_PORT ?= 8000
 PROMETHEUS_URL ?= http://localhost:9090
-COMPOSE_MONITORING = docker compose -f compose.yaml -f compose.monitoring.yaml
+# CLUSTER=1 runs Redpanda as the 3-broker cluster of compose.cluster.yaml (topics
+# replicated to all three brokers). COMPOSE_FILE reaches every `docker compose` call,
+# including the scripts'. Switch modes only after `make reset-flow` in the old mode.
+# PARTITIONS=N gives every project topic N partitions (default 1); match it with
+# FLINK_PARALLELISM=N so each Flink source task reads one partition.
+CLUSTER ?= 0
+COMPOSE_FILES := compose.yaml$(if $(filter 1,$(CLUSTER)), compose.cluster.yaml)
+export COMPOSE_FILE := $(subst $() ,:,$(COMPOSE_FILES))
+ifeq ($(CLUSTER),1)
+export REDPANDA_REPLICAS := 3
+endif
+ifneq ($(strip $(PARTITIONS)),)
+export REDPANDA_PARTITIONS := $(PARTITIONS)
+endif
+ifneq ($(strip $(FLINK_PARALLELISM)),)
+export FLINK_PARALLELISM
+endif
+COMPOSE_MONITORING = docker compose $(foreach file,$(COMPOSE_FILES) compose.monitoring.yaml,-f $(file))
 MONITORING_SERVICES = docker-stats-exporter prometheus grafana
 OUT ?= bin/metrics/$(shell date +%Y%m%d-%H%M%S)
 
