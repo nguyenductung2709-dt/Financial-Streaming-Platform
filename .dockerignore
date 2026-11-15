@@ -4,6 +4,8 @@
 .superpowers
 .env
 .env.*
+.venv/
+.dataset-venv/
 bin
 dataset
 validation/out
