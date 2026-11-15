@@ -19,6 +19,13 @@ BACKEND_VENV ?= .venv
 BACKEND_PYTHON := $(abspath $(BACKEND_VENV))/bin/python
 BACKEND_HOST ?= 127.0.0.1
 BACKEND_PORT ?= 8000
+
+# Keep Zenodo downloader independent from backend dependencies
+DATASET_VENV ?= .dataset-venv
+DATASET_PYTHON := $(abspath $(DATASET_VENV))/bin/python
+DATASET_ZENODO_GET := $(abspath $(DATASET_VENV))/bin/zenodo_get
+DATASET_DAYS ?=
+
 PROMETHEUS_URL ?= http://localhost:9090
 COMPOSE_MONITORING = docker compose -f compose.yaml -f compose.monitoring.yaml
 MONITORING_SERVICES = docker-stats-exporter prometheus grafana
@@ -47,7 +54,7 @@ endef
 	generate-protobuf generate-python-protobuf setup-hooks run-postgres postgres-shell \
 	monitoring-up monitoring-down collect-metrics collect-latency measure-flow sweep-flow
 
-.PHONY: setup-backend migrate-backend run-backend stop-flow
+.PHONY: setup-backend migrate-backend run-backend stop-flow setup-dataset download-dataset
 
 setup-backend: $(BACKEND_VENV)/.backend-requirements ## Prepare the backend virtual environment and install its dependencies
 
@@ -55,6 +62,16 @@ $(BACKEND_VENV)/.backend-requirements: services/backend/requirements.txt
 	@test -x $(call shell-quote,$(BACKEND_PYTHON)) || python3 -m venv $(call shell-quote,$(BACKEND_VENV))
 	$(call shell-quote,$(BACKEND_PYTHON)) -m pip install -r services/backend/requirements.txt
 	@touch $(call shell-quote,$@)
+
+setup-dataset: $(DATASET_VENV)/.dataset-requirements ## Prepare a separate venv for Zenodo dataset downloader
+
+$(DATASET_VENV)/.dataset-requirements: requirements-dataset.txt
+	@test -x $(call shell-quote,$(DATASET_PYTHON)) || python3 -m venv $(call shell-quote,$(DATASET_VENV))
+	$(call shell-quote,$(DATASET_PYTHON)) -m pip install -r requirements-dataset.txt
+	@touch $(call shell-quote,$@)
+
+download-dataset: setup-dataset ## Download all DEBS data, or selected days with DATASET_DAYS="08-11-21 09-11-21"
+	$(call shell-quote,$(DATASET_ZENODO_GET)) 6382482 -o dataset $(foreach day,$(DATASET_DAYS),-g "debs2022-gc-trading-day-$(day).csv")
 
 migrate-backend: setup-backend ## Apply missing database migrations safely; PostgreSQL must be running
 	@$(materializer-env) exec $(call shell-quote,$(BACKEND_PYTHON)) services/backend/migrate.py
@@ -76,6 +93,7 @@ help: ## Show command usage; also displayed by plain make
 		'  race tests also require cgo and a C compiler.' \
 		'  Processor: Java 17 and sbt.' \
 		'  Dashboard: Python 3.12; first start installs backend dependencies into .venv.' \
+		'  Dataset download: Python 3 and requirements-dataset.txt; installed into .dataset-venv.' \
 		'  Code generation: protoc and protoc-gen-go (see schemas/market/v1/README.md).' \
 		'  Publishing: a running broker, existing topics, and an input CSV.'
 
