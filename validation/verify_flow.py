@@ -90,6 +90,9 @@ def _print_summary(shadow, result: cmp.CompareResult,
           f" unexplained {len(result.unexplained)}")
     print(f"at-risk: {len(shadow.at_risk_windows)} windows,"
           f" {shadow.at_risk_events} events")
+    if result.live:
+        print(f"open at end: {len(result.open_at_end)} windows the final watermark"
+              " has not passed (live run: no later event closed them)")
     if reference is not None:
         print(f"reference ({reference.side}): {reference.matched} of"
               f" {reference.reference_windows} windows match,"
@@ -109,8 +112,12 @@ def _print_summary(shadow, result: cmp.CompareResult,
 
 def run(brokers: str, topics: dict[str, str], report_path: Path,
         tolerance: Decimal, consume=None, reference_dir=None,
-        db_url=None, db_connect=None, stream=None) -> FlowResult:
+        db_url=None, db_connect=None, stream=None, live=False) -> FlowResult:
     """Validate one finished flow and write its JSON report.
+
+    live=True is for an unbounded processor run (measure-flow, run-flow):
+    windows still open at the end of the stream are reported as
+    open_at_end instead of failing the comparison (compare.compare).
 
     Reads the three topics (events feed the shadow replay as a stream and
     are never held in memory; ema and advisories are the actual, read into
@@ -143,7 +150,7 @@ def run(brokers: str, topics: dict[str, str], report_path: Path,
         advisories_actual = [cmp.decode_advisory(
             _decode(bindings.TradeAdvisory, value))
             for _, value in advisory_records]
-        result = cmp.compare(ema_actual, advisories_actual, shadow, tolerance)
+        result = cmp.compare(ema_actual, advisories_actual, shadow, tolerance, live)
         reference_result = (ref.compare_reference(shadow, reference)
                             if reference is not None else None)
         database_result = (db_check.compare_db(
@@ -203,6 +210,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db-url", default=None,
                         help="PostgreSQL URL of the materializer's database to also"
                              " check against the topics (drain the materializer first)")
+    parser.add_argument("--live", action="store_true",
+                        help="the processor ran as an unbounded job: report windows"
+                             " the final watermark has not passed as open instead of"
+                             " missing")
     return parser
 
 
@@ -212,7 +223,8 @@ def main(argv=None) -> int:
     topics = {"events": args.events_topic, "ema": args.ema_topic,
               "advisories": args.advisory_topic}
     result = run(args.brokers, topics, Path(args.report), args.tolerance,
-                 reference_dir=args.reference_dir, db_url=args.db_url)
+                 reference_dir=args.reference_dir, db_url=args.db_url,
+                 live=args.live)
     return 0 if result.passed else 1
 
 

@@ -45,3 +45,21 @@ and the target exits non-zero on failure.
 Check 1 labels each window `match`, `lateness-explained`, `lateness-related` or
 `unexplained`. Only `unexplained` fails the run; the lateness labels are
 differences attributable to late-event drops.
+
+## Checking a live run
+
+`validate-flow` runs the processor as a bounded job, which closes every window
+when the input ends. `make measure-flow` and `make run-flow` run it unbounded: a
+window closes only once a later event moves the watermark past it, so the last
+windows of the input stay open. Check such a run with
+
+```sh
+make compare-flow LIVE=1
+```
+
+A window that is missing from the output and that the final watermark (max trade
+time minus the out-of-orderness allowance) has not passed is then reported as
+`open at end` instead of `unexplained`, and listed under `open_at_end` in the
+report. A missing window the watermark did pass still fails the run, and so does
+any window present with wrong values. Without `LIVE=1` (and always inside
+`validate-flow`) every window must be present.

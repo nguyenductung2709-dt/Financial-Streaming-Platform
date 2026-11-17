@@ -315,6 +315,105 @@ class UnexplainedTest(unittest.TestCase):
             cmp.Mismatch(SYM, 600_000, ("window unexpected in actual",))])
 
 
+class LiveOpenAtEndTest(unittest.TestCase):
+    """live=True: windows the final watermark has not passed may be absent.
+
+    A window [s, s+300_000) fires once max trade time >= s + 300_000 +
+    OutOfOrdernessMs (watermark = max - OutOfOrdernessMs - 1 reaches its last
+    ms s + 299_999). Boundaries derive from the configured allowance.
+    """
+
+    # max trade time at which window 0 has just fired
+    BOUNDARY = er.WindowMs + er.OutOfOrdernessMs
+
+    def test_missing_open_window_is_open_at_end_and_passes(self):
+        result = sh.shadow_replay([make_event(SYM, 10_000, 15_000_000, 1)])
+        compared = cmp.compare([], [], result, live=True)
+        self.assertTrue(compared.passed)
+        self.assertTrue(compared.live)
+        self.assertEqual(compared.unexplained, [])
+        self.assertEqual(compared.open_at_end,
+                         (cmp.Mismatch(SYM, 0, ("window missing from actual",)),))
+
+    def test_strict_mode_still_fails_the_same_window(self):
+        result = sh.shadow_replay([make_event(SYM, 10_000, 15_000_000, 1)])
+        compared = cmp.compare([], [], result)
+        self.assertFalse(compared.passed)
+        self.assertFalse(compared.live)
+        self.assertEqual(compared.open_at_end, ())
+        self.assertEqual(len(compared.unexplained), 1)
+
+    def test_missing_window_the_watermark_passed_still_fails(self):
+        # max 700_000: w0 (fires at BOUNDARY) is closed, w2 (600_000) is still open
+        self.assertLess(self.BOUNDARY, 700_000)
+        result = sh.shadow_replay([
+            make_event(SYM, 10_000, 15_000_000, 1),    # w0
+            make_event(SYM, 700_000, 25_000_000, 2),   # w2
+        ])
+        compared = cmp.compare([], [], result, live=True)
+        self.assertFalse(compared.passed)
+        self.assertEqual([m.window_start_ms for m in compared.unexplained], [0])
+        self.assertEqual([m.window_start_ms for m in compared.open_at_end], [600_000])
+
+    def test_firing_boundary_is_flinks(self):
+        windows_for = lambda last_tt: sh.shadow_replay([
+            make_event(SYM, 10_000, 15_000_000, 1),           # w0
+            make_event(OTHER, last_tt, 11_000_000, 2),        # moves the max
+        ])
+        # max = BOUNDARY: w0's watermark reaches 299_999, so w0 has fired
+        closed = windows_for(self.BOUNDARY)
+        compared = cmp.compare([], [], closed, live=True)
+        self.assertIn((SYM, 0), [(m.symbol, m.window_start_ms) for m in compared.unexplained])
+        # 1 ms earlier the watermark is 299_998: w0 is still open
+        still_open = windows_for(self.BOUNDARY - 1)
+        compared = cmp.compare([], [], still_open, live=True)
+        self.assertIn((SYM, 0), [(m.symbol, m.window_start_ms) for m in compared.open_at_end])
+        self.assertNotIn((SYM, 0), [(m.symbol, m.window_start_ms) for m in compared.unexplained])
+
+    def test_open_window_present_in_actual_is_simply_matched(self):
+        result = sh.shadow_replay([make_event(SYM, 10_000, 15_000_000, 1)])
+        compared = cmp.compare(*actual_from_shadow(result), result, live=True)
+        self.assertTrue(compared.passed)
+        self.assertEqual(compared.matched, 1)
+        self.assertEqual(compared.open_at_end, ())
+
+    def test_wrong_values_in_an_open_window_still_fail(self):
+        result = sh.shadow_replay([make_event(SYM, 10_000, 15_000_000, 1)])
+        windows, advisories = actual_from_shadow(result)
+        windows = tweak(windows, 0, closing_price_micros=16_000_000)
+        compared = cmp.compare(windows, advisories, result, live=True)
+        self.assertFalse(compared.passed)
+        self.assertEqual(compared.open_at_end, ())
+        self.assertEqual(len(compared.unexplained), 1)
+
+    def test_lone_advisory_in_an_open_window_is_not_hidden(self):
+        # actual has an advisory but no window for an open window: not "absent"
+        result = sh.shadow_replay([make_event(SYM, 10_000, 15_000_000, 1)])
+        window = proto_window(SYM, 0, 15_000_000, "15", "15")
+        advisory = cmp.decode_advisory(proto_advisory(
+            window, bindings.ADVISORY_ACTION_BUY, "1", "1"))
+        compared = cmp.compare([], [advisory], result, live=True)
+        self.assertFalse(compared.passed)
+        self.assertEqual(compared.open_at_end, ())
+
+    def test_empty_stream_has_nothing_open(self):
+        empty = sh.shadow_replay([])
+        compared = cmp.compare([], [], empty, live=True)
+        self.assertTrue(compared.passed)
+        self.assertEqual(compared.open_at_end, ())
+
+    def test_report_lists_open_windows(self):
+        result = sh.shadow_replay([make_event(SYM, 10_000, 15_000_000, 1)])
+        compared = cmp.compare([], [], result, live=True)
+        report = cmp.build_report(result, compared, Decimal("1e-9"), TOPICS)
+        self.assertTrue(report["live"])
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["open_at_end"], {
+            "count": 1, "truncated": False,
+            "windows": [{"symbol": SYM, "window_start_ms": 0,
+                         "parts": ["window missing from actual"]}]})
+
+
 class AdvisoryComparisonTest(unittest.TestCase):
     """w0 emits BUY (prev-zero first window); w1 has no crossover -> ""."""
 
@@ -448,9 +547,11 @@ class BuildReportTest(unittest.TestCase):
         self.assertEqual(report["at_risk_events"], 0)
         self.assertEqual(report["final_max_tt_ms"], 10_000)
         self.assertTrue(report["passed"])
-        for cls in ("lateness_explained", "lateness_related", "unexplained"):
+        for cls in ("lateness_explained", "lateness_related", "unexplained",
+                    "open_at_end"):
             self.assertEqual(report[cls], {"count": 0, "truncated": False,
                                            "windows": []})
+        self.assertFalse(report["live"])
         self.assertEqual(json.loads(json.dumps(report)), report)
 
     def test_mismatch_lists_capped_at_100_with_truncated_flag(self):
