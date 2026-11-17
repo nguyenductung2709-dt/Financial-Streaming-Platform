@@ -11,8 +11,9 @@ docs/superpowers/specs/2026-10-31-validation-config-design.md.
 from decimal import Decimal
 
 # --- Pipeline spec mirrors (change in pairs with the Scala side) ---
-# StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(70 s).
-OUT_OF_ORDERNESS_MS = 70_000
+# StreamingProcessor.OutOfOrdernessAllowance: forBoundedOutOfOrderness(5 s); see
+# "Out-of-orderness allowance" in services/streaming-processor/README.md.
+OUT_OF_ORDERNESS_MS = 5_000
 # StreamingProcessor: TumblingEventTimeWindows.of(Duration.ofMinutes(5)).
 WINDOW_MS = 300_000
 # EmaProcessFunction: next(..., period = 38) / next(..., period = 100).
