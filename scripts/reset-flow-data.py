@@ -28,6 +28,20 @@ TOPICS = (config.TOPIC_EVENTS, config.TOPIC_DLQ, config.TOPIC_EMA_WINDOWS,
           config.TOPIC_MATERIALIZE_STAMPS)
 LOG_APPEND_TIME_TOPICS = config.LOG_APPEND_TIME_TOPICS
 LOG_APPEND_TIME_CONFIG = config.LOG_APPEND_TIME_CONFIG
+
+
+def topic_layout(env=None):
+    """(partitions, replicas) for recreated topics, from REDPANDA_PARTITIONS and
+    REDPANDA_REPLICAS (both default 1, like compose.yaml's create-topic;
+    compose.cluster.yaml uses 3 replicas, which `make ... CLUSTER=1` sets)."""
+    env = os.environ if env is None else env
+    layout = []
+    for name in ("REDPANDA_PARTITIONS", "REDPANDA_REPLICAS"):
+        text = env.get(name, "").strip() or "1"
+        if not text.isdigit() or int(text) < 1:
+            raise RuntimeError(f"{name} must be a positive integer, got {text!r}")
+        layout.append(int(text))
+    return tuple(layout)
 TERMINAL_STATES = {"FINISHED", "FAILED", "CANCELED", "SUSPENDED"}
 TOPIC_READY_TIMEOUT_S = config.TOPIC_READY_TIMEOUT_S
 TOPIC_READY_POLL_S = config.TOPIC_READY_POLL_S
@@ -128,7 +142,8 @@ def recreate_topics(run=None, timeout_s=None, poll_s=None, sleep=None, clock=Non
     Clearing records in place (trim-prefix) leaves the low watermark at
     the previous high watermark; the flow validation refuses to read a
     topic whose head is truncated that way, so the reset must recreate
-    the topics instead (one partition, one replica, like create-topic).
+    the topics instead, with topic_layout()'s partitions and replicas, like
+    create-topic.
     `rpk topic create` returns before the partition has a leader, and a
     recreated partition cannot start until the old log of the same name
     is physically removed (about 30 s for a full day's topic), so the
@@ -144,11 +159,12 @@ def recreate_topics(run=None, timeout_s=None, poll_s=None, sleep=None, clock=Non
     poll_s = TOPIC_READY_POLL_S if poll_s is None else poll_s
     rpk = ["docker", "compose", "exec", "-T", "redpanda-0", "rpk", "topic"]
     broker = ["-X", "brokers=redpanda-0:9092"]
+    partitions, replicas = topic_layout()
     for topic in TOPICS:
         run([*rpk, "delete", topic, *broker], cwd=ROOT, check=True)
         settings = ["-c", LOG_APPEND_TIME_CONFIG] if topic in LOG_APPEND_TIME_TOPICS else []
-        run([*rpk, "create", topic, "--partitions", "1", "--replicas", "1", *settings, *broker],
-            cwd=ROOT, check=True)
+        run([*rpk, "create", topic, "--partitions", str(partitions), "--replicas", str(replicas),
+             *settings, *broker], cwd=ROOT, check=True)
 
     deadline = clock() + timeout_s
     announced = False

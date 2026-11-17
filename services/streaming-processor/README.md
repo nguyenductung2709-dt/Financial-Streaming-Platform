@@ -164,6 +164,80 @@ its previous pair, emitting BUY on an upward cross and SELL on a downward cross.
 Both Redpanda sinks use UTF-8 symbol keys and at-least-once delivery; recovery or
 replay can produce duplicates. Input, EMA output, and advisory topics must differ.
 
+## Out-of-orderness allowance
+
+The watermark is the highest `trade_time` seen so far minus an allowance of
+**5 seconds** (`OutOfOrdernessAllowance`, `forBoundedOutOfOrderness`). A window
+fires once the watermark passes its end, so every result waits for the
+allowance. An event that arrives after its window has fired is dropped. The
+allowance trades latency against correctness:
+
+- **Too small:** a late trade is dropped without any error. Its window's closing
+  price is then wrong, and because each EMA builds on the previous one, so is
+  every later window of that symbol. In the 3-day validation run, 5,506 dropped
+  events changed 229,999 windows this way.
+- **Too large:** every result is delayed by the allowance. In a replay, the
+  allowance passes in milliseconds of wall-clock time. In live operation, it is
+  real seconds before each EMA and advisory.
+
+### Measurement
+
+The allowance a trade needs is how far the watermark has already passed its
+window when the trade arrives: `max trade time seen - window end + 1 ms`, in
+file order. File order is also the topic order, because the producer replays
+each file in order into one partition. Over all five trading days
+(about 59.4M trades):
+
+| Day | Trades that need any allowance | Largest needed |
+| --- | --- | --- |
+| 08-11-21 | 79 | 25 ms |
+| 09-11-21 | 76 | 121 ms |
+| 10-11-21 | 54 | 15 ms |
+| 11-11-21 | 119 | 264 ms |
+| 12-11-21 | 24 | 18 ms |
+
+These trades are timestamped just before a window boundary and arrive a few
+milliseconds after a newer trade from another exchange. The worst cases are
+Paris (`.FR`) and Amsterdam (`.NL`) symbols, so this is ordinary skew between
+exchange feeds.
+Real trades dropped at each allowance, over the five days: 352 at 0 s, and none
+at 1, 2, 5, 10, 30 or 70 s. The 13-11 and 14-11 files (weekend) contain no
+trades.
+
+Two effects look like larger lateness but do not need a larger allowance:
+
+- **Xetra closing auction:** every day, about 430 trades with `trade_time` in
+  17:30 arrive while the stream is already at 17:31, up to 65 s behind the
+  newest trade. They belong to the 17:30-17:35 window, which is still open, so
+  they are kept with any allowance. The earlier 70 s allowance was sized to this
+  65 s gap.
+- **Placeholder index rows on 10-11-21:** 5,506 index values with a
+  `Trading time` of exactly 01:00:00.000 and an empty `Trading date` appear at
+  about 18:56 in the file. Flink drops them as late under every allowance (they
+  are almost 18 hours behind), and `compare-flow` classifies the affected
+  windows as `lateness_explained`.
+
+### Why 5 seconds
+
+The smallest allowance that keeps every real trade is 264 ms. We use 5 s,
+about 20 times that, because:
+
+1. **The worst case varies by day:** from 15 ms to 264 ms over only five days.
+   An order of magnitude of headroom covers days that are worse than the ones
+   we have.
+2. **A replay has the best possible ordering:** one ordered file, one partition.
+   Live feeds from three exchanges arrive over a network, and a short delay on
+   one feed easily adds a second or more.
+3. **The costs are not symmetric:** a too-small allowance silently corrupts a
+   symbol's EMAs from then on, while each extra second only delays results by
+   that second. 5 s is under 2% of a five-minute window, against 23% for 70 s.
+
+On this dataset, 5 s and 70 s drop exactly the same events, so their results
+are identical. 5 s is chosen for the system's live latency: each result arrives
+65 s earlier. If the allowance changes, change `OUT_OF_ORDERNESS_MS` in
+`validation/config.py` with it, because the validation and latency tools apply
+the same rule.
+
 ## Processing and recovery
 
 - New executions start at committed group offsets, falling back to earliest if
@@ -184,8 +258,8 @@ replay can produce duplicates. Input, EMA output, and advisory topics must diffe
   attempt. Log samples may repeat after recovery: this inspection sink is not
   an exactly-once business output or durable storage.
 - Windows are `[start, end)`, aligned to five-minute boundaries. They use the
-  event's `trade_time`, with a 70-second out-of-order allowance (see the
-  [dataset analysis](../../documents/event-time-analysis.md)). A window closes
+  event's `trade_time`, with a 5-second out-of-order allowance (see
+  [Out-of-orderness allowance](#out-of-orderness-allowance)). A window closes
   when its watermark reaches the end; this is event-time progress, not a
   wall-clock timer. Empty windows produce no result.
 - A continuous stream that stops receiving events may leave its last windows

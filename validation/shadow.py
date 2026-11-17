@@ -32,6 +32,18 @@ Watermark model (PDF 3.1; the design's per-event idealization is an upper
     only the directly-hit windows; at_risk_events counts the dropped
     events.
 
+Partitions (a topic with several partitions, Flink parallelism to match):
+  Flink keeps one watermark per partition (its max trade time - delay - 1)
+  and the job's watermark is the minimum over the partitions.  Records keep
+  their order within a partition, but Flink reads partitions concurrently,
+  so the interleaving across partitions is not fixed.  The drop model
+  therefore tests each event against its OWN partition's running max: the
+  job watermark can never be ahead of it, so this is a superset of what
+  Flink can drop, and actual stays between keep-all and the drop model as
+  the classification expects.  With one partition it is exactly the global
+  rule above.  final_watermark_max_tt_ms is the minimum over the partitions
+  of their max trade time, the value Flink's final watermark derives from.
+
 Memory is O(windows): per-(symbol, window) close states and window keys
 are accumulated in a single pass; events are never retained.
 """
@@ -50,12 +62,15 @@ from ema_replay import (
 
 
 class ShadowEvent(NamedTuple):
-    """One price event as it arrived on the stream (arrival order matters)."""
+    """One price event as it arrived on the stream (arrival order matters
+    within a partition; order breaks close ties within a symbol, whose
+    events all share one partition)."""
 
     symbol: str
     tt_ms: int
     micros: int
     order: int
+    partition: int = 0
 
 
 class ShadowOutput(NamedTuple):
@@ -67,6 +82,9 @@ class ShadowOutput(NamedTuple):
                      for; at_risk_events counts those dropped events
                      (expected zero on near-chronological data).
     final_max_tt_ms: max event time over all events (None for zero events).
+    final_watermark_max_tt_ms: min over the partitions of their max event
+                     time, from which the final watermark follows (None for
+                     zero events); equals final_max_tt_ms with one partition.
     """
 
     keep_all: dict[tuple[str, int], WindowResult]
@@ -75,6 +93,7 @@ class ShadowOutput(NamedTuple):
     at_risk_events: int
     total_events: int
     final_max_tt_ms: int | None
+    final_watermark_max_tt_ms: int | None = None
 
 
 def shadow_replay(events: Iterable[ShadowEvent]) -> ShadowOutput:
@@ -92,14 +111,18 @@ def shadow_replay(events: Iterable[ShadowEvent]) -> ShadowOutput:
     dropped: dict[tuple[str, int], int] = {}
     total_events = 0
     max_tt: int | None = None
+    partition_max: dict[int, int] = {}
     for ev in events:
         total_events += 1
         if max_tt is None or ev.tt_ms > max_tt:
             max_tt = ev.tt_ms
+        own_max = partition_max.get(ev.partition)
+        if own_max is None or ev.tt_ms > own_max:
+            own_max = partition_max[ev.partition] = ev.tt_ms
         key = (ev.symbol, ev.tt_ms // WindowMs)
         keep_closes[key] = update_close(
             keep_closes.get(key), ev.tt_ms, ev.micros, ev.order)
-        if not is_late(ev.tt_ms, max_tt, OutOfOrdernessMs):
+        if not is_late(ev.tt_ms, own_max, OutOfOrdernessMs):
             drop_closes[key] = update_close(
                 drop_closes.get(key), ev.tt_ms, ev.micros, ev.order)
         else:
@@ -108,5 +131,6 @@ def shadow_replay(events: Iterable[ShadowEvent]) -> ShadowOutput:
     drop_model = {(r.symbol, r.window_index): r for r in replay(drop_closes)}
     at_risk_windows = frozenset(dropped)
     at_risk_events = sum(dropped.values())
+    watermark_max = min(partition_max.values()) if partition_max else None
     return ShadowOutput(keep_all, drop_model, at_risk_windows,
-                        at_risk_events, total_events, max_tt)
+                        at_risk_events, total_events, max_tt, watermark_max)

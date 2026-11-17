@@ -165,7 +165,25 @@ class LatencyIntegrationTest(unittest.TestCase):
     def test_the_job_is_submitted_with_the_latency_topic(self):
         self.assertEqual(measure.JOB_ARGS,
                          ["--starting-offsets", "earliest", "--latency-topic", "latency-stamps"])
-        self.assertIn("*JOB_ARGS", inspect.getsource(measure.measure))
+        self.assertIn("*job_args()", inspect.getsource(measure.measure))
+
+    def test_flink_parallelism_is_passed_to_the_job_when_set(self):
+        self.assertEqual(measure.job_args({}), measure.JOB_ARGS)
+        self.assertEqual(measure.job_args({"FLINK_PARALLELISM": " "}), measure.JOB_ARGS)
+        self.assertEqual(measure.job_args({"FLINK_PARALLELISM": "4"}),
+                         [*measure.JOB_ARGS, "--parallelism", "4"])
+
+
+class PerTopicQueryTest(unittest.TestCase):
+    def test_dedupes_replicas_then_sums_partitions(self):
+        self.assertEqual(
+            measure.per_topic('m{redpanda_topic="t"}'),
+            'sum by (redpanda_topic) (max by (redpanda_topic, redpanda_partition) (m{redpanda_topic="t"}))')
+
+    def test_compose_includes_the_cluster_file_from_compose_file(self):
+        self.assertEqual(measure.COMPOSE[:2], ["docker", "compose"])
+        self.assertEqual(measure.COMPOSE[-2:], ["-f", "compose.monitoring.yaml"])
+        self.assertEqual(measure.COMPOSE[2:-2:2], ["-f"] * len(measure.COMPOSE_FILES))
 
     def test_the_materializer_stamps_committed_results(self):
         self.assertEqual(measure.MATERIALIZER_STAMP_ENV,

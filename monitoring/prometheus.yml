@@ -17,7 +17,9 @@ scrape_configs:
     static_configs:
       - targets: ["taskmanager:9249"]
 
+  # redpanda-1 and redpanda-2 exist only with compose.cluster.yaml (CLUSTER=1);
+  # without it they show as down, which measure-flow tolerates.
   - job_name: redpanda
     metrics_path: /public_metrics
     static_configs:
-      - targets: ["redpanda-0:9644"]
+      - targets: ["redpanda-0:9644", "redpanda-1:9644", "redpanda-2:9644"]
