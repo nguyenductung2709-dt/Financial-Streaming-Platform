@@ -13,15 +13,15 @@ __pycache__/
 # Local Python virtual environment (validation/requirements.txt)
 .venv/
 
+# Dataset downloader virtual environment
+.dataset-venv/
+
 # Go build and test outputs
 /bin/
 *.test
 coverage.out
 coverage.html
 *.prof
-
-# Python bytecode from the local flow scripts
-__pycache__/
 
 # Scala / sbt build outputs and tooling caches
 target/

@@ -3,6 +3,34 @@
 The [backend and dashboard setup](services/backend/README.md) explains how to
 apply the live-notification migrations and serve the dashboard on port 8000.
 
+## Dataset download
+
+The DEBS Trading Dataset can be downloaded using the Makefile. Install the downloader first:
+
+```bash
+make setup-dataset
+```
+
+Download all dataset files:
+
+```bash
+make download-dataset
+```
+
+Download a single day:
+
+```bash
+make download-dataset DATASET_DAYS=08-11-21
+```
+
+Download multiple days:
+
+```bash
+make download-dataset DATASET_DAYS="08-11-21 09-11-21"
+```
+
+Downloaded CSV files are stored in `dataset/`.
+
 ## Development setup
 
 After cloning, activate the git hooks once:
