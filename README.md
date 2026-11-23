@@ -1,239 +1,117 @@
-# Financial-Streaming-Platform
+# Financial Streaming Platform
 
-The [backend and dashboard setup](services/backend/README.md) explains how to
-apply the live-notification migrations and serve the dashboard on port 8000.
+This project replays the [DEBS 2022 Grand Challenge](https://zenodo.org/records/6382482)
+trading data through a streaming pipeline. For every symbol it computes EMA 38 and
+EMA 100 over five-minute windows and raises a BUY or SELL advisory when the two cross.
+The results show up in a live dashboard.
 
-## Dataset download
+```mermaid
+flowchart LR
+    csv[(CSV dataset)] --> producer["data-producer<br/>(Go)"]
+    producer -->|PriceEvent| events[[trade-events]]
+    events --> processor["streaming-processor<br/>(Flink, Scala)"]
+    processor -->|EmaWindow| ema[[ema-windows]]
+    processor -->|TradeAdvisory| adv[[trade-advisories]]
+    ema --> materializer["materializer<br/>(Go)"]
+    adv --> materializer
+    materializer --> db[(PostgreSQL)]
+    db -->|LISTEN/NOTIFY| backend["backend<br/>(FastAPI)"]
+    backend -->|REST + SSE| dashboard["dashboard<br/>(browser)"]
 
-The DEBS Trading Dataset can be downloaded using the Makefile. Install the downloader first:
-
-```bash
-make setup-dataset
+    subgraph Redpanda
+        events
+        ema
+        adv
+    end
 ```
 
-Download all dataset files:
+Each part has its own README:
+[data-producer](services/data-producer/README.md),
+[streaming-processor](services/streaming-processor/README.md),
+[materializer](services/materializer/README.md),
+[backend](services/backend/README.md),
+[frontend](services/frontend/README.md),
+[schemas](schemas/market/v1/README.md),
+[validation](validation/README.md) and
+[monitoring](monitoring/README.md).
 
-```bash
-make download-dataset
+## Getting started
+
+You need Docker with Compose and Python 3. Working on the services themselves also
+needs Go, Java 17 with sbt, and Node.js 22.
+
 ```
-
-Download a single day:
-
-```bash
+cp .env.example .env
 make download-dataset DATASET_DAYS=08-11-21
-```
-
-Download multiple days:
-
-```bash
-make download-dataset DATASET_DAYS="08-11-21 09-11-21"
-```
-
-Downloaded CSV files are stored in `dataset/`.
-
-## Development setup
-
-After cloning, activate the git hooks once:
-
-```bash
-make setup-hooks
-```
-
-The pre-commit hook formats staged service files:
-
-- `services/data-producer`: `gofmt -w` and `go vet`
-- `services/materializer`: `gofmt -w` and recursive `go vet`
-- `services/streaming-processor`: `scalafmtAll` and `scalafmtSbt` (slow: JVM startup)
-
-Formatting runs on a snapshot of the staged files. Formatting changes are copied
-back and re-staged only for fully staged files. If a file needs formatting and
-also has unstaged changes, the hook stops without changing your files or staging
-area. Run `make formatall`, review, and stage the intended changes before retrying.
-Already formatted staged files can still have unstaged edits.
-
-If a toolchain is missing, the hook skips that check with a warning —
-CI still enforces the full format and lint suite.
-
-## Run the complete local flow
-
-Docker with Compose is required: the producer and materializer run as containers
-on the Compose network, next to PostgreSQL and Redpanda. Copy `.env.example` to
-`.env` once, and check the `POSTGRES_*` and `MATERIALIZER_*` settings. Put the CSV
-dataset under `dataset/`, then run:
-
-```sh
 make run-flow
 ```
 
-This builds the producer and materializer images and prepares the backend's `.venv`,
-starts PostgreSQL, Redpanda, the Redpanda console, and Flink, creates the topics,
-applies missing database migrations, submits the processor, and supervises the
-producer and materializer containers and the backend together. The dashboard is
-available at <http://localhost:8000>; publication starts only after its backend is
-healthy. CSV files are mounted into the producer read-only, so any host path works
-(a `:` in the path does not).
-Startup preserves stored results and complete existing migrations. A partially
-installed migration causes startup to stop for manual repair.
+Leave out `DATASET_DAYS` to download all five trading days into `dataset/`.
 
-For a limited producer run:
+`make run-flow` starts Redpanda, PostgreSQL and Flink, applies any missing database
+migrations, submits the Flink job, and then runs the materializer, the backend and the
+producer. Once it's up, the dashboard is at http://localhost:8000.
 
-```sh
+Ctrl+C stops the producer, materializer and backend. Redpanda, PostgreSQL and the Flink
+job keep running, so the next `make run-flow` picks up where you left off. To stop
+everything, or to start over with empty topics and an empty database:
+
+```
+make stop-flow
+make reset-flow
+```
+
+For a shorter run, pass flags to the producer:
+
+```
 make run-flow PRODUCER_ARGS="-rate=1000 -maxEvents=100000"
 ```
 
-The materializer and dashboard keep running after the producer finishes so they
-can consume and display remaining and future results. Ctrl+C stops the managed
-producer and materializer containers and the dashboard. The infrastructure
-containers and the Flink job remain running. Before a fresh run, use:
+Running `make` on its own lists every target.
 
-```sh
+## Local addresses
+
+The Redpanda Console is at http://localhost:8080 and the Flink dashboard at
+http://localhost:8081. From the host, Redpanda listens on `localhost:19092` and
+PostgreSQL on `localhost:15432`, with the credentials from `.env.example`.
+`make postgres-shell` opens `psql`.
+
+Inside Compose, containers use `redpanda-0:9092` and `postgres:5432` instead. The
+`MATERIALIZER_*` values in `.env` are only for tools that run on the host.
+
+## Running on three brokers
+
+By default there is one Redpanda broker and every topic has one partition. For scaling
+experiments, `CLUSTER=1` starts three brokers and replicates every topic to all of them.
+`PARTITIONS` sets the partitions per topic, and `FLINK_PARALLELISM` the number of Flink
+tasks. Keep the two equal so that each task reads one partition.
+
+```
 make reset-flow
-make run-flow
-```
-
-`reset-flow` stops the managed producer, materializer, and backend, removes the
-Compose containers, and permanently deletes this project's local PostgreSQL,
-broker data (including topics and consumer offsets), and Flink checkpoints.
-The next `make run-flow` recreates the infrastructure and schema. Stop producers
-and materializers started outside Compose before resetting. Reset works without a
-`.env` and does not build or start services first.
-
-To stop local processes and all Compose containers while keeping data:
-
-```sh
-make stop-flow
-```
-
-Use `BACKEND_PORT=8001` to change the dashboard port, or `BACKEND_VENV=/path/to/venv`
-to choose its Python environment. `make run-backend` applies missing migrations
-and starts only the dashboard when PostgreSQL is already available.
-
-`run-flow` and the backend commands load `.env`; explicit `MATERIALIZER_*`
-environment or Make command-line overrides take precedence. The containers take
-their database URL and broker addresses from `compose.yaml` (`postgres:5432` and
-`redpanda-0:9092`), so the `MATERIALIZER_DATABASE_URL` and `MATERIALIZER_BROKERS`
-values in `.env` (localhost addresses) serve only the tools that run on the host;
-`MATERIALIZER_GROUP_ID` applies to both.
-
-`validate-flow` uses its own internal data reset so containers and checkpoints
-stay available during automated validation.
-
-Run the flow lifecycle tests with:
-
-```sh
-python3 -m unittest discover -s scripts -p 'test_flow.py' -v
-```
-
-## Run on a 3-broker Redpanda cluster
-
-By default Redpanda is one broker and every topic has one partition. For
-scalability experiments, `CLUSTER=1` adds `compose.cluster.yaml`: three brokers,
-with every topic replicated to all three, so the cluster keeps working when one
-broker fails. `PARTITIONS=N` gives every project topic N partitions, and
-`FLINK_PARALLELISM=N` runs the Flink job with N parallel tasks (at most 4 per
-TaskManager by default; `FLINK_TASK_SLOTS` changes that). Use the same N for both,
-so each Flink source task reads one partition:
-
-```sh
-make reset-flow                                  # leave the single-broker mode first
 make measure-flow CLUSTER=1 PARTITIONS=4 FLINK_PARALLELISM=4 CSV=dataset RATE=50000
-make reset-flow CLUSTER=1                        # before going back to one broker
+make reset-flow CLUSTER=1
 ```
 
-Pass the same `CLUSTER` value to every command of a session: broker data written in
-one mode doesn't fit the other, so switch modes only after `make reset-flow` in the
-mode you are leaving. Each broker gets `REDPANDA_MEMORY` (default `2G`), so give
-Docker enough memory for three of them next to Flink. The brokers are reachable
-from the host on `localhost:19092`, `29092` and `39092`. Producers and consumers
-keep each symbol in one partition (the message key is the symbol), so its events
-stay in order.
+Use the same `CLUSTER` value for every command in a session. Broker data from one mode
+doesn't work in the other, so run `make reset-flow` in the old mode before you switch.
+Each broker takes `REDPANDA_MEMORY` (2G by default), so give Docker enough memory for
+three of them next to Flink.
 
-## Local PostgreSQL
+## Development
 
-Start the database and open its SQL shell from the repository root:
+Run this once after cloning:
 
-```sh
-make run-postgres
-make postgres-shell
+```
+make setup-hooks
 ```
 
-In `psql`, use `\conninfo` to inspect the connection and `\q` to exit.
-The Compose defaults are for local development:
+The pre-commit hook formats staged Go and Scala files. It skips a language if its
+toolchain isn't installed, but CI still checks it. `make formatall` formats everything,
+and `make test-validation` runs the Python tests for validation, the flow scripts and
+monitoring. Each service README covers its own tests.
 
-| Setting | Default |
-| --- | --- |
-| Database | `financial_streaming` |
-| User | `financial` |
-| Password | `financial_dev` |
-| Address from the host | `localhost:15432` |
-| Address from another Compose service | `postgres:5432` |
+There are a few longer notes in `docs/`:
 
-For a host application or database GUI, the default connection URL is:
-
-```text
-postgresql://financial:financial_dev@localhost:15432/financial_streaming?sslmode=disable
-```
-
-Optionally copy `.env.example` to `.env` and edit the values before the first
-startup. Compose reads `.env` automatically, and Git ignores it. Database name,
-user, and password initialize a new database volume; changing these variables
-later does not update an existing database's credentials. `POSTGRES_PORT` only
-changes the port published on the host.
-
-PostgreSQL 18 stores its files in the persistent `postgres-data` named volume,
-mounted at `/var/lib/postgresql` as required by the official image. The server
-uses UTC, and its published port is restricted to the local host. To stop just
-the database while retaining its data, run `docker compose stop postgres`.
-See the [official PostgreSQL image documentation](https://hub.docker.com/_/postgres)
-for initialization and storage behavior.
-
-Apply the [materializer's initial migration](services/materializer/README.md)
-to create the symbols, EMA windows, and trade advisories tables.
-
-## CI checks
-
-Pushes and pull requests run checks based on the changed paths:
-
-| Changes | Checks |
-| --- | --- |
-| Backend/frontend code (except Markdown) or materializer migrations | Dashboard CI: backend unit/PostgreSQL integration tests, frontend regression tests, and flow lifecycle/Make recipe tests |
-| Flow startup/stop/reset scripts and their tests, including `scripts/csv_make_test.py` | Dashboard CI |
-| `services/data-producer/**` (except Markdown) | Producer formatting, lint, tests, build, and image build |
-| `services/materializer/**` (except Markdown) | Materializer formatting, lint, race tests, PostgreSQL integration tests, and image build |
-| `services/streaming-processor/**` (except Markdown) | Processor formatting, lint, tests, and assembly verification |
-| `schemas/**/*.proto` | Producer, materializer, processor, and Protobuf generation |
-| `gen/go/**` | Producer, materializer, and Protobuf generation |
-| `gen/java/**` | Processor and Protobuf generation |
-| Other files under `gen/**` | Protobuf generation |
-| `go.mod`, `go.sum` | Producer, materializer, and Protobuf generation |
-| `Makefile` | Producer, materializer, processor, Protobuf generation, and dashboard checks |
-| `.githooks/pre-commit` | Producer and materializer checks |
-| `compose.yaml` | Infrastructure Compose configuration validation |
-| `.dockerignore` | Producer, materializer, and infrastructure checks |
-| A file in `.github/workflows/` | The workflow defined by that file |
-
-Documentation-only changes do not trigger these checks. The flow scripts listed
-above trigger Dashboard CI; other local scripts do not trigger these checks.
-Changes spanning multiple areas run all matching workflows.
-The dashboard, producer, materializer, and infrastructure workflows also support manual runs with
-`workflow_dispatch`.
-
-Dashboard CI uses PostgreSQL 18, Python 3.12, and Node.js 22. Database tests use
-disposable schemas; lifecycle tests use local service fixtures. These checks do
-not start the full Docker stack or exercise the dashboard in a browser.
-
-Materializer CI uses a PostgreSQL 18 service container for the database integration
-tests. Each test creates and removes its own schema. Unit tests run separately
-from the database integration tests, and coverage is uploaded as an artifact.
-Locally, use `make test-materializer`, `make format-materializer`, and
-`MATERIALIZER_TEST_DATABASE_URL='<PostgreSQL URL>' make test-materializer-integration`.
-
-Infrastructure CI runs `docker compose --profile '*' -f compose.yaml config --quiet` to validate
-the Compose configuration without starting containers. This checks configuration
-validity; it does not verify image availability or service startup. Run the same
-command locally before pushing Compose changes.
-
-GitHub leaves checks pending when an entire workflow is skipped by path filters.
-If branch protection requires these checks, use job-level change detection instead
-of workflow-level path filters before making them required. See
-[GitHub's path filtering documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#using-filters-to-target-specific-paths-for-pull-request-or-push-events).
+- [Why the watermark allows 5 seconds of lateness](docs/out-of-orderness.md)
+- [Database tables and migrations](docs/database.md)
+- [Which CI workflows run when](docs/ci.md)
