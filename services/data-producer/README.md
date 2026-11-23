@@ -1,72 +1,51 @@
 # Data producer
 
-Reads trade CSV files and publishes each row as a `PriceEvent` to the `trade-events`
-topic in Redpanda. It runs as a container on the Compose network, next to Redpanda.
+The producer reads trade CSV files and publishes every row to `trade-events` as a
+`market.v1.PriceEvent`, keyed by symbol. It runs as a container next to Redpanda.
 
-## Run
+`make run-flow` starts it for you. To run it on its own, bring up Redpanda first:
 
-From the repository root, with Redpanda and the topics up (`make infra-up`):
-
-```sh
+```
+make infra-up
 make run-data-producer ARGS="-csvPath=dataset/<file>.csv -rate=1000 -dlqEnabled"
 ```
 
-This builds the image and runs the producer in the foreground; Ctrl+C stops the
-container. `make run-flow`, `make measure-flow` and `make validate-flow` run it as part
-of the complete flow. Print the flags with `make run-data-producer ARGS="-help"`.
+`ARGS="-help"` prints every flag. These are the ones you'll usually want:
 
-## CSV input
+- `-csvPath` is a CSV file, or a directory whose `.csv` files are read in alphabetical
+  order. Repeat it to replay several inputs one after another. If you leave it out, the
+  producer reads `dataset/debs2022-gc-trading-day-12-11-21.csv`.
+- `-rate` caps events per second. The default, 0, means no cap.
+- `-maxEvents` stops after that many acknowledged events.
+- `-dlqEnabled` sends invalid rows to `trade-events-dlq` instead of stopping the run.
 
-- `-csvPath` takes a file or a directory (its immediate `.csv` files, alphabetical) and
-  can be repeated; the files are replayed in the order given.
-- Any host path works. Each file is mounted read-only into the container at
-  `/input/<NN>-<name>` and the flags are rewritten to match. A `:` in a path is
-  rejected, because it breaks Docker's volume syntax.
-- A missing path, an empty directory, or one file listed twice (for example an alias
-  symlink next to its target) is rejected before anything runs.
-- Without `-csvPath`, the producer reads `dataset/debs2022-gc-trading-day-12-11-21.csv`.
+Inputs are mounted into the container read-only, so any host path works, except a path
+that contains a `:`.
 
-## Flags
+## How it publishes
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `-csvPath` | see above | CSV file or directory; repeat for ordered inputs |
-| `-brokers` | `redpanda-0:9092` in the container (`localhost:19092` for a bare binary) | Comma-separated broker addresses; a localhost address is rejected, because inside the container it is the container itself |
-| `-topic` | `trade-events` | Topic for events |
-| `-dlqTopic` | `trade-events-dlq` | Topic for rejected rows |
-| `-dlqEnabled` | off | Publish invalid rows to the dead letter topic instead of stopping |
-| `-rate` | `0` | Maximum events per second (0 is unlimited) |
-| `-maxEvents` | `0` | Stop after this many acknowledged events (0 is unlimited) |
-| `-linger` | `1ms` | How long the client waits for more records before it sends a batch |
+The producer doesn't wait for each acknowledgment before reading the next row. Up to
+10,000 records can be in flight, and after that it blocks, so a slow broker slows the
+replay down instead of filling up memory. Idempotent writes keep each partition in CSV
+order. The first record that fails stops the replay.
 
-The run ends with `CSV processing <status>: published=N skipped=N rejected=N`, which
-`make measure-flow` reads.
+Without a rate limit, it reaches about 100k events/s on a 4-core machine. When it
+waited for every acknowledgment, it managed about 5k (issue #60).
 
-## Publishing
+The last line of a run looks like
+`CSV processing completed: published=N skipped=N rejected=N topic="trade-events"`.
+`make measure-flow` parses this line, so keep its format if you change it.
 
-The producer hands each record to the franz-go client and reads the next row without
-waiting for the acknowledgment. The client batches the records and sends them.
+## Leftover containers
 
-- `published` and `rejected` count only records Redpanda acknowledged. At the end, the
-  producer waits for every record it sent before it prints the summary line.
-- The first failed record stops the replay: no further rows are read, the records
-  already sent still finish, and the run ends with status `stopped` and the error.
-- `-maxEvents=N` sends N events and waits for them. The status is `limit reached` only
-  when all N were acknowledged.
-- At most 10,000 records wait for an acknowledgment. Beyond that the producer blocks
-  until some finish, so a slow broker slows the replay down instead of growing memory.
-- Idempotent writes stay on, so each partition keeps the CSV order even with several
-  requests in flight. A record that is not acknowledged within 30 s fails the run.
+`docker compose run` doesn't pass Ctrl+C on to the container: the client exits and the
+container keeps publishing. Our scripts name the container `data-producer-run-<pid>` and
+stop it by name. If a shell gets killed before it can do that, find the leftover with
+`docker ps --filter name=data-producer-run` and stop it.
 
-With `-rate=0` the producer reached about 100k events/s with any linger, against about
-5k events/s when it waited for each acknowledgment (issue #60; 5M events, producer and
-Redpanda in containers on one 4-core machine). Linger 0 was the slowest; 1 ms and 5 ms
-were within noise of each other, and 1 ms holds a lone record back the least.
+## Tests
 
-## Notes
-
-`docker compose run` does not forward Ctrl+C or SIGTERM to its container: the client
-exits and the container keeps publishing. The scripts therefore name the container
-(`data-producer-run-<pid>`) and stop it by name on every exit path. If a shell is
-killed outright, stop a leftover with `docker ps --filter name=data-producer-run`
-and `docker stop <name>`.
+```
+make test-data-producer
+make format-data-producer
+```
