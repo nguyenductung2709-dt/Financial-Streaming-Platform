@@ -1,0 +1,126 @@
+# Optional 3-broker Redpanda cluster; layer it on top of compose.yaml:
+#   docker compose -f compose.yaml -f compose.cluster.yaml up -d   (or CLUSTER=1 with the make targets)
+# Every topic gets REDPANDA_PARTITIONS partitions (default 1), each replicated to all
+# three brokers (replication factor 3), so the cluster survives one broker failing.
+# Each broker gets REDPANDA_MEMORY (default 2G); raise Docker's memory to fit three.
+# Brokers are reachable from the host on localhost:19092, 29092 and 39092.
+volumes:
+  redpanda-1:
+  redpanda-2:
+
+x-redpanda-broker: &broker
+  image: docker.redpanda.com/redpandadata/redpanda:v26.2.3
+  restart: unless-stopped
+
+services:
+  redpanda-0:
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda-0:9092,external://localhost:19092
+      - --rpc-addr redpanda-0:33145
+      - --advertise-rpc-addr redpanda-0:33145
+      - --mode dev-container
+      - --smp 1
+      - --memory ${REDPANDA_MEMORY:-2G}
+    # Starting redpanda-0 starts the other brokers, so the scripts that start
+    # redpanda-0 bring up the whole cluster without knowing about it.
+    depends_on:
+      redpanda-1:
+        condition: service_started
+      redpanda-2:
+        condition: service_started
+    # Healthy only once all three brokers have joined: creating a topic with
+    # three replicas fails on a smaller cluster.
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health -X admin.hosts=localhost:9644 | grep -Eq 'Healthy: +true' && rpk cluster health -X admin.hosts=localhost:9644 | grep -Eq 'All nodes: +\\[[0-9]+ [0-9]+ [0-9]+\\]'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  redpanda-1:
+    <<: *broker
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:29092
+      - --advertise-kafka-addr internal://redpanda-1:9092,external://localhost:29092
+      - --rpc-addr redpanda-1:33145
+      - --advertise-rpc-addr redpanda-1:33145
+      - --seeds redpanda-0:33145
+      - --mode dev-container
+      - --smp 1
+      - --memory ${REDPANDA_MEMORY:-2G}
+    volumes:
+      - redpanda-1:/var/lib/redpanda/data
+    ports:
+      - "127.0.0.1:29092:29092"
+
+  redpanda-2:
+    <<: *broker
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:39092
+      - --advertise-kafka-addr internal://redpanda-2:9092,external://localhost:39092
+      - --rpc-addr redpanda-2:33145
+      - --advertise-rpc-addr redpanda-2:33145
+      - --seeds redpanda-0:33145
+      - --mode dev-container
+      - --smp 1
+      - --memory ${REDPANDA_MEMORY:-2G}
+    volumes:
+      - redpanda-2:/var/lib/redpanda/data
+    ports:
+      - "127.0.0.1:39092:39092"
+
+  create-topic:
+    environment:
+      REDPANDA_PARTITIONS: ${REDPANDA_PARTITIONS:-1}
+    command:
+      - |
+        brokers=redpanda-0:9092,redpanda-1:9092,redpanda-2:9092
+        for topic in trade-events trade-events-dlq latency-stamps materialize-stamps; do
+          rpk topic describe "$$topic" -X brokers=$$brokers >/dev/null 2>&1 ||
+            rpk topic create "$$topic" --partitions "$$REDPANDA_PARTITIONS" --replicas 3 -X brokers=$$brokers
+        done
+        for topic in ema-windows trade-advisories; do
+          rpk topic describe "$$topic" -X brokers=$$brokers >/dev/null 2>&1 ||
+            rpk topic create "$$topic" --partitions "$$REDPANDA_PARTITIONS" --replicas 3 \
+              -c message.timestamp.type=LogAppendTime -X brokers=$$brokers
+        done
+
+  # Clients list every broker, so they can still bootstrap when one is down.
+  materializer:
+    environment:
+      MATERIALIZER_BROKERS: redpanda-0:9092,redpanda-1:9092,redpanda-2:9092
+
+  data-producer:
+    entrypoint: ["/data-producer", "-brokers=redpanda-0:9092,redpanda-1:9092,redpanda-2:9092"]
+
+  console:
+    environment:
+      CONSOLE_CONFIG_FILE: |
+        kafka:
+          brokers: ["redpanda-0:9092", "redpanda-1:9092", "redpanda-2:9092"]
+        redpanda:
+          adminApi:
+            enabled: true
+            urls: ["http://redpanda-0:9644", "http://redpanda-1:9644", "http://redpanda-2:9644"]
+        serde:
+          protobuf:
+            enabled: true
+            mappings:
+              - topicName: trade-events
+                valueProtoType: market.v1.PriceEvent
+              - topicName: trade-events-dlq
+                valueProtoType: market.v1.RejectedRow
+              - topicName: trade-advisories
+                valueProtoType: market.v1.TradeAdvisory
+              - topicName: ema-windows
+                valueProtoType: market.v1.EmaWindow
+            fileSystem:
+              enabled: true
+              paths: ["/etc/protos"]

@@ -391,13 +391,13 @@ class ReadRunTest(unittest.TestCase):
     def test_trade_events_are_streamed_into_one_scan(self):
         seen = []
 
-        def spy(events, window_ms, allowances):
-            seen.append((inspect.isgenerator(events), window_ms, allowances))
+        def spy(events, window_ms, allowances, partitions):
+            seen.append((inspect.isgenerator(events), window_ms, allowances, partitions))
             return [{}, {}]
 
         with mock.patch.object(collector, "crossing_times", side_effect=spy):
             self.read(full_run())
-        self.assertEqual(seen, [(True, config.WINDOW_MS, (0, config.OUT_OF_ORDERNESS_MS))])
+        self.assertEqual(seen, [(True, config.WINDOW_MS, (0, config.OUT_OF_ORDERNESS_MS), 1)])
 
     def test_empty_stamps_name_the_flag(self):
         topics = full_run()
@@ -542,6 +542,67 @@ class MainTest(unittest.TestCase):
                 status = collector.main(["--out", "/tmp/never-written", "--brokers", "x:1"])
         self.assertEqual(status, 0)
         self.assertIn("THE TABLE", out.getvalue())
+
+
+class PartitionedCrossingTest(unittest.TestCase):
+    """Several partitions: a window fires once the minimum over the partitions
+    of their highest trade time passes window end + allowance."""
+
+    def test_the_slowest_partition_decides(self):
+        events = [(B + 10, 1, 0), (B + 20, 2, 1),
+                  (END + ALLOWANCE, 3, 0),        # p0 passes, p1 does not: no fire
+                  (END + ALLOWANCE + 5, 4, 1)]    # p1 passes too: fires here
+        triggers, = collector.crossing_times(iter(events), WINDOW, (ALLOWANCE,), partitions=2)
+        # the window before B also first passes B + ALLOWANCE in the slowest partition here
+        self.assertEqual(triggers, {B: 4, END: 4})
+
+    def test_nothing_fires_before_every_partition_had_an_event(self):
+        events = [(B + 10, 1, 0), (END + 10 * WINDOW, 2, 0)]
+        triggers, = collector.crossing_times(iter(events), WINDOW, (ALLOWANCE,), partitions=2)
+        self.assertEqual(triggers, {})
+
+    def test_one_partition_is_the_highest_trade_time(self):
+        pairs = [(B + 10, 1), (END + ALLOWANCE, 2)]
+        triples = [(t, p, 0) for t, p in pairs]
+        self.assertEqual(collector.crossing_times(iter(pairs), WINDOW, (ALLOWANCE,)),
+                         collector.crossing_times(iter(triples), WINDOW, (ALLOWANCE,), partitions=1))
+
+
+class PartitionedReadRunTest(unittest.TestCase):
+    """read_run over a 2-partition trade-events topic: the partitions are merged
+    back into publish (source row) order before the trigger scan."""
+
+    def test_partitions_are_merged_by_source_row(self):
+        topics = full_run()
+        E = int(bindings.EmaWindow.FromString(topics[config.TOPIC_EMA_WINDOWS][0][0])
+                .window_end.seconds) * 1000
+
+        def event(trade_time_ms, row, symbol):
+            return bindings.PriceEvent(symbol=symbol, trade_time=ts(trade_time_ms),
+                                       source_row=row).SerializeToString()
+
+        allowance = config.OUT_OF_ORDERNESS_MS
+        by_partition = {
+            0: [(event(E - 60_000, 1, "A.FR"), BASE + 1000),
+                (event(E + allowance, 4, "A.FR"), BASE + 1300)],     # p0 passes first
+            1: [(event(E - 50_000, 2, "B.FR"), BASE + 1100),
+                (event(E + allowance // 2, 3, "B.FR"), BASE + 1200),  # p1 reaches the end
+                (event(E + allowance + 1, 5, "B.FR"), BASE + 1400)],  # p1 passes: fires
+        }
+        seen = []
+
+        def stream_partition(brokers, topic, partition):
+            seen.append(partition)
+            return iter([(o, v, t) for o, (v, t) in enumerate(by_partition[partition])])
+
+        def partitions(brokers, topic):
+            return {0, 1} if topic == config.TOPIC_EVENTS else ({0} if topic in topics else set())
+
+        *_, triggers, window_ends = collector.read_run(
+            "b", fake_stream(topics), partitions, stream_partition=stream_partition)
+        self.assertEqual(sorted(seen), [0, 1])
+        self.assertEqual(triggers[E], BASE + 1400)   # the slowest partition decides
+        self.assertEqual(window_ends[E], BASE + 1300)  # min passes E once p0 and p1 have
 
 
 if __name__ == "__main__":

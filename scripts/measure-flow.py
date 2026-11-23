@@ -44,13 +44,30 @@ from flow import flow_lock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "validation"))
 import config  # noqa: E402
-COMPOSE = ["docker", "compose", "-f", "compose.yaml", "-f", "compose.monitoring.yaml"]
+# COMPOSE_FILE (set by `make ... CLUSTER=1`) adds compose.cluster.yaml; the
+# monitoring file always comes last.
+COMPOSE_FILES = [f for f in os.environ.get("COMPOSE_FILE", "compose.yaml").split(":") if f]
+COMPOSE = ["docker", "compose", *(arg for f in COMPOSE_FILES + ["compose.monitoring.yaml"]
+                                  for arg in ("-f", f))]
 INFRA_SERVICES = ["postgres", "redpanda-0", "console", "jobmanager", "taskmanager"]
 MONITORING_SERVICES = ["docker-stats-exporter", "prometheus", "grafana"]
 RESULT_TOPICS = ("ema-windows", "trade-advisories")
 REQUIRED_JOBS = ("docker", "flink-taskmanager", "redpanda")
 SOURCE_RECORDS = 'sum(flink_taskmanager_job_task_operator_numRecordsIn{operator_name=~"Source.*"})'
 JOB_ARGS = ["--starting-offsets", "earliest", "--latency-topic", config.TOPIC_LATENCY_STAMPS]
+
+
+def job_args(env=None):
+    """JOB_ARGS plus --parallelism FLINK_PARALLELISM when it is set."""
+    env = os.environ if env is None else env
+    parallelism = env.get("FLINK_PARALLELISM", "").strip()
+    return [*JOB_ARGS, "--parallelism", parallelism] if parallelism else list(JOB_ARGS)
+
+
+# Per-topic totals: every replica reports a partition's max offset, so take the
+# max per partition (one value however many brokers) and sum the partitions.
+def per_topic(metric):
+    return f"sum by (redpanda_topic) (max by (redpanda_topic, redpanda_partition) ({metric}))"
 MATERIALIZER_STAMP_ENV = {"MATERIALIZER_STAMP_TOPIC": config.TOPIC_MATERIALIZE_STAMPS}
 PRODUCER_SUMMARY = re.compile(r"published=(\d+)\s+skipped=(\d+)\s+rejected=(\d+)")
 
@@ -167,9 +184,10 @@ class Prometheus:
 
     def sample(self, group):
         topics = "|".join(RESULT_TOPICS)
-        ends = self.by_topic(f'redpanda_kafka_max_offset{{redpanda_namespace="kafka",redpanda_topic=~"{topics}"}}')
-        committed = self.by_topic(
-            f'redpanda_kafka_consumer_group_committed_offset{{redpanda_group="{group}",redpanda_topic=~"{topics}"}}')
+        ends = self.by_topic(per_topic(
+            f'redpanda_kafka_max_offset{{redpanda_namespace="kafka",redpanda_topic=~"{topics}"}}'))
+        committed = self.by_topic(per_topic(
+            f'redpanda_kafka_consumer_group_committed_offset{{redpanda_group="{group}",redpanda_topic=~"{topics}"}}'))
         return pipeline_sample(self.scalar(SOURCE_RECORDS), ends, committed), ends
 
 
@@ -250,7 +268,7 @@ def measure(args, producer_args):
 
     with flow_lock():
         try:
-            run([sys.executable, "scripts/submit-flink-job.py", "--timeout", str(args.flink_start_timeout), "--", *JOB_ARGS])
+            run([sys.executable, "scripts/submit-flink-job.py", "--timeout", str(args.flink_start_timeout), "--", *job_args()])
             producer_command = containers.producer_command(producer_args, producer_name, compose=COMPOSE)
             materializer.start()
             started = time.time()
