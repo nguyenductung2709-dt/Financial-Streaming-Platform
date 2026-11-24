@@ -1,6 +1,6 @@
-# Why the watermark allows 5 seconds
+# Why the watermark allows 1 second
 
-The processor's watermark trails the highest trade time it has seen by 5 seconds
+The processor's watermark trails the highest trade time it has seen by 1 second
 (`OutOfOrdernessAllowance` in `StreamingProcessor.scala`). A window fires when the
 watermark passes its end, and anything that arrives after that is dropped. The
 validation and latency tools use the same value from `OUT_OF_ORDERNESS_MS` in
@@ -42,16 +42,22 @@ with no date, which show up around 18:56 in the file. They're about 18 hours lat
 every allowance drops them, and `compare-flow` reports the affected windows as
 `lateness_explained`.
 
-## Why 5 and not 0.3
+## Why 1 second
 
-The smallest allowance that keeps every real trade is 264 ms. We picked 5 seconds,
-about twenty times that, for three reasons. First, the worst case varies a lot: it
-ranges from 15 ms to 264 ms over just five days, so we want headroom for worse days.
-Second, a replay is the best case there is, one ordered file in one partition. Live
-feeds from three exchanges arriving over a network can easily be a second or more
-apart. Third, the two kinds of mistake don't cost the same. An allowance that's too
-small quietly corrupts a symbol's EMAs from then on, while each extra second only delays
-results by a second. 5 seconds is under 2% of a five-minute window.
+The smallest allowance that keeps every real trade is 264 ms. We use 1 second, about
+four times that. On all five days it drops exactly the same events as 5 or 70 seconds
+would, so the results are identical, and every window closes sooner.
 
-On this dataset, 5 seconds and 70 seconds drop exactly the same events and give
-identical results. With 5 seconds, a live result arrives 65 seconds sooner.
+We first chose 5 seconds, to leave room for live feeds from three exchanges that could
+arrive a second or more apart. This project only ever replays the recorded files,
+though, and in a replay the worst case is the 264 ms above. The extra four seconds
+only added waiting time to every window. That cost is easy to see in the latency runs
+at low rates: at 5,000 events/s, the median wait for the watermark was 701 ms with
+5 seconds and 513 ms with 1 second. It's smaller than five times less because most
+of the wait falls in the first second after a window ends. At 50,000 events/s and
+above, the wait is under 70 ms either way.
+
+The risk of going lower is still the same. If a day turned out to be worse than
+the five we measured, an allowance that's too small would quietly corrupt that
+symbol's EMAs from then on. If you replay other data, or connect a live feed, measure
+its lateness first and raise the allowance if needed.

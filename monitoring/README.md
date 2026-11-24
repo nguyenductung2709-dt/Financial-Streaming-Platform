@@ -71,7 +71,7 @@ example, `ema_compute` is t2 minus t1, `end_to_end_ema` is t4e minus t0, and
 `scripts/collect-latency.py` follow this pattern. `ingest_to_fire` (t1 minus t0) also
 includes up to 200 ms of Flink's watermark interval.
 
-The `end_to_end_*` stages start at t0, so they leave out the 5 seconds of event time
+The `end_to_end_*` stages start at t0, so they leave out the 1 second of event time
 the window waits for its watermark. How long that wait takes in real time depends on
 the replay rate and on how busy the data is. The `window_end_to_*` stages start at tw
 and include the wait, which is reported on its own as `watermark_wait`. Other DEBS

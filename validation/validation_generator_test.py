@@ -384,7 +384,7 @@ class EndToEndTest(SyntheticCsvTestCase):
 
 class LateEventDropTest(SyntheticCsvTestCase):
     """Mirrors StreamingProcessor: one global watermark (max trade time seen
-    - 5 s - 1 ms) across all symbols, no allowed lateness, late events dropped."""
+    - 1 s - 1 ms) across all symbols, no allowed lateness, late events dropped."""
 
     def window_starts(self):
         return [r["window_start"][-5:] for r in read_csv(self.out_dir / "ema_windows.csv")]
@@ -392,9 +392,9 @@ class LateEventDropTest(SyntheticCsvTestCase):
     def test_other_symbol_advances_the_watermark_at_the_exact_boundary(self):
         summary = self.run_csv([
             data_row("AAA.NL", "E", "08:01:00.000", "10.000000"),
-            data_row("BBB.NL", "E", "08:05:04.999", "1.000000"),   # watermark 08:04:59.998
+            data_row("BBB.NL", "E", "08:05:00.999", "1.000000"),   # watermark 08:04:59.998
             data_row("AAA.NL", "E", "08:02:00.000", "20.000000"),  # window 08:00 still open
-            data_row("BBB.NL", "E", "08:05:05.000", "2.000000"),   # watermark 08:04:59.999
+            data_row("BBB.NL", "E", "08:05:01.000", "2.000000"),   # watermark 08:04:59.999
             data_row("AAA.NL", "E", "08:03:00.000", "30.000000"),  # window 08:00 closed: dropped
         ])
         aaa = read_csv(self.out_dir / "ema_windows.csv")[0]
@@ -456,7 +456,7 @@ class LateEventDropCliTest(SyntheticCsvTestCase):
         windows, summary = self.run_cli()
         self.assertEqual(windows, ["10:00", "10:10"])
         self.assertEqual(summary["spec"]["out_of_orderness_ms"], gvd.OUT_OF_ORDERNESS_MS)
-        self.assertEqual(gvd.OUT_OF_ORDERNESS_MS, 5_000)  # StreamingProcessor.OutOfOrdernessAllowance
+        self.assertEqual(gvd.OUT_OF_ORDERNESS_MS, 1_000)  # StreamingProcessor.OutOfOrdernessAllowance
 
     def test_keep_late_events(self):
         windows, summary = self.run_cli("--keep-late-events")

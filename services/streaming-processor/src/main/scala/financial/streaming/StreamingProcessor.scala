@@ -35,7 +35,7 @@ import org.apache.kafka.clients.consumer.OffsetResetStrategy
 object StreamingProcessor {
   // About 20x the largest lateness measured in the dataset (264 ms); see
   // "Out-of-orderness allowance" in the README. validation/config.py must match.
-  private val OutOfOrdernessAllowance = Duration.ofSeconds(5)
+  private val OutOfOrdernessAllowance = Duration.ofSeconds(1)
 
   private[streaming] def priceEventWatermarks: WatermarkStrategy[PriceEvent] =
     WatermarkStrategy
