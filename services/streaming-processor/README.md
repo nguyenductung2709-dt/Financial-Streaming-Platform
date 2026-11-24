@@ -44,10 +44,10 @@ The job's flags are `--brokers`, `--topic`, `--output-topic`, `--advisory-topic`
 ## Windows and the watermark
 
 Windows are five minutes long and aligned to the clock, and they use the event's
-`trade_time`. The watermark trails the highest trade time seen so far by 5 seconds.
+`trade_time`. The watermark trails the highest trade time seen so far by 1 second.
 A window fires once the watermark passes its end, and any event that arrives after that
 is dropped. [docs/out-of-orderness.md](../../docs/out-of-orderness.md) explains why we
-chose 5 seconds. If you change it, change `OUT_OF_ORDERNESS_MS` in
+chose 1 second. If you change it, change `OUT_OF_ORDERNESS_MS` in
 `validation/config.py` as well.
 
 An unbounded job only closes a window when a later event moves the watermark past it,

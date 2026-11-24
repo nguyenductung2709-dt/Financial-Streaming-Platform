@@ -181,7 +181,7 @@ class LoadReferenceTest(ReferenceTestCase):
             ref.load_reference(out_dir)
 
     def test_rejects_a_reference_generated_with_another_watermark_delay(self):
-        out_dir = self.generate(SCENARIO, out_of_orderness_ms=1_000)
+        out_dir = self.generate(SCENARIO, out_of_orderness_ms=2_000)
         with self.assertRaisesRegex(ValueError, "out_of_orderness_ms"):
             ref.load_reference(out_dir)
 

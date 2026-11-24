@@ -112,6 +112,6 @@ monitoring. Each service README covers its own tests.
 
 There are a few longer notes in `docs/`:
 
-- [Why the watermark allows 5 seconds of lateness](docs/out-of-orderness.md)
+- [Why the watermark allows 1 second of lateness](docs/out-of-orderness.md)
 - [Database tables and migrations](docs/database.md)
 - [Which CI workflows run when](docs/ci.md)
