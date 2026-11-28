@@ -17,8 +17,7 @@ decimal strings in price units and never use exponent notation, for example
 
 An `EmaWindow` covers `[window_start, window_end)` for one symbol. A `TradeAdvisory`
 contains its `EmaWindow`, the action and the previous two EMA values. The previous
-values are `"0"` for a symbol's first window. If the action is unspecified, it isn't a
-signal.
+values are `"0"` for a symbol's first window. An unspecified action is not a signal. If one reaches `trade-advisories`, the materializer rejects it and stops.
 
 ## Regenerating code
 

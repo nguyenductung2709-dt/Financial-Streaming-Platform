@@ -50,6 +50,15 @@ is dropped. [docs/out-of-orderness.md](../../docs/out-of-orderness.md) explains 
 chose 1 second. If you change it, change `OUT_OF_ORDERNESS_MS` in
 `validation/config.py` as well.
 
+The watermark is shared by all symbols, so a window of a rarely traded symbol also
+closes as soon as any later trade arrives.
+
+A dropped trade makes its window's closing price wrong. Because each EMA builds on the
+previous one, the later EMA values of that symbol are wrong too. A longer wait would
+avoid this, but it delays every result. Across the five trading days, at most 119 trades per 
+day arrived after a trade from a later window, and the largest delay was 264 ms. One second 
+is about four times that, so no valid trade is dropped.
+
 An unbounded job only closes a window when a later event moves the watermark past it,
 so the last windows of a replay stay open. A bounded job closes them when the input
 ends.
@@ -65,11 +74,16 @@ digits (HALF_EVEN), and values are kept in price units rather than micros.
 Delivery is at least once, so recovering or replaying can produce duplicate results.
 The materializer upserts, so duplicates are harmless.
 
+Flink also supports exactly-once sinks, but with them results become visible only when
+the next checkpoint completes, which could add up to 30 seconds of latency. We chose
+at-least-once for that reason.
+
 The job doesn't skip bad input. A record that isn't valid Protobuf, a tombstone, a value
 over 1 MiB, or an event with invalid fields fails the job, and the error names the
 topic, partition and offset. Retrying won't get past such a record. You have to deal
 with it yourself.
 
-Offsets are committed with each checkpoint, and a failed job is retried three times,
-ten seconds apart. Checkpoints on disk won't restart a job if the whole cluster is
-lost. In that case, resubmit with `flink run -s <checkpoint>`.
+Offsets are committed with each checkpoint, which the local cluster takes every
+30 seconds. A failed job is retried three times, ten seconds apart. Checkpoints on disk
+won't restart a job if the whole cluster is lost. In that case, resubmit with
+`flink run -s <checkpoint>`.

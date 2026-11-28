@@ -1,9 +1,8 @@
 # Financial Streaming Platform
 
-This project replays the [DEBS 2022 Grand Challenge](https://zenodo.org/records/6382482)
-trading data through a streaming pipeline. For every symbol it computes EMA 38 and
-EMA 100 over five-minute windows and raises a BUY or SELL advisory when the two cross.
-The results show up in a live dashboard.
+This project implements a streaming pipeline with the [DEBS 2022 Grand Challenge dataset](https://zenodo.org/records/6382482), which contains trading data collected from 8 to 14 November 2021 across the Paris (FR), Amsterdam (NL), and Frankfurt (ETR) exchanges. For every symbol, the system computes EMA 38 and EMA 100 over five-minute windows and generates BUY or SELL advisories when the two averages cross. The results are displayed in a live dashboard.
+
+The pipeline consists of the following components:
 
 ```mermaid
 flowchart LR
@@ -46,7 +45,7 @@ make download-dataset DATASET_DAYS=08-11-21
 make run-flow
 ```
 
-Leave out `DATASET_DAYS` to download all five trading days into `dataset/`.
+Leave out `DATASET_DAYS` to download the full week of data into `dataset/`.
 
 `make run-flow` starts Redpanda, PostgreSQL and Flink, applies any missing database
 migrations, submits the Flink job, and then runs the materializer, the backend and the

@@ -32,7 +32,7 @@ column, so clients can tell which version of a row is newer.
 You usually don't need to think about migrations, because `make run-flow`,
 `make run-backend` and `make migrate-backend` all run `services/backend/migrate.py`.
 It checks which migrations are already installed and applies the missing ones in order,
-in a single transaction, without touching existing rows. If it finds a migration that's
+in a single transaction, without losing existing data. If it finds a migration that's
 only partly installed, it stops, and you'll have to fix the schema by hand. It takes an
 advisory lock first, so two runs at the same time won't conflict.
 
