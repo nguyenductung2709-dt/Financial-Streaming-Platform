@@ -2,7 +2,7 @@
   "use strict";
   let BUY = "#37d3a1", SELL = "#ff7f8b";
   let CLOSE = "#a7bfff", EMA38 = "#efb85c", EMA100 = "#b59aff";
-  const QUOTE_MAX = 24, COMPARE_MAX = 5, WINDOW_MS = 5 * 60000;
+  const QUOTE_MAX = 24, COMPARE_MAX = 5, FOLLOW_MAX = 100, WINDOW_MS = 5 * 60000;
   const SERIES_COLORS = {
     dark: ["#83aaff", "#b59aff", "#efb85c", "#48cdb0", "#f28db5"],
     light: ["#345fc5", "#7950c2", "#9e6500", "#087c68", "#b53577"],
@@ -84,12 +84,13 @@
 
   const savedWatchlist = load("watchlist", []);
   const savedComparison = load("comparisonSymbols", []);
+  const initialWatchlist = [...new Set((Array.isArray(savedWatchlist) ? savedWatchlist : []).filter((s) => typeof s === "string"))].slice(0, FOLLOW_MAX);
   const state = {
     symbols: [],
-    watchlist: [...new Set((Array.isArray(savedWatchlist) ? savedWatchlist : []).filter((s) => typeof s === "string"))], slot: {A: null},
+    watchlist: initialWatchlist, slot: {A: null},
     query: "", exchange: "", onlyWatched: false, feedFilter: "all", windows: {}, advisories: {}, feed: [], quotes: {}, signalCounts: null, signalCountsDirty: false,
     theme: load("theme", "dark") === "light" ? "light" : "dark", compare: false, signalsVisible: true, comparisonSignalsVisible: false, mobilePanel: "watchlist",
-    comparison: [...new Set((Array.isArray(savedComparison) ? savedComparison : []).filter((s) => typeof s === "string" && Array.isArray(savedWatchlist) && savedWatchlist.includes(s)))].slice(0, COMPARE_MAX),
+    comparison: [...new Set((Array.isArray(savedComparison) ? savedComparison : []).filter((s) => typeof s === "string" && initialWatchlist.includes(s)))].slice(0, COMPARE_MAX),
   };
 
   //Keep the followed-symbol list saved between page reloads
@@ -100,6 +101,14 @@
 
   //The watchlist determines which symbols receive live updates
   const subscribed = () => [...new Set(state.watchlist)];
+
+  // Follow a symbol unless the limit is reached. Returns true if it is followed afterwards.
+  function follow(symbol) {
+    if (state.watchlist.includes(symbol)) return true;
+    if (state.watchlist.length >= FOLLOW_MAX) return false;
+    state.watchlist.push(symbol);
+    return true;
+  }
 
   //Refresh the interface and update the backend subscription after a change
   function changed() {
@@ -138,7 +147,7 @@
         }
       }
     } else {
-      state.watchlist = [...state.watchlist, symbol];
+      if (!follow(symbol)) return;
     }
 
     changed();
@@ -146,7 +155,7 @@
 
   // Opening a symbol also follows it so the chart continues receiving updates.
   function openSymbol(symbol) {
-    if (!state.watchlist.includes(symbol)) state.watchlist.push(symbol);
+    if (!follow(symbol)) return;
     state.slot.A = symbol;
     state.compare = false;
     changed();
@@ -161,7 +170,7 @@
         $("comparisonNotice").hidden = false;
         return;
       }
-      if (!state.watchlist.includes(symbol)) state.watchlist.push(symbol);
+      if (!follow(symbol)) return;
       comparison.colorIndex(symbol);
       state.comparison.push(symbol);
     }
@@ -224,9 +233,11 @@
   function renderList() {
     const watching = new Set(state.watchlist);
     const q = state.query.trim().toUpperCase();
-    $("hint").textContent = state.compare
+    const atLimit = watching.size >= FOLLOW_MAX;
+    $("hint").textContent = (state.compare
       ? "Select symbols to compare. Use ↗ to inspect an individual chart."
-      : `${watching.size} followed · Select a symbol to chart & follow. ★ toggles following.`;
+      : `${watching.size} / ${FOLLOW_MAX} followed · Select a symbol to chart & follow. ★ toggles following.`) +
+      (atLimit ? ` Limit reached: unfollow one to add another.` : "");
     $("comparisonSelection").hidden = !state.compare;
     $("comparisonSelection").textContent = `IN COMPARISON  ${state.comparison.length} / ${COMPARE_MAX}`;
     $("symbolCount").textContent = state.symbols.length;
@@ -241,16 +252,17 @@
       const { last, percent } = quoteInfo(rows);
       const selected = state.compare ? state.comparison.includes(s.symbol) : state.slot.A === s.symbol;
       const full = state.compare && !selected && state.comparison.length >= COMPARE_MAX;
+      const blocked = atLimit && !on;
       const color = selected && state.compare ? comparison.color(s.symbol) : "";
       const selection = state.compare
-        ? `<button class="comparison-check${selected ? " on" : ""}" data-act="compare" aria-pressed="${selected}" aria-label="${selected ? "Remove" : "Add"} ${esc(s.symbol)} ${selected ? "from" : "to"} comparison" ${full ? "disabled" : ""} ${color ? `style="--series:${color}"` : ""}>${selected ? "✓" : ""}</button>`
-        : `<button class="star${on ? " on" : ""}" data-act="watch" aria-pressed="${on}" aria-label="${on ? "Unfollow" : "Follow"} ${esc(s.symbol)}">${on ? "★" : "☆"}</button>`;
+        ? `<button class="comparison-check${selected ? " on" : ""}" data-act="compare" aria-pressed="${selected}" aria-label="${selected ? "Remove" : "Add"} ${esc(s.symbol)} ${selected ? "from" : "to"} comparison" ${full || blocked ? "disabled" : ""} ${color ? `style="--series:${color}"` : ""}>${selected ? "✓" : ""}</button>`
+        : `<button class="star${on ? " on" : ""}" data-act="watch" aria-pressed="${on}" aria-label="${on ? "Unfollow" : "Follow"} ${esc(s.symbol)}" ${blocked ? "disabled" : ""}>${on ? "★" : "☆"}</button>`;
       return `<li class="row${selected ? " selected" : ""}" data-sym="${esc(s.symbol)}">${selection}` +
-        `<button class="symbol-select" data-act="${state.compare ? "compare" : "open"}" aria-label="${state.compare ? selected ? "Remove from comparison" : "Add to comparison" : "Chart"} ${esc(s.symbol)}" aria-pressed="${selected}" ${full ? "disabled" : ""} title="${last ? `Latest close: ${esc(utcLabel(last.window_end))}` : "Select to follow and load prices"}">` +
+        `<button class="symbol-select" data-act="${state.compare ? "compare" : "open"}" aria-label="${state.compare ? selected ? "Remove from comparison" : "Add to comparison" : "Chart"} ${esc(s.symbol)}" aria-pressed="${selected}" ${full || blocked ? "disabled" : ""} title="${last ? `Latest close: ${esc(utcLabel(last.window_end))}` : "Select to follow and load prices"}">` +
         `<span class="sym">${esc(s.symbol)}</span><span class="quote-price">${last ? fmt(last.closing_price) : "—"}</span>` +
         `<span class="symbol-exchange">${esc(s.exchange || "Market")}${on ? sparkline(rows) : ""}</span>` +
         `<span class="quote-change ${percent === null ? "muted" : percent >= 0 ? "up" : "down"}">${percent === null ? on ? "Awaiting data" : "Follow for prices" : `${signed(percent)}%`}</span></button>` +
-        `<button class="slot" data-act="${state.compare ? "detail" : "compare"}" aria-label="${state.compare ? "Open individual chart for" : "Compare"} ${esc(s.symbol)}" title="${state.compare ? "Open individual chart" : "Add to comparison"}">${state.compare ? "↗" : "+"}</button></li>`;
+        `<button class="slot" data-act="${state.compare ? "detail" : "compare"}" aria-label="${state.compare ? "Open individual chart for" : "Compare"} ${esc(s.symbol)}" ${blocked ? "disabled" : ""} title="${state.compare ? "Open individual chart" : "Add to comparison"}">${state.compare ? "↗" : "+"}</button></li>`;
     }).join("");
     if (!shown.length) {
       html = `<li class="empty">${state.symbols.length ? "No symbols match your filters." : "Waiting for market symbols…"}</li>`;
@@ -350,7 +362,7 @@
   });
 
   $("followAll").addEventListener("click", () => {
-    state.watchlist = [...new Set(state.symbols.map((s) => s.symbol))];
+    state.watchlist = [...new Set([...state.watchlist, ...state.symbols.map((s) => s.symbol)])].slice(0, FOLLOW_MAX);
     changed();
   });
 
@@ -961,13 +973,9 @@
     if (on && !state.comparison.length) {
       const initial = [state.slot.A, symbol].filter(Boolean);
       if (!symbol) initial.push(state.watchlist.find((s) => s !== state.slot.A));
-      state.comparison = [...new Set(initial.filter(Boolean))].slice(0, COMPARE_MAX);
-      for (const s of state.comparison) {
-        if (!state.watchlist.includes(s)) state.watchlist.push(s);
-        comparison.colorIndex(s);
-      }
-    } else if (on && symbol && !state.comparison.includes(symbol) && state.comparison.length < COMPARE_MAX) {
-      if (!state.watchlist.includes(symbol)) state.watchlist.push(symbol);
+      state.comparison = [...new Set(initial.filter(Boolean))].filter(follow).slice(0, COMPARE_MAX);
+      for (const s of state.comparison) comparison.colorIndex(s);
+    } else if (on && symbol && !state.comparison.includes(symbol) && state.comparison.length < COMPARE_MAX && follow(symbol)) {
       comparison.colorIndex(symbol);
       state.comparison.push(symbol);
     }

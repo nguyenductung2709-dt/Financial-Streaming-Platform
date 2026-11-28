@@ -9,7 +9,7 @@ from typing import Optional
 import psycopg
 import psycopg_pool
 import uvicorn
-from fastapi import FastAPI, Query, Response
+from fastapi import FastAPI, Query, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -55,7 +55,10 @@ async def database_unavailable(request, exc):
 
 #Split a comma-separated symbol list and remove duplicates
 def parse_symbols(text):
-    return list(dict.fromkeys(s.strip() for s in text.split(",") if s.strip()))
+    symbols = list(dict.fromkeys(s.strip() for s in text.split(",") if s.strip()))
+    if len(symbols) > 100:
+        raise HTTPException(400, "at most 100 symbols")
+    return symbols
 
 
 #Convert a datetime to UTC
