@@ -47,7 +47,7 @@ async function dashboard(storage = {}) {
       comparison, comparisonData, emaSpread, spreadData, toggleComparison, addToComparison, COMPARE_MAX,
       getSignals, refreshSignalFeed, SIGNAL_REFRESH_MS,
       getPending: () => syncPromise, getBuffer: () => buffer,
-      getKnown: () => knownFeedKeys, HISTORY_MAX, BUFFER_MAX};
+      getKnown: () => knownFeedKeys, HISTORY_MAX, BUFFER_MAX, FOLLOW_MAX};
   })();`);
   assert.notEqual(source, original, 'test harness must expose the dashboard');
   vm.runInNewContext(source, ctx);
@@ -1040,4 +1040,19 @@ test('malformed count headers cannot become a false total', async () => {
     const response=await app.getSignals(['A']);
     assert.equal(response.counts,null);
   }
+});
+
+test('following is limited to FOLLOW_MAX; browsing all symbols is not', async () => {
+  const symbols = Array.from({ length: 150 }, (_, i) => ({ symbol: 'A' + i }));
+  const app = await dashboard({ watchlist: symbols.map(s => s.symbol) });
+  assert.equal(app.state.watchlist.length, app.FOLLOW_MAX);
+  app.state.symbols = symbols;
+  app.node('followAll').handlers.click();
+  assert.equal(app.state.watchlist.length, app.FOLLOW_MAX);
+  app.openSymbol('A');
+  assert.equal(app.state.watchlist.includes('A'), false);
+  app.toggleWatch('A0');
+  app.openSymbol('A');
+  assert.equal(app.state.watchlist.includes('A'), true);
+  await app.getPending();
 });
